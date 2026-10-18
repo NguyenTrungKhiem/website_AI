@@ -1,0 +1,27 @@
+{
+  "name": "web-video",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Studio tạo video AI (Gemini Omni Flash) và tự động đăng lên mạng xã hội",
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,green \"node --watch server/index.js\" \"vite\"",
+    "build": "vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "multer": "^1.4.5-lts.1",
+    "playwright-core": "^1.49.1",
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}

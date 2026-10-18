@@ -1,0 +1,4 @@
+node_modules/
+web/dist/
+# Chứa video, ảnh và db.json (có API key, token) — không commit
+data/
