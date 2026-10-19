@@ -80,49 +80,36 @@ export default function SettingsPage({ state, refresh }) {
       <p className="muted small">Mọi thông tin lưu trong <code>data/db.json</code> trên máy của bạn.</p>
 
       <div className="card stack">
-        <h2>Cách tạo video</h2>
-        <div className="row wrap">
-          <label className={'check pill' + (s.engine === 'api' ? ' on' : '')}>
-            <input type="radio" checked={s.engine === 'api'} onChange={() => set({ ...s, engine: 'api' })} />
-            Gemini API <small className="muted">(trả tiền theo giây, chạy song song)</small>
-          </label>
-          <label className={'check pill' + (s.engine === 'flow' ? ' on' : '')}>
-            <input type="radio" checked={s.engine === 'flow'} onChange={() => set({ ...s, engine: 'flow' })} />
-            Google Flow tự động <small className="muted">(dùng credit Flow, chạy lần lượt)</small>
-          </label>
+        <h2>Google Flow tự động</h2>
+        <p className="muted small">Tạo video/ảnh bằng credit Flow, chạy lần lượt từng video trong 1 cửa sổ Chrome riêng.</p>
+        <FlowPanel />
+        <div className="grid3">
+          <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Có video tham chiếu: 720p ≈ 20 credit, 360p ≈ 10 credit / video" />
+          <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />
+          <Field {...f} path="flowProjectUrl" label="Dự án Flow dùng chung" hint="Để trống thì tự tạo dự án mới lần đầu" />
         </div>
-        {s.engine === 'flow' && (
-          <>
-            <FlowPanel />
-            <div className="grid3">
-              <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Có video tham chiếu: 720p ≈ 20 credit, 360p ≈ 10 credit / video" />
-              <Field {...f} path="flowProjectUrl" label="Dự án Flow dùng chung" hint="Để trống thì tự tạo dự án mới lần đầu" />
-            </div>
-            <label className="check">
-              <input type="checkbox" checked={!!s.flowAutoAgree} onChange={(e) => set({ ...s, flowAutoAgree: e.target.checked })} />
-              <span>
-                <b>Tự bấm "I agree" ở hộp thoại "Rights to use this video" của Flow</b> mỗi lần tải video/ảnh lên.
-                <br />
-                <small className="muted">
-                  Tick nghĩa là bạn cam kết với Google cho mọi lần tải lên: bạn có đủ quyền với nội dung (kể cả nội dung có trẻ vị thành niên),
-                  không tạo nội dung vi phạm quyền người khác, lừa dối, quấy rối hay gây hại, và tuân thủ Google's Prohibited Use Policy.
-                  Bỏ tick thì công cụ sẽ dừng lại chờ bạn tự bấm.
-                </small>
-              </span>
-            </label>
-          </>
-        )}
+        <label className="check">
+          <input type="checkbox" checked={!!s.flowAutoAgree} onChange={(e) => set({ ...s, flowAutoAgree: e.target.checked })} />
+          <span>
+            <b>Tự bấm "I agree" ở hộp thoại "Rights to use this video" của Flow</b> mỗi lần tải video/ảnh lên.
+            <br />
+            <small className="muted">
+              Tick nghĩa là bạn cam kết với Google cho mọi lần tải lên: bạn có đủ quyền với nội dung (kể cả nội dung có trẻ vị thành niên),
+              không tạo nội dung vi phạm quyền người khác, lừa dối, quấy rối hay gây hại, và tuân thủ Google's Prohibited Use Policy.
+              Bỏ tick thì công cụ sẽ dừng lại chờ bạn tự bấm.
+            </small>
+          </span>
+        </label>
       </div>
 
       <div className="card stack">
-        <h2>Gemini Omni Flash</h2>
-        <Field {...f} path="geminiApiKey" label="Gemini API key" type="password" hint="Lấy tại aistudio.google.com/apikey" />
-        <div className="grid3">
-          <Field {...f} path="model" label="Model" hint="Mặc định: gemini-omni-1.1-flash" />
-          <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />
-          <Field {...f} path="resolution" label="Độ phân giải" options={['360p', '720p', '1080p', '4k']} />
-          <Field {...f} path="task" label="Task" options={['auto', 'edit', 'reference_to_video', 'image_to_video']} hint="auto = để model tự hiểu từ prompt (Google khuyên dùng)" />
-          <Field {...f} path="concurrency" label="Số video xử lý song song" type="number" hint="Tăng nếu quota API cho phép" />
+        <h2>Gemini AI (Chuẩn hoá dữ liệu sàn TMĐT)</h2>
+        <p className="muted small">
+          Dùng AI để tự động làm sạch từ rác (Chính hãng, Freeship, Sale...), trích xuất 2-3 tính năng nổi bật cho kịch bản video và chuẩn hóa giá VND từ link Shopee, Lazada, TikTok Shop.
+        </p>
+        <div className="grid2">
+          <Field {...f} path="geminiApiKey" label="Gemini API Key" type="password" hint="Lấy API key miễn phí tại Google AI Studio (aistudio.google.com). Để trống sẽ dùng bộ lọc Regex thông minh." />
+          <Field {...f} path="geminiModel" label="Model Gemini" options={['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']} hint="Nên dùng gemini-1.5-flash để tốc độ phản hồi nhanh nhất" />
         </div>
       </div>
 

@@ -3,9 +3,9 @@
 // Quy trình khác (vd. Thay quần áo) viết thành file riêng cùng cấu trúc, không đụng vào file này.
 
 const BACKGROUND_PROMPT = `Completely remove all people from the scene, leaving only the empty background.
-Identify the key objects and architectural elements in the original reference and transform their colors to a new harmonious palette.
+Identify the key objects and architectural elements in the original reference and transform their colors to a new harmonious palette: very bright and airy, dominated by soft milky white with only a subtle hint of light beige / pale brown (cream tones), high-key exposure, no yellow, orange or dark, moody tones.
 If the space appears too empty, add a few subtle, small decorative details consistent with the setting.
-Strictly preserve the original camera angle, perspective, spatial depth, and lighting structure to maintain the exact same environment.`;
+Strictly preserve the original camera angle, perspective, spatial depth and light direction to maintain the exact same environment, but render the lighting bright, soft and evenly exposed so a person placed in this scene later will be well lit.`;
 
 const MOTION_PROMPT = `[PROTOCOL: TOTAL_VISUAL_RECONSTRUCTION]
 IDENTITY_FUSION (MULTI-VIEW): Using 3D skeletal motion transfer.

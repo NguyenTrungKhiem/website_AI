@@ -7,7 +7,9 @@ import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip } from 
 import { createJob, createImportJob, retryJob, recoverJobs, pump } from './queue.js';
 import { publish } from './social.js';
 import * as flow from './flow.js';
-import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE } from './gemini.js';
+import * as shopee from './shopee.js';
+import * as productScraper from './productScraper.js';
+import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE } from './prompts.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob } from './workflows/runner.js';
@@ -67,7 +69,7 @@ app.get('/api/state', (req, res) => {
 
 app.put('/api/settings', (req, res) => {
   const s = updateSettings(req.body || {});
-  pump(); // concurrency có thể vừa tăng
+  pump();
   res.json(s);
 });
 
@@ -223,6 +225,23 @@ app.delete('/api/assets/:id', (req, res) => {
   }
   res.json({ ok: true });
 });
+
+// ---------- Dữ liệu & Ảnh sản phẩm từ link sàn TMĐT (Shopee, Lazada, TikTok Shop) ----------
+app.post('/api/product/fetch', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
+app.post('/api/product/import', wrap(async (req, res) => {
+  const { kind = 'product', images = [] } = req.body || {};
+  if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
+  if (!images.length) throw new Error('Chưa chọn ảnh');
+  res.json(await productScraper.importImages(kind, images));
+}));
+// Tương thích ngược với các gọi cũ
+app.post('/api/shopee/product', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
+app.post('/api/shopee/import', wrap(async (req, res) => {
+  const { kind = 'product', images = [] } = req.body || {};
+  if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
+  if (!images.length) throw new Error('Chưa chọn ảnh');
+  res.json(await productScraper.importImages(kind, images));
+}));
 
 // ---------- Job tạo video ----------
 // Motion control: 1 job cho mỗi clip được chọn (xử lý hàng loạt)

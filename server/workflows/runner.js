@@ -1,8 +1,8 @@
 // Trình chạy quy trình: lưu trạng thái từng bước vào db.runs, tiếp tục được sau khi server khởi động lại,
-// dừng khi có job lỗi (người dùng Thử lại job rồi bấm "Tiếp tục").
+// dừng khi có job lỗi (người dùng bấm "Tiếp tục" để chạy lại job lỗi và đi tiếp).
 import path from 'node:path';
 import { db, save, DIRS, newId, mediaUrl } from '../db.js';
-import { createJob, createImportJob, settledHooks } from '../queue.js';
+import { createJob, createImportJob, retryJob, settledHooks } from '../queue.js';
 import { createMerge, mergeSettledHooks } from '../merge.js';
 import { frameAt } from '../ffmpeg.js';
 import { WORKFLOWS } from './index.js';
@@ -48,6 +48,11 @@ export function resumeRun(run) {
   if (run.status === 'done') return run;
   run.status = 'running';
   run.error = null;
+  // Chạy lại các job lỗi mà lần chạy đang dùng (job đã bị thay bằng video từ máy thì không còn trong danh sách)
+  for (const id of Object.values(run.stages._jobs || {})) {
+    const job = db.jobs.find((j) => j.id === id);
+    if (job?.status === 'failed' && job.type !== 'import') retryJob(job);
+  }
   save();
   advance(run);
   return run;
@@ -250,7 +255,7 @@ function makeCtx(run, wf) {
       return job;
     },
     job: (key) => db.jobs.find((j) => j.id === run.stages._jobs?.[key]),
-    jobError: (job) => new Error(`"${job.videoLabel}" lỗi: ${job.error} — bấm Thử lại trên video đó rồi bấm Tiếp tục.`),
+    jobError: (job) => new Error(`"${job.videoLabel}" lỗi: ${job.error} — bấm Tiếp tục để chạy lại.`),
 
     // 'done' khi tất cả xong; ném lỗi khi có job lỗi và không còn job nào chạy; còn lại 'waiting'
     waitAll(jobs) {
@@ -315,6 +320,7 @@ export function viewRun(run) {
     }),
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
+    background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)
     jobIds: jobs.map((j) => j.id),
     merge: merge ? { id: merge.id, status: merge.status, url: mediaUrl(merge.outputPath), thumbUrl: mediaUrl(merge.thumbPath), error: merge.error } : null,
   };

@@ -28,6 +28,10 @@ export const api = {
     return req('POST', '/api/assets', f);
   },
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`),
+  fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
+  importProduct: (kind, images) => req('POST', '/api/product/import', { kind, images }),
+  shopeeProduct: (url) => req('POST', '/api/product/fetch', { url }),
+  shopeeImport: (kind, images) => req('POST', '/api/product/import', { kind, images }),
   motion: (body) => req('POST', '/api/jobs/motion', body),
   background: (body) => req('POST', '/api/jobs/background', body),
   retry: (id, prompt) => req('POST', `/api/jobs/${id}/retry`, { prompt }),

@@ -1,9 +1,9 @@
-// Hàng đợi job tạo video/ảnh: chạy song song tối đa `settings.concurrency` job một lúc.
+// Hàng đợi job tạo video/ảnh: chạy lần lượt từng job (Flow chỉ có 1 cửa sổ trình duyệt).
 // Loại job: motion (thay người + sản phẩm), background (thay bối cảnh video), image (sinh ảnh, vd. bối cảnh mới).
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, save, DIRS, newId } from './db.js';
-import { generateVideo, generateImage, buildMotionPrompt, buildBackgroundPrompt, fillTemplate } from './gemini.js';
+import { buildMotionPrompt, buildBackgroundPrompt, fillTemplate } from './prompts.js';
 import * as flow from './flow.js';
 import { thumbnail, imageThumb } from './ffmpeg.js';
 
@@ -95,21 +95,19 @@ export function retryJob(job, { prompt } = {}) {
 }
 
 export function engineName() {
-  const e = db.settings.engine;
-  return e === 'flow' || e === 'mock' ? e : 'api';
+  return db.settings.engine === 'mock' ? 'mock' : 'flow';
 }
 
 export function pump() {
   // Flow chỉ có 1 cửa sổ trình duyệt -> chạy lần lượt từng video
-  const limit = engineName() === 'flow' ? 1 : Math.max(1, Number(db.settings.concurrency) || 1);
   for (const job of db.jobs.slice().reverse()) {
-    if (running.size >= limit) break;
+    if (running.size >= 1) break;
     if (job.status === 'queued' && !running.has(job.id)) run(job);
   }
 }
 
 // Ghép prompt cuối cùng + danh sách ảnh (thứ tự cố định: model -> sản phẩm | bối cảnh)
-function prepare(job, engine) {
+function prepare(job) {
   const images = [];
   if (job.type === 'motion') {
     const model = assetPath(job.assets.model);
@@ -117,8 +115,8 @@ function prepare(job, engine) {
     if (model) images.push(model);
     if (product) images.push(product);
     const prompt = buildMotionPrompt({
-      userPrompt: job.prompt, hasModel: !!model, hasProduct: !!product, raw: job.rawPrompt,
-      template: job.template || db.settings.motionTemplate, engine,
+      userPrompt: job.prompt, raw: job.rawPrompt,
+      template: job.template || db.settings.motionTemplate,
     });
     return { images, prompt };
   }
@@ -126,8 +124,8 @@ function prepare(job, engine) {
     const bg = assetPath(job.assets.background);
     if (bg) images.push(bg);
     const prompt = buildBackgroundPrompt({
-      userPrompt: job.prompt, hasBackground: !!bg, raw: job.rawPrompt,
-      template: job.template || db.settings.backgroundTemplate, engine,
+      userPrompt: job.prompt, raw: job.rawPrompt,
+      template: job.template || db.settings.backgroundTemplate,
     });
     return { images, prompt };
   }
@@ -141,7 +139,7 @@ async function run(job) {
   running.add(job.id);
   job.status = 'running';
   const engine = engineName();
-  const { images, prompt: finalPrompt } = prepare(job, engine);
+  const { images, prompt: finalPrompt } = prepare(job);
   const attempt = {
     n: Math.max(0, ...job.attempts.map((a) => a.n)) + 1, // không dùng length vì có thể đã xoá bớt lần tạo
     prompt: job.prompt,
@@ -164,7 +162,7 @@ async function run(job) {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);
     if (engine === 'mock') result = await mockGenerate(input, isImage);
-    else if (engine === 'flow' && prev?.flowSrc && !prev.outputPath && job.prompt === prev.prompt) {
+    else if (prev?.flowSrc && !prev.outputPath && job.prompt === prev.prompt) {
       // Lần trước Flow đã tạo xong nhưng tải về lỗi -> lấy lại kết quả đó (không tốn credit)
       log('Lấy lại video đã tạo trên Flow ở lần trước (không tạo mới)');
       try {
@@ -175,8 +173,7 @@ async function run(job) {
         log('Không lấy lại được (' + e.message + ') -> tạo mới');
         result = isImage ? await flow.generateImage(input) : await flow.generateVideo(input);
       }
-    } else if (engine === 'flow') result = isImage ? await flow.generateImage(input) : await flow.generateVideo(input);
-    else result = await withBackoff(() => (isImage ? generateImage(input) : generateVideo(input)));
+    } else result = isImage ? await flow.generateImage(input) : await flow.generateVideo(input);
 
     const thumb = outputFile.replace(/\.(mp4|png)$/, '.jpg');
     await (isImage ? imageThumb(outputFile, thumb) : thumbnail(outputFile, thumb)).catch(() => {});
@@ -205,19 +202,6 @@ async function mockGenerate({ video, images, outputFile, log }, isImage) {
   if (!src) throw new Error('Engine giả: thiếu đầu vào');
   fs.copyFileSync(src, outputFile);
   return { id: 'mock', text: 'mock' };
-}
-
-// Tự thử lại khi bị giới hạn tốc độ (429) hoặc lỗi máy chủ (5xx).
-async function withBackoff(fn, tries = 3) {
-  for (let i = 0; ; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      const transient = !e.permanent && (e.status === 429 || e.status >= 500);
-      if (!transient || i >= tries - 1) throw e;
-      await new Promise((r) => setTimeout(r, 15_000 * (i + 1)));
-    }
-  }
 }
 
 // Khi khởi động lại server: job đang chạy dở coi như lỗi để người dùng bấm thử lại.

@@ -87,7 +87,6 @@ export async function status() {
 
 /**
  * Tạo 1 video trên Flow: tải video + ảnh tham chiếu lên, dán prompt, bấm tạo, chờ và tải kết quả về outputFile.
- * Cùng chữ ký với gemini.generateVideo để hàng đợi dùng chung.
  */
 export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // Sinh ảnh (Nano Banana) từ ảnh tham chiếu + prompt, vd. tạo bối cảnh mới từ khung hình video gốc
@@ -140,8 +139,7 @@ async function generate({ settings, prompt, video, images = [], outputFile, log 
     await box.click();
     await box.fill(flowPrompt(prompt, images.length));
 
-    const before = await tileNames(page);
-    await markOldTiles(page);
+    const before = await snapshotTiles(page);
     const start = page.getByRole('button', { name: 'Start generation' });
     // Flow cần một lúc sau khi gõ prompt mới bật nút tạo
     for (let i = 0; i < 30 && !(await start.isEnabled()); i++) await sleep(500);
@@ -192,7 +190,9 @@ const assetList = (page) => page.getByRole('listbox', { name: 'Asset list' });
 const hashFile = (f) => crypto.createHash('sha1').update(fs.readFileSync(f)).digest('hex').slice(0, 16);
 
 async function openAssetPanel(page) {
-  if (await assetList(page).isVisible().catch(() => false)) return;
+  // Dự án trống không có "Asset list" -> nhận biết bảng đã mở bằng ô tìm kiếm
+  if (await page.getByRole('textbox', { name: 'Search assets' }).isVisible().catch(() => false)) return;
+  await dismissOverlays(page); // menu khác còn mở thì lớp phủ chặn cú bấm
   await page.getByRole('button', { name: 'Add ingredients to the prompt box' }).click();
   await page.getByRole('button', { name: 'Upload media' }).waitFor({ timeout: 15_000 });
 }
@@ -282,7 +282,7 @@ async function configure(page, settings, kind = 'video') {
   return credits;
 }
 
-// Prompt mẫu dùng <IMAGE_REF_n> của Gemini API -> Flow hiểu theo thứ tự ảnh đã thêm
+// Prompt cũ có thể còn <IMAGE_REF_n> -> Flow hiểu theo thứ tự ảnh đã thêm
 function flowPrompt(prompt, imageCount) {
   return prompt.replace(/<IMAGE_REF_(\d+)>/g, (_, i) => (imageCount > 1 ? `reference image ${Number(i) + 1}` : 'the reference image'));
 }
@@ -303,71 +303,94 @@ const tiles = (page) =>
         hasVideo: !!v || /video/i.test(im?.alt || ''),
         src: v?.getAttribute('src') || '',
         isrc: im?.getAttribute('src') || '',
-        old: e.dataset.vsOld === '1',
-        gen: e.dataset.vsGen === '1',
       };
     }),
   );
-const tileNames = async (page) => (await tiles(page)).map((t) => t.key);
+const FAILED_RE = /couldn.t generate|failed to generate|something went wrong|try again later|violat/i;
+const isFailed = (t) => FAILED_RE.test(t.text);
+const isGenerating = (t) => /\d+\s*%/.test(t.text);
+// Mã file media: phần cuối đường dẫn, bỏ chữ ký ?Expires=… (đổi theo thời gian).
+// Cùng 1 video Flow lúc hiện <video> (/video/<id>) lúc hiện ảnh thu nhỏ (/image/<id>).
+const mediaId = (src) => (src || '').split('?')[0].split('/').pop();
+const tileMedia = (t) => mediaId(t.src || t.isrc);
+// Ô đã có kết quả ổn định (có media, không lỗi, không đang chạy)
+const isSettled = (t) => !!tileMedia(t) && !isFailed(t) && !isGenerating(t);
 
-// Đánh dấu mọi ô đang có trước khi bấm tạo -> ô không có dấu là ô mới sinh ra
-const markOldTiles = (page) => page.locator(TILE).evaluateAll((els) => els.forEach((e) => (e.dataset.vsOld = '1')));
-const markGenTile = (page, i) => page.locator(TILE).nth(i).evaluate((e) => (e.dataset.vsGen = '1'));
-
-// File do web tải lên luôn tên "vs-…"; ô chưa có nhãn là ô đang xử lý -> không bao giờ là kết quả
-const isUploadTile = (t, names) => !t.key || t.key.startsWith('vs-') || names.some((nm) => t.key.startsWith(nm));
+// Danh sách ô của Flow là virtual scroll: chỉ ô đang hiện mới có trong DOM, và Flow vẽ lại ô
+// bất cứ lúc nào (mọi dấu gắn lên DOM đều mất). Luôn kéo về đầu để thấy các ô mới nhất.
+const scrollTilesTop = (page) =>
+  page.evaluate(() => {
+    window.scrollTo(0, 0);
+    for (const el of document.querySelectorAll('cdk-virtual-scroll-viewport, main')) el.scrollTop = 0;
+  }).catch(() => {});
 
 /**
- * Chờ video mới sinh ra sau khi bấm tạo.
- * - Ô kết quả = ô chưa bị đánh dấu "cũ", không phải file tải lên, có nhãn là tiêu đề do Flow đặt.
- * - Khi thấy ô đó đang chạy (có %), ghim nó lại (data-vs-gen) và từ đó chỉ theo dõi đúng ô này.
- * - Chỉ nhận kết quả khi ô hết % và có <video src> giữ nguyên qua 2 lần kiểm tra; nếu chưa từng
- *   thấy nó chạy thì phải qua ít nhất 25s kể từ lúc bấm tạo (tránh vớ phải ô đang xử lý dở).
- * - Dự phòng khi Flow vẽ lại trang (mất dấu): so số lần xuất hiện nhãn với trước lúc bấm tạo;
- *   Flow xếp mới nhất lên đầu nên trừ bản cũ từ CUỐI danh sách, phần dư ở đầu là ô mới.
+ * Ảnh chụp trước khi bấm tạo. Flow xếp ô mới nhất lên trên cùng, nên ô của lần tạo này sẽ
+ * xuất hiện ở đầu danh sách. Mốc = ô ổn định đầu tiên (nhận lại theo mã file media, không đổi
+ * khi Flow vẽ lại); `above` = số ô đang nằm trên mốc (file vừa tải lên, ô lỗi cũ, ô của lần tạo
+ * trước vẫn còn chạy dở…). Số ô trên mốc tăng lên bao nhiêu thì bấy nhiêu ô trên cùng là ô mới.
+ * Ghi thêm vài mốc dự phòng (các ô ổn định kế tiếp) phòng khi Flow đổi đường dẫn media của mốc đầu.
+ */
+async function snapshotTiles(page) {
+  await scrollTilesTop(page);
+  const all = await tiles(page);
+  const settled = all.map((t, i) => ({ t, i })).filter(({ t }) => isSettled(t)).slice(0, 3);
+  const first = settled[0]?.i ?? all.length;
+  return { anchors: settled.map(({ t, i }) => ({ id: tileMedia(t), offset: i - first })), above: first };
+}
+
+// Các ô nằm trên mốc; null = không thấy mốc nào (trang đang vẽ lại)
+function tilesAboveAnchor(all, before) {
+  if (!before.anchors.length) return all;
+  for (const { id, offset } of before.anchors) {
+    const a = all.findIndex((t) => tileMedia(t) === id);
+    if (a >= 0) return all.slice(0, Math.max(0, a - offset));
+  }
+  return null;
+}
+
+// File do web tải lên luôn tên "vs-…" -> không bao giờ là kết quả
+const isUploadTile = (t, names) => t.key.startsWith('vs-') || names.some((nm) => t.key.startsWith(nm));
+
+/**
+ * Chờ ô kết quả của lần tạo này: ô mới nhất trong số các ô xuất hiện trên mốc sau khi bấm tạo
+ * (xem snapshotTiles). Chỉ theo dõi đúng ô đó: ô khác lỗi hay xong cũng mặc kệ, nên kết quả của
+ * lần tạo trước (vd. lần bị báo lỗi nhầm nhưng Flow vẫn chạy tiếp) không bị lấy nhầm.
+ * Nhận kết quả khi ô hết % và có <video src> giữ nguyên qua 2 lần kiểm tra, sớm nhất 25s sau khi bấm tạo.
  */
 async function waitForResult(page, before, log, names, kind = 'video') {
   const startedAt = Date.now();
   const deadline = startedAt + 20 * 60_000;
   let reported = '';
-  let pinned = false;
   let lastSrc = '';
+  let waitedNote = false;
   while (Date.now() < deadline) {
     await sleep(5000);
+    await scrollTilesTop(page);
     const all = await tiles(page);
-    let cands;
-    if (pinned && all.some((t) => t.gen)) {
-      cands = all.filter((t) => t.gen);
-    } else {
-      const marksLost = all.length > 0 && !all.some((t) => t.old);
-      const seen = {};
-      for (const k of before) seen[k] = (seen[k] || 0) + 1;
-      cands = [];
-      for (const t of [...all].reverse()) {
-        if (isUploadTile(t, names)) continue;
-        if (t.old) continue;
-        if (marksLost && seen[t.key] > 0) { seen[t.key]--; continue; }
-        cands.unshift(t);
-      }
+    const region = tilesAboveAnchor(all, before);
+    if (!region) continue; // mốc chưa hiện ra -> chờ
+    const fresh = region.slice(0, Math.max(0, region.length - before.above));
+    const t = fresh.find((x) => !isUploadTile(x, names));
+    if (!t) {
+      if (!waitedNote && Date.now() - startedAt > 90_000) { waitedNote = true; log('Chưa thấy ô mới trên Flow, vẫn chờ'); }
+      continue;
     }
-    for (const t of cands) {
-      if (/couldn.t generate|failed to generate|something went wrong|try again later|violat/i.test(t.text)) {
-        const refunded = /will be refunded/i.test(t.text);
-        throw new Error('Flow báo lỗi: ' + t.text.split('\n').slice(0, 2).join(' ') + (refunded ? ' (Flow sẽ hoàn lại credit cho lần lỗi này)' : ''));
-      }
-      const pct = t.text.match(/\d+\s*%/)?.[0];
-      if (pct) {
-        if (!pinned) { await markGenTile(page, t.i).catch(() => {}); pinned = true; }
-        if (pct !== reported) log(`Đang tạo… ${(reported = pct)}`);
-        break; // đang chạy -> chờ tiếp
-      }
-      // Video: cần <video src>; ảnh: cần <img src> và không phải ô video
-      const media = kind === 'image' ? (t.src ? '' : t.isrc) : (t.hasVideo ? t.src : '');
-      if (!/^https?:/.test(media)) continue;
-      if (!pinned && Date.now() - startedAt < 25_000) continue;
-      if (media !== lastSrc) { lastSrc = media; break; } // đợi src ổn định qua 2 lần kiểm tra
-      return page.locator(TILE).nth(t.i);
+    if (isFailed(t)) {
+      const refunded = /will be refunded/i.test(t.text);
+      throw new Error('Flow báo lỗi: ' + t.text.split('\n').slice(0, 2).join(' ') + (refunded ? ' (Flow sẽ hoàn lại credit cho lần lỗi này)' : ''));
     }
+    const pct = t.text.match(/\d+\s*%/)?.[0];
+    if (pct) {
+      if (pct !== reported) log(`Đang tạo… ${(reported = pct)}`);
+      continue;
+    }
+    // Video: cần <video src>; ảnh: cần <img src> và không phải ô video
+    const media = kind === 'image' ? (t.src ? '' : t.isrc) : (t.hasVideo ? t.src : '');
+    if (!/^https?:/.test(media)) continue;
+    if (Date.now() - startedAt < 25_000) continue;
+    if (media !== lastSrc) { lastSrc = media; continue; } // đợi src ổn định qua 2 lần kiểm tra
+    return page.locator(TILE).nth(t.i);
   }
   throw new Error('Quá 20 phút chưa thấy video kết quả trên Flow');
 }

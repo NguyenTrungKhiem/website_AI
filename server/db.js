@@ -18,20 +18,16 @@ for (const d of Object.values(DIRS)) fs.mkdirSync(d, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const DEFAULT_SETTINGS = {
-  engine: 'api', // api = Gemini API (trả tiền theo giây) | flow = tự động hoá Google Flow (dùng credit Flow)
+  engine: 'flow', // flow = tự động hoá Google Flow (dùng credit Flow) | mock = engine giả để thử quy trình
   flowResolution: '720p', // 360p rẻ hơn 1 nửa credit
   flowProjectUrl: '', // dự án Flow dùng chung, tự tạo lần đầu
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
-  geminiApiKey: '',
-  model: 'gemini-omni-1.1-flash',
   aspectRatio: '9:16',
-  resolution: '720p',
-  task: 'auto', // auto = không gửi task (Google khuyên dùng prompt trước)
-  motionTemplate: '', // trống = dùng prompt mẫu mặc định (server/gemini.js)
+  geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
+  geminiModel: 'gemini-1.5-flash',
+  motionTemplate: '', // trống = dùng prompt mẫu mặc định (server/prompts.js)
   backgroundTemplate: '',
-  imageModel: 'gemini-2.5-flash-image', // model sinh ảnh khi dùng Gemini API (Flow thì dùng Nano Banana)
   workflows: {}, // prompt mẫu người dùng đã sửa cho từng quy trình: { dancing: { prompts: { background: '...' } } }
-  concurrency: 3,
   publicBaseUrl: '', // URL public (ngrok/cloudflared) — Threads cần để tải video
   youtube: { clientId: '', clientSecret: '', refreshToken: '', privacy: 'private' },
   facebook: { pageId: '', pageToken: '' },
@@ -42,14 +38,16 @@ const DEFAULT_SETTINGS = {
 
 const EMPTY = { settings: DEFAULT_SETTINGS, sources: [], clips: [], assets: [], jobs: [], audios: [], merges: [], posts: [], runs: [] };
 
+// Cài đặt của Gemini API cũ (đã bỏ) -> xoá khỏi db.json cũ
+const REMOVED_SETTINGS = ['resolution', 'task', 'imageModel', 'concurrency'];
+
 function load() {
   if (!fs.existsSync(DB_FILE)) return structuredClone(EMPTY);
   const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-  return {
-    ...structuredClone(EMPTY),
-    ...data,
-    settings: deepMerge(structuredClone(DEFAULT_SETTINGS), data.settings || {}),
-  };
+  const settings = deepMerge(structuredClone(DEFAULT_SETTINGS), data.settings || {});
+  for (const k of REMOVED_SETTINGS) delete settings[k];
+  if (settings.engine !== 'mock') settings.engine = 'flow';
+  return { ...structuredClone(EMPTY), ...data, settings };
 }
 
 function deepMerge(base, extra) {

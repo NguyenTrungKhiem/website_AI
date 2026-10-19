@@ -1,6 +1,6 @@
 # Video Studio
 
-Web chạy trên máy cá nhân để: cắt video gốc → motion control bằng Gemini Omni Flash → thay bối cảnh → đăng lên TikTok / Instagram / Threads / Facebook / YouTube.
+Web chạy trên máy cá nhân để: cắt video gốc → motion control bằng Omni Flash trên Google Flow (tự động bằng Playwright) → thay bối cảnh → đăng lên TikTok / Instagram / Threads / Facebook / YouTube.
 
 ## Chạy
 
@@ -18,7 +18,7 @@ Không cần cài ffmpeg riêng — đã có sẵn qua npm (`ffmpeg-static`). D�
 
 Menu **AI Dancing** chạy trọn gói cho 1 video gốc đã cắt: cắt khung hình 0.1s → sinh **bối cảnh mới** (ảnh) → **thay người + sản phẩm** cho từng đoạn → **thay bối cảnh** vào video đã tạo → **ghép** lại + chèn âm thanh gốc. Mỗi bước có prompt mẫu riêng, sửa được ngay trên trang (lưu trong Cài đặt), và được "đóng băng" vào từng lần chạy.
 
-- Lần chạy dừng khi có video lỗi: bấm **Thử lại** trên video đó rồi bấm **Tiếp tục** trên lần chạy. Server khởi động lại cũng tiếp tục được.
+- Lần chạy dừng khi có video lỗi: bấm **Tiếp tục** trên lần chạy để tạo lại các video lỗi và chạy tiếp (muốn sửa prompt trước thì dùng **Sửa prompt** trên video đó). Server khởi động lại cũng tiếp tục được.
 - Mỗi lần chạy hiện tiến trình từng bước, khung hình gốc, bối cảnh mới, video hoàn chỉnh và nút **Đăng video**.
 - Mục **Từng đoạn** trong lần chạy: mỗi đoạn có thẻ video motion và thẻ video đã thay nền — xem video, **Thử lại** / **Sửa prompt**, chọn lần tạo tốt nhất, xoá lần tạo. Đổi kết quả ở cột motion → web tự thay nền lại cho đoạn đó và ghép lại; đổi ở cột thay nền → chỉ ghép lại.
 - Cùng mục đó có nút **📥 Thay bằng video từ máy**: nhập video từ máy để thay video motion của đoạn đó (chọn nhiều file thì các file sau thay các đoạn kế tiếp). Web tự thay bối cảnh lại cho đoạn đó và ghép lại.
@@ -53,17 +53,15 @@ Thử quy trình không tốn tiền: đặt `"engine": "mock"` trong `data/db.j
    - Video khác kích thước được đưa về cùng kích thước với video đầu tiên (thêm viền nếu khác tỉ lệ).
 5. **Đăng video** — chọn video ghép hoặc video lẻ, nền tảng, caption.
 
-App tự ghép prompt mẫu (tiếng Anh) với prompt của bạn, với ảnh được tham chiếu bằng `<IMAGE_REF_n>`. Bấm "Xem prompt" trên mỗi job để thấy prompt thực tế đã gửi; tick "Chỉ dùng prompt của tôi" để tự viết toàn bộ. Prompt mẫu nằm trong `server/gemini.js`.
+App tự ghép prompt mẫu (tiếng Anh) với prompt của bạn; ảnh tham chiếu được Flow hiểu theo thứ tự (ảnh model → ảnh sản phẩm / bối cảnh → video). Bấm "Xem prompt" trên mỗi job để thấy prompt thực tế đã gửi; tick "Chỉ dùng prompt của tôi" để tự viết toàn bộ. Prompt mẫu nằm trong `server/prompts.js`.
 
-## Gemini
+## Ảnh sản phẩm từ Shopee
 
-- API key: https://aistudio.google.com/apikey
-- Model mặc định `gemini-omni-1.1-flash`, gọi qua `POST /v1beta/interactions` (tài liệu: https://ai.google.dev/gemini-api/docs/omni).
-- Omni Flash không có chế độ "motion transfer" riêng; app dùng video gốc làm tham chiếu chuyển động + ảnh tham chiếu + prompt. Nếu kết quả chưa đúng ý, thử đổi **Task** trong Cài đặt sang `edit` hoặc `reference_to_video`.
+Ở ô **Ảnh sản phẩm** dán link Shopee (link rút gọn `s.shopee.vn/…` hoặc link sản phẩm) rồi bấm **🛒 Lấy ảnh**: web mở trang sản phẩm trong cửa sổ Chrome của Flow (Shopee chặn request không phải trình duyệt), lấy ảnh từng phân loại + ảnh bộ sưu tập, xếp theo lượt bán từng phân loại nếu Shopee trả về (thường không công khai → theo thứ tự Shopee ưu tiên), chọn sẵn 3 ảnh đầu. Chọn ảnh → **Thêm vào thư viện** → ảnh đầu tiên được gắn làm ảnh sản phẩm. Shopee đòi xác minh/đăng nhập thì làm trong tab Shopee của cửa sổ Chrome đó rồi bấm lại.
 
 ## Google Flow tự động (dùng credit Flow)
 
-Cài đặt → Cách tạo video → **Google Flow tự động**. Web dùng Playwright để điều khiển 1 cửa sổ Chrome riêng (hồ sơ trong `data/flow-chrome`):
+Đây là cách tạo video/ảnh duy nhất (không dùng Gemini API). Web dùng Playwright để điều khiển 1 cửa sổ Chrome riêng (hồ sơ trong `data/flow-chrome`), cấu hình ở **Cài đặt → Google Flow tự động**:
 
 1. Bấm **Mở Chrome & đăng nhập**, tự đăng nhập Google trong cửa sổ đó (chỉ cần 1 lần).
 2. Mỗi video: tải đoạn video + ảnh lên dự án Flow dùng chung → thêm vào prompt → chọn Video · Ingredients · Omni 1.1 Flash · x1 → gõ prompt → bấm tạo → chờ → tải video về.

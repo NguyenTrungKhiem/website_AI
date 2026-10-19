@@ -123,9 +123,139 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh }) {
         ))}
       </div>
       {error && <div className="err">{error}</div>}
+      {kind === 'product' && <ProductImport kind={kind} refresh={refresh} onImported={(added) => onChange(added[0].id)} />}
     </div>
   );
 }
+
+// Bóc tách dữ liệu & ảnh sản phẩm đa sàn (Shopee, Lazada, TikTok Shop) với AI làm sạch và Fallback tìm kiếm ảnh
+export function ProductImport({ kind, refresh, onImported }) {
+  const [url, setUrl] = useState('');
+  const [found, setFound] = useState(null);
+  const [picked, setPicked] = useState([]);
+  const [showRawTitle, setShowRawTitle] = useState(false);
+  const { busy, error, run } = useAction();
+
+  const fetchProductData = () =>
+    run(async () => {
+      const r = await api.fetchProduct(url);
+      setFound(r);
+      setPicked(r.images.filter((im) => im.suggested).map((im) => im.id));
+    });
+
+  const toggle = (id) => setPicked((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  const importPicked = () =>
+    run(async () => {
+      const images = found.images
+        .filter((im) => picked.includes(im.id))
+        .map((im) => ({ url: im.url, name: `${found.title} – ${im.name || 'ảnh'}` }));
+      const added = await api.importProduct(kind, images);
+      await refresh();
+      setFound(null);
+      setUrl('');
+      onImported(added);
+    });
+
+  return (
+    <div className="stack product-import">
+      <div className="row">
+        <input
+          placeholder="Dán link Shopee, Lazada hoặc TikTok Shop (kể cả link rút gọn) để lấy ảnh sản phẩm"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && url.trim() && fetchProductData()}
+        />
+        <button disabled={busy || !url.trim()} onClick={fetchProductData}>
+          {busy ? '… Đang xử lý' : '🛒 Bóc tách & Lấy ảnh'}
+        </button>
+      </div>
+
+      {found && (
+        <div className="card product-card stack">
+          <div className="product-header">
+            <div className="row wrap gap-sm">
+              <span className={`platform-pill platform-${found.platform}`}>
+                {found.platform === 'shopee' ? '🛒 Shopee' : found.platform === 'lazada' ? '🛍️ Lazada' : found.platform === 'tiktok' ? '🎵 TikTok Shop' : '📦 TMĐT'}
+              </span>
+              <span className="badge ai-pill" title={found.usedGemini ? 'Đã làm sạch bằng Gemini AI' : 'Đã làm sạch bằng Heuristic Regex'}>
+                {found.usedGemini ? '✨ Gemini AI' : '⚡ Heuristic'}
+              </span>
+              {found.usedFallbackImage && (
+                <span className="badge fallback-pill" title="Ảnh bổ sung từ DuckDuckGo do sàn chặn/thiếu ảnh">
+                  🔍 Tìm ảnh ngoài (DuckDuckGo)
+                </span>
+              )}
+              {found.priceFormatted && (
+                <span className="product-price">{found.priceFormatted}</span>
+              )}
+            </div>
+
+            <div className="product-title-block">
+              <div className="product-title">
+                <b>{found.title}</b>
+                {found.rawTitle && found.rawTitle !== found.title && (
+                  <button className="btn-link small" onClick={() => setShowRawTitle(!showRawTitle)}>
+                    {showRawTitle ? 'Ẩn tên gốc' : 'Xem tên gốc'}
+                  </button>
+                )}
+              </div>
+              {showRawTitle && found.rawTitle && (
+                <small className="muted raw-title">Tên gốc trên sàn: {found.rawTitle}</small>
+              )}
+            </div>
+
+            {found.features && found.features.length > 0 && (
+              <div className="product-features">
+                <small className="muted"><b>Đặc điểm nổi bật (kịch bản video):</b></small>
+                <div className="row wrap gap-xs">
+                  {found.features.map((f, idx) => (
+                    <span key={idx} className="feature-chip">✓ {f}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="thumbs-info">
+            <small className="muted">
+              Tìm thấy {found.images.length} ảnh. {found.images.length ? 'Bấm ảnh để chọn / bỏ chọn (3 ảnh đầu chọn sẵn):' : 'Không tìm thấy ảnh.'}
+            </small>
+          </div>
+
+          <div className="thumbs">
+            {found.images.map((im) => (
+              <div
+                key={im.id}
+                className={'thumb' + (picked.includes(im.id) ? ' selected' : '')}
+                onClick={() => toggle(im.id)}
+                title={im.name || ''}
+              >
+                <img src={im.url} alt="" loading="lazy" />
+                {im.isFallback ? (
+                  <span className="cap">🔍 Tìm kiếm ngoài</span>
+                ) : im.name ? (
+                  <span className="cap">{im.name}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="row">
+            <button className="primary" disabled={busy || !picked.length} onClick={importPicked}>
+              Thêm {picked.length} ảnh vào thư viện
+            </button>
+            <button onClick={() => setFound(null)}>Đóng</button>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="err">{error}</div>}
+    </div>
+  );
+}
+
+export const ShopeeImport = ProductImport;
 
 // Thẻ 1 job: xem trước/sau, lịch sử các lần tạo, nút Thử lại (có thể sửa prompt).
 // compact = chỉ video kết quả + các lần tạo + nút (dùng trong bảng từng đoạn của quy trình)

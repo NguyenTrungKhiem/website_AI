@@ -36,8 +36,8 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       <h1>{wf.icon} {wf.name}</h1>
       <p className="muted">{wf.description}</p>
       <p className="small muted">
-        Đang tạo bằng: <b>{engine === 'flow' ? 'Google Flow tự động' : engine === 'mock' ? 'engine giả (thử nghiệm)' : 'Gemini API'}</b>
-        {' · '}<a onClick={() => go('settings')}>đổi</a>
+        Đang tạo bằng: <b>{engine === 'mock' ? 'engine giả (thử nghiệm)' : 'Google Flow tự động'}</b>
+        {' · '}<a onClick={() => go('settings')}>cài đặt</a>
       </p>
 
       <div className="card stack">
@@ -224,6 +224,7 @@ function RunCard({ run: r, state, refresh, go }) {
   const source = state.sources.find((s) => s.id === r.sourceId);
   const jobs = state.jobs.filter((j) => j.runId === r.id);
   const [label, color] = RUN_STATUS[r.status] || [r.status, 'gray'];
+  const bgJob = r.background && jobs.find((j) => j.id === r.background.id);
   const act = (fn) => run(async () => { await fn(); await refresh(); });
 
   return (
@@ -248,10 +249,17 @@ function RunCard({ run: r, state, refresh, go }) {
         ))}
       </div>
 
-      {(r.frameUrl || r.backgroundUrl) && (
+      {(r.frameUrl || bgJob || r.backgroundUrl) && (
         <div className="row">
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
-          {r.backgroundUrl && <figure className="mini"><img src={r.backgroundUrl} alt="" /><figcaption>Bối cảnh mới</figcaption></figure>}
+          {bgJob ? (
+            // Thẻ job ảnh bối cảnh: Thử lại / Sửa prompt / chọn lần tạo. Đổi bối cảnh → web tự thay nền lại cho mọi đoạn.
+            <div className="stack bg-job">
+              <small className="muted">Bối cảnh mới</small>
+              <JobCard compact job={bgJob} refresh={refresh} />
+              <small className="muted">Thử lại hoặc chọn lần tạo khác → mọi đoạn phải thay bối cảnh lại (≈20 credit/đoạn) và ghép lại.</small>
+            </div>
+          ) : r.backgroundUrl && <figure className="mini"><img src={r.backgroundUrl} alt="" /><figcaption>Bối cảnh mới</figcaption></figure>}
           {r.merge?.url && (
             <figure className="mini">
               <video src={r.merge.url} controls preload="metadata" poster={r.merge.thumbUrl} />

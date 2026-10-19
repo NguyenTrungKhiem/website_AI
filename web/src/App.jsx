@@ -91,11 +91,6 @@ export default function App() {
           <p className="muted">Đang tải…</p>
         ) : (
           <>
-            {state.settings.engine === 'api' && !state.settings.geminiApiKey && tab !== 'settings' && (
-              <div className="alert warn">
-                Chưa có Gemini API key. <a onClick={() => setTab('settings')}>Vào Cài đặt</a> để nhập, hoặc chuyển sang Google Flow.
-              </div>
-            )}
             {tab === 'cut' && <CutPage {...props} />}
             {wfTab && <WorkflowPage key={wfTab.id} {...props} wf={wfTab.wf} />}
             {tab === 'merge' && <MergePage {...props} />}

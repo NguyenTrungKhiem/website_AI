@@ -45,7 +45,8 @@ figure.mini img, figure.mini video { width: 100%; aspect-ratio: 9/16; object-fit
 .small-btn { font-size: 12px; padding: 4px 8px; }
 .job.compact { padding: 8px; gap: 6px; max-width: 260px; }
 .job.compact .job-media { grid-template-columns: 1fr; }
-.job.compact .job-media video, .job.compact .placeholder { max-height: 300px; }
+.job.compact .job-media video, .job.compact .job-media img, .job.compact .placeholder { max-height: 300px; }
+.bg-job { max-width: 260px; gap: 4px; }
 .job.compact .row button { padding: 4px 8px; font-size: 12px; }
 .inline-select { margin-left: 8px; padding: 2px 6px; font-size: 12px; }
 .thumb.wide.add { display: grid; place-items: center; text-align: center; padding: 6px; }
@@ -114,6 +115,9 @@ button.link { background: none; border: 0; color: var(--accent); padding: 0; }
 .thumb .x.armed { display: block; background: var(--red); color: #fff; font-weight: 600; }
 button.armed { border-color: var(--red); color: #fff; background: #5a1f1f; }
 a.armed { color: var(--red); font-weight: 600; }
+.shopee { margin-top: 6px; }
+.shopee input { flex: 1; min-width: 220px; }
+.shopee .thumb { width: 96px; height: 128px; }
 .thumb .cap { position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; background: #000b; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .jobs { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
@@ -208,3 +212,24 @@ button.big { padding: 10px 18px; font-size: 15px; }
   .main { padding: 16px; }
   .jobs { grid-template-columns: 1fr; }
 }
+
+/* Product Import & Scraper */
+.product-import { margin-top: 8px; }
+.product-card { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; gap: 10px; }
+.product-header { display: flex; flex-direction: column; gap: 8px; }
+.gap-xs { gap: 6px; }
+.gap-sm { gap: 8px; }
+.platform-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.platform-shopee { background: #ee4d2d22; color: #ff5722; border: 1px solid #ee4d2d66; }
+.platform-lazada { background: #0f146d22; color: #3f6df6; border: 1px solid #3f6df666; }
+.platform-tiktok { background: #fe2c5522; color: #ff004f; border: 1px solid #fe2c5566; }
+.ai-pill { background: #8a3ffc22; color: #bb86fc; border: 1px solid #8a3ffc66; font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.fallback-pill { background: #ff980022; color: #ffb74d; border: 1px solid #ff980066; font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.product-price { font-weight: 700; font-size: 14px; color: #4caf50; margin-left: auto; }
+.product-title-block { display: flex; flex-direction: column; gap: 4px; }
+.product-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.btn-link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 11px; text-decoration: underline; }
+.raw-title { font-size: 11px; color: var(--muted); }
+.product-features { display: flex; flex-direction: column; gap: 4px; }
+.feature-chip { font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; color: var(--text); }
+.thumbs-info { margin-top: 4px; }
