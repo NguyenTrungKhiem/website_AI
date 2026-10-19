@@ -82,10 +82,13 @@ export function FileDrop({ accept, multiple, onFiles, children }) {
   );
 }
 
-// Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới
-export function AssetPicker({ kind, label, assets, value, onChange, refresh }) {
+// Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới.
+// state (tuỳ chọn) = state toàn app, để popup xem ảnh to biết job/cài đặt/prompt mặc định.
+export function AssetPicker({ kind, label, assets, value, onChange, refresh, state }) {
   const list = assets.filter((a) => a.kind === kind);
   const { busy, error, run } = useAction();
+  const [viewing, setViewing] = useState(null); // id ảnh đang mở to
+  const viewingAsset = list.find((a) => a.id === viewing);
   const upload = (files) =>
     run(async () => {
       let last;
@@ -111,6 +114,8 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh }) {
             title={a.name}
           >
             <img src={a.url} alt={a.name} />
+            {a.fromJobId && <span className="flow-mark" title="Ảnh do Flow tạo lại">✨</span>}
+            <button className="zoom-btn" title="Xem ảnh to" onClick={(e) => { e.stopPropagation(); setViewing(a.id); }}>🔍</button>
             <ConfirmButton
               className="x"
               armedText="Xoá?"
@@ -123,7 +128,270 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh }) {
         ))}
       </div>
       {error && <div className="err">{error}</div>}
+      {viewingAsset && (
+        <Lightbox
+          asset={viewingAsset}
+          assets={assets}
+          state={state}
+          selected={value === viewingAsset.id}
+          onSelect={(id) => onChange(id)}
+          onClose={() => setViewing(null)}
+          refresh={refresh}
+        />
+      )}
       {kind === 'product' && <ProductImport kind={kind} refresh={refresh} onImported={(added) => onChange(added[0].id)} />}
+    </div>
+  );
+}
+
+// Cửa sổ so sánh: video gốc (trái) và video kết quả (phải) phát đồng bộ; đổi giữa các lần tạo,
+// chọn bản dùng, thử lại — để quyết định lấy hay làm lại.
+export function CompareModal({ job, refresh, onClose }) {
+  const attempts = job.attempts.filter((a) => a.outputUrl);
+  const current = attempts.find((a) => a.outputUrl === job.outputUrl) || attempts.at(-1);
+  const [n, setN] = useState(current?.n);
+  const [playing, setPlaying] = useState(false);
+  const [t, setT] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [loop, setLoop] = useState(true);
+  const [sound, setSound] = useState(false);
+  const [rate, setRate] = useState(1);
+  const [editing, setEditing] = useState(false);
+  const [prompt, setPrompt] = useState(job.prompt);
+  const left = useRef();
+  const right = useRef();
+  const { busy, error, run } = useAction();
+  const att = attempts.find((a) => a.n === n) || current;
+  const isActive = att && att.outputUrl === job.outputUrl;
+  const vids = () => [left.current, right.current].filter(Boolean);
+
+  // Đồng bộ: video phải làm chủ, video trái bám theo
+  useEffect(() => {
+    const r = right.current;
+    const l = left.current;
+    if (!r) return;
+    const onTime = () => {
+      setT(r.currentTime);
+      if (l && Math.abs(l.currentTime - r.currentTime) > 0.12) l.currentTime = r.currentTime;
+    };
+    const onMeta = () => setDur(Math.max(r.duration || 0, l?.duration || 0));
+    const onEnd = () => { if (loop) { for (const v of vids()) { v.currentTime = 0; v.play().catch(() => {}); } } else setPlaying(false); };
+    r.addEventListener('timeupdate', onTime);
+    r.addEventListener('loadedmetadata', onMeta);
+    r.addEventListener('ended', onEnd);
+    return () => { r.removeEventListener('timeupdate', onTime); r.removeEventListener('loadedmetadata', onMeta); r.removeEventListener('ended', onEnd); };
+  }, [att?.outputUrl, loop]);
+
+  useEffect(() => { for (const v of vids()) v.playbackRate = rate; }, [rate, att?.outputUrl]);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+      if (e.key === 'Escape') onClose();
+      if (e.key === ' ') { e.preventDefault(); toggle(); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1 / 30); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); step(1 / 30); }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  });
+
+  const toggle = () => {
+    const r = right.current;
+    if (!r) return;
+    if (r.paused) { for (const v of vids()) { v.currentTime = r.currentTime; v.play().catch(() => {}); } setPlaying(true); }
+    else { for (const v of vids()) v.pause(); setPlaying(false); }
+  };
+  const seek = (sec) => { for (const v of vids()) v.currentTime = Math.max(0, Math.min(dur || 1e9, sec)); setT(sec); };
+  const step = (d) => { for (const v of vids()) v.pause(); setPlaying(false); seek((right.current?.currentTime || 0) + d); };
+  const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}.${String(Math.floor((s % 1) * 100)).padStart(2, '0')}`;
+
+  const use = () => run(async () => { await api.selectAttempt(job.id, att.n); await refresh(); });
+  const retry = () => run(async () => { await api.retry(job.id, prompt); setEditing(false); await refresh(); onClose(); });
+
+  return (
+    <div className="lightbox" onClick={onClose}>
+      <div className="compare" onClick={(e) => e.stopPropagation()}>
+        <div className="row between compare-head">
+          <b>⇄ So sánh — {job.videoLabel}</b>
+          <button className="lightbox-close static" onClick={onClose} title="Đóng (Esc)">×</button>
+        </div>
+        <div className="compare-videos">
+          <figure>
+            <video ref={left} src={job.videoUrl} muted playsInline preload="auto" onClick={toggle} />
+            <figcaption>Video gốc (đầu vào)</figcaption>
+          </figure>
+          <figure>
+            {att ? (
+              <video key={att.outputUrl} ref={right} src={att.outputUrl} muted={!sound} playsInline preload="auto" onClick={toggle} />
+            ) : (
+              <div className="placeholder">Chưa có kết quả</div>
+            )}
+            <figcaption>
+              Kết quả — lần {att?.n} {isActive ? '(đang dùng)' : ''}
+            </figcaption>
+          </figure>
+        </div>
+
+        <div className="compare-controls">
+          <button onClick={() => step(-1 / 30)} title="Lùi 1 khung (←)">◀︎|</button>
+          <button className="play" onClick={toggle} title="Phát / dừng (Space)">{playing ? '❚❚' : '▶'}</button>
+          <button onClick={() => step(1 / 30)} title="Tới 1 khung (→)">|▶︎</button>
+          <input type="range" min={0} max={dur || 0} step={0.01} value={Math.min(t, dur || 0)} onChange={(e) => seek(Number(e.target.value))} className="grow" />
+          <span className="tc small">{fmtT(t)} / {fmtT(dur)}</span>
+          <select value={rate} onChange={(e) => setRate(Number(e.target.value))} title="Tốc độ">
+            {[0.25, 0.5, 1].map((r) => <option key={r} value={r}>{r}×</option>)}
+          </select>
+          <label className="check small"><input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Lặp</label>
+          <label className="check small"><input type="checkbox" checked={sound} onChange={(e) => setSound(e.target.checked)} /> Tiếng kết quả</label>
+        </div>
+
+        {attempts.length > 1 && (
+          <div className="row attempts">
+            Lần tạo:
+            {attempts.map((a) => (
+              <button key={a.n} className={'chip' + (a.n === att?.n ? ' on' : '')} onClick={() => setN(a.n)} title={a.prompt}>
+                {a.outputUrl === job.outputUrl ? '★ ' : ''}{a.n}
+              </button>
+            ))}
+            <small className="muted">★ = bản đang dùng</small>
+          </div>
+        )}
+
+        {editing ? (
+          <div className="stack">
+            <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+            <div className="row">
+              <button className="primary" disabled={busy} onClick={retry}>Tạo lại với prompt này</button>
+              <button onClick={() => setEditing(false)}>Huỷ</button>
+            </div>
+          </div>
+        ) : (
+          <div className="row">
+            <button className="primary" disabled={busy || !att || isActive} onClick={use}>
+              {isActive ? '✓ Đang dùng bản này' : `✓ Dùng lần ${att?.n}`}
+            </button>
+            <button disabled={busy || job.status === 'running' || job.status === 'queued'} onClick={() => { setPrompt(job.prompt); retry(); }}>🔄 Thử lại</button>
+            <button disabled={job.status === 'running' || job.status === 'queued'} onClick={() => { setPrompt(job.prompt); setEditing(true); }}>✏️ Sửa prompt rồi thử lại</button>
+            {att && attempts.length > 1 && (
+              <ConfirmButton
+                link
+                className=""
+                armedText={`Xoá lần ${att.n}?`}
+                onConfirm={() => run(async () => { await api.deleteAttempt(job.id, att.n); setN(null); await refresh(); })}
+              >
+                Xoá lần {att.n}
+              </ConfirmButton>
+            )}
+            <span className="grow" />
+            <small className="muted">Space: phát/dừng · ←/→: từng khung · bấm vào video để phát</small>
+          </div>
+        )}
+        {error && <div className="err">{error}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Popup xem ảnh to. Có ô prompt (tiếng Anh) + nút tạo lại ảnh sạch bằng Flow (Nano Banana, 0 credit);
+// ảnh tạo xong được lưu thành ảnh mới cùng loại và tự chọn làm ảnh dùng cho video.
+function Lightbox({ asset, assets, state, selected, onSelect, onClose, refresh }) {
+  const defaults = state?.defaults || {};
+  const settings = state?.settings || {};
+  const [prompt, setPrompt] = useState(settings.productCleanPrompt || defaults.productCleanPrompt || '');
+  const [savedOk, setSavedOk] = useState(false);
+  const { busy, error, run } = useAction();
+  const appliedRef = useRef(new Set());
+
+  // Job tạo ảnh sạch mới nhất của ảnh này + ảnh kết quả (nếu đã lưu)
+  const job = (state?.jobs || []).filter((j) => j.meta?.cleanOf === asset.id).sort((a, b) => b.createdAt - a.createdAt)[0];
+  const result = job?.meta?.assetId ? assets.find((a) => a.id === job.meta.assetId) : null;
+
+  // Ảnh sạch vừa xong -> tự chọn làm ảnh dùng cho video (1 lần cho mỗi kết quả)
+  useEffect(() => {
+    if (result && !appliedRef.current.has(result.id)) {
+      appliedRef.current.add(result.id);
+      onSelect(result.id);
+    }
+  }, [result?.id]);
+
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const generate = () =>
+    run(async () => {
+      await api.cleanAsset(asset.id, prompt);
+      await refresh();
+    });
+  const savePrompt = () =>
+    run(async () => {
+      await api.saveSettings({ productCleanPrompt: prompt });
+      await refresh();
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2000);
+    });
+
+  const progress = job?.status === 'running' ? job.attempts?.at(-1)?.progress : null;
+  const engine = settings.engine;
+
+  return (
+    <div className="lightbox" onClick={onClose}>
+      <div className="lightbox-body" onClick={(e) => e.stopPropagation()}>
+        <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
+        <div className="lightbox-img">
+          <img src={asset.url} alt={asset.name} />
+        </div>
+        <div className="lightbox-side stack">
+          <div>
+            <b>{asset.name}</b>
+            <div className="small muted">
+              {asset.kind === 'model' ? 'Ảnh model' : asset.kind === 'product' ? 'Ảnh sản phẩm' : 'Ảnh bối cảnh'}
+              {asset.fromJobId && ' · ✨ do Flow tạo lại'}
+            </div>
+          </div>
+          <div className="row">
+            {selected ? <span className="ok">✓ Đang dùng cho video</span> : <button onClick={() => onSelect(asset.id)}>Dùng ảnh này</button>}
+            <a href={asset.url} target="_blank" rel="noreferrer">Mở ảnh gốc</a>
+          </div>
+
+          <label>
+            <span>Prompt tạo lại ảnh sạch (tiếng Anh)</span>
+            <textarea rows={7} className="mono" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          </label>
+          <div className="row">
+            <button className="primary" disabled={busy || job?.status === 'running' || job?.status === 'queued' || !prompt.trim()} onClick={generate}>
+              ✨ {result ? 'Tạo lại' : 'Tạo ảnh sạch'} bằng {engine === 'mock' ? 'engine giả' : 'Flow (0 credit)'}
+            </button>
+            <button className="link" disabled={busy} onClick={savePrompt}>Lưu prompt làm mặc định</button>
+            {savedOk && <span className="ok">Đã lưu</span>}
+          </div>
+          <small className="muted">Ảnh tạo xong được lưu vào thư viện cùng loại và tự chọn làm ảnh dùng cho video. Ảnh gốc vẫn giữ.</small>
+
+          {job && (
+            <div className={'card stack clean-result' + (job.status === 'failed' ? ' failed' : '')}>
+              <div className="row">
+                <Badge status={job.status} />
+                {progress && <small className="muted">{progress}</small>}
+                {job.status === 'failed' && <small className="err">{job.error}</small>}
+              </div>
+              {result && (
+                <div className="row">
+                  <img className="clean-thumb" src={result.url} alt="" />
+                  <div className="stack">
+                    <small>{result.name}</small>
+                    {assets.find((a) => a.id === result.id) && (
+                      <button onClick={() => onSelect(result.id)}>Dùng ảnh này</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {error && <div className="err">{error}</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -181,9 +449,14 @@ export function ProductImport({ kind, refresh, onImported }) {
               <span className="badge ai-pill" title={found.usedGemini ? 'Đã làm sạch bằng Gemini AI' : 'Đã làm sạch bằng Heuristic Regex'}>
                 {found.usedGemini ? '✨ Gemini AI' : '⚡ Heuristic'}
               </span>
+              {found.usedBrowser && (
+                <span className="badge ai-pill" title={found.imageSource === 'api' ? 'Đọc trực tiếp dữ liệu sản phẩm của sàn qua Chrome (đủ bộ ảnh gốc + giá)' : 'Lấy ảnh từ trang sản phẩm mở trong Chrome'}>
+                  🌐 {found.imageSource === 'api' ? 'Dữ liệu sàn (Chrome)' : 'Ảnh từ trang (Chrome)'}
+                </span>
+              )}
               {found.usedFallbackImage && (
-                <span className="badge fallback-pill" title="Ảnh bổ sung từ DuckDuckGo do sàn chặn/thiếu ảnh">
-                  🔍 Tìm ảnh ngoài (DuckDuckGo)
+                <span className="badge fallback-pill" title="Ảnh bổ sung từ DuckDuckGo do sàn chặn/thiếu ảnh — có thể KHÔNG đúng sản phẩm">
+                  🔍 Tìm ảnh ngoài (có thể sai sản phẩm)
                 </span>
               )}
               {found.priceFormatted && (
@@ -221,6 +494,7 @@ export function ProductImport({ kind, refresh, onImported }) {
             <small className="muted">
               Tìm thấy {found.images.length} ảnh. {found.images.length ? 'Bấm ảnh để chọn / bỏ chọn (3 ảnh đầu chọn sẵn):' : 'Không tìm thấy ảnh.'}
             </small>
+            {found.note && <div className={found.images.length ? 'muted small' : 'err small'}>{found.note}</div>}
           </div>
 
           <div className="thumbs">
@@ -263,6 +537,7 @@ export function JobCard({ job, refresh, selectable, selected, onToggle, compact 
   const [editing, setEditing] = useState(false);
   const [prompt, setPrompt] = useState(job.prompt);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [compare, setCompare] = useState(false);
   const { busy, error, run } = useAction();
   const active = job.attempts.find((a) => a.outputPath === job.outputPath);
 
@@ -365,6 +640,11 @@ export function JobCard({ job, refresh, selectable, selected, onToggle, compact 
           >
             ✏️ Sửa prompt
           </button>
+          {job.videoUrl && job.outputUrl && job.type !== 'image' && (
+            <button className="primary-outline" onClick={() => setCompare(true)} title="Xem video gốc và kết quả cạnh nhau, phát đồng bộ">
+              ⇄ So sánh
+            </button>
+          )}
           <button className="link" onClick={() => setShowPrompt(!showPrompt)}>
             {showPrompt ? 'Ẩn prompt' : 'Xem prompt'}
           </button>
@@ -382,6 +662,7 @@ export function JobCard({ job, refresh, selectable, selected, onToggle, compact 
         </div>
       )}
       {showPrompt && <pre className="prompt">{job.attempts.at(-1)?.finalPrompt || job.prompt}</pre>}
+      {compare && <CompareModal job={job} refresh={refresh} onClose={() => setCompare(false)} />}
       {error && <div className="err">{error}</div>}
     </div>
   );

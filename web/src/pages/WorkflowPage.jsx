@@ -79,6 +79,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
               value={inputs[inp.key] || null}
               onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: v }))}
               refresh={refresh}
+              state={state}
             />
           ))}
         </div>

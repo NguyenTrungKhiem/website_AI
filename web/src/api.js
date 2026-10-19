@@ -28,6 +28,7 @@ export const api = {
     return req('POST', '/api/assets', f);
   },
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`),
+  cleanAsset: (id, prompt) => req('POST', `/api/assets/${id}/clean`, { prompt }),
   fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
   importProduct: (kind, images) => req('POST', '/api/product/import', { kind, images }),
   shopeeProduct: (url) => req('POST', '/api/product/fetch', { url }),

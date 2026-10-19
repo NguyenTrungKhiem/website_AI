@@ -24,7 +24,8 @@ const DEFAULT_SETTINGS = {
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
   aspectRatio: '9:16',
   geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
-  geminiModel: 'gemini-1.5-flash',
+  geminiModel: 'gemini-2.5-flash',
+  productCleanPrompt: '', // prompt tạo lại ảnh sản phẩm sạch; trống = mặc định (server/prompts.js)
   motionTemplate: '', // trống = dùng prompt mẫu mặc định (server/prompts.js)
   backgroundTemplate: '',
   workflows: {}, // prompt mẫu người dùng đã sửa cho từng quy trình: { dancing: { prompts: { background: '...' } } }

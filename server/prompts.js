@@ -19,6 +19,12 @@ export const DEFAULT_BACKGROUND_TEMPLATE = `Keep the person, their motion, the p
 Replace only the background and environment with the scene shown in the reference image, with matching lighting, shadows and perspective so it looks naturally filmed there.
 {prompt}`;
 
+// Tạo lại ảnh sản phẩm "sạch" từ ảnh gốc (vd. ảnh lấy từ Shopee có người mẫu / vật thể khác)
+export const DEFAULT_PRODUCT_CLEAN_PROMPT = `Recreate a sharp, high-resolution product photo that is faithful to the provided reference image.
+Keep the exact same product: same design, cut, color, pattern, fabric texture, print, logo and details. Do not redesign or alter it.
+If the reference contains a person, mannequin, hands, or any other objects, text or props, remove them and show only the main product (usually a clothing item) by itself.
+Present the product cleanly on a plain, neutral, evenly lit background, front view, fully visible, centered, with natural shadows and no cropping.`;
+
 export function fillTemplate(template, userPrompt) {
   const p = (userPrompt || '').trim();
   const out = template.includes('{prompt}') ? template.replace('{prompt}', p) : `${template}\n${p}`;

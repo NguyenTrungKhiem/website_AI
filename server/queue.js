@@ -15,7 +15,7 @@ const assetPath = (id) => (id ? db.assets.find((a) => a.id === id)?.path : null)
 
 export function createJob({
   type, batchId, videoPath, videoLabel, prompt = '', rawPrompt, assets = {}, parentJobId, sourceRange,
-  template, imagePaths, runId, stage,
+  template, imagePaths, runId, stage, meta,
 }) {
   const job = {
     id: newId(),
@@ -30,6 +30,7 @@ export function createJob({
     assets, // motion: { model, product } | background: { background }
     imagePaths: imagePaths || null, // image: các ảnh tham chiếu (đường dẫn file)
     template: template ?? null, // prompt mẫu riêng (quy trình); null = dùng prompt mẫu trong Cài đặt
+    meta: meta || null, // thông tin thêm, vd. { cleanOf: assetId, kind } cho job tạo ảnh sản phẩm sạch
     prompt,
     rawPrompt: !!rawPrompt,
     status: 'queued',

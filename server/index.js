@@ -4,12 +4,12 @@ import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
 import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip } from './ffmpeg.js';
-import { createJob, createImportJob, retryJob, recoverJobs, pump } from './queue.js';
+import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks } from './queue.js';
 import { publish } from './social.js';
 import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
-import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE } from './prompts.js';
+import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT } from './prompts.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob } from './workflows/runner.js';
@@ -49,7 +49,7 @@ const viewJob = (j) => ({
 app.get('/api/state', (req, res) => {
   res.json({
     settings: db.settings,
-    defaults: { motionTemplate: DEFAULT_MOTION_TEMPLATE, backgroundTemplate: DEFAULT_BACKGROUND_TEMPLATE },
+    defaults: { motionTemplate: DEFAULT_MOTION_TEMPLATE, backgroundTemplate: DEFAULT_BACKGROUND_TEMPLATE, productCleanPrompt: DEFAULT_PRODUCT_CLEAN_PROMPT },
     sources: db.sources.map((s) => ({
       ...s,
       url: mediaUrl(s.path),
@@ -215,6 +215,37 @@ app.post('/api/assets', upload.single('file'), wrap(async (req, res) => {
   save();
   res.json({ ...a, url: mediaUrl(dest) });
 }));
+
+// Tạo lại ảnh "sạch" từ 1 ảnh trong thư viện (bỏ người/vật thể, chỉ giữ sản phẩm) bằng job sinh ảnh trên Flow.
+// Khi job xong, ảnh kết quả được tự lưu thành ảnh mới cùng loại (xem hook bên dưới).
+app.post('/api/assets/:id/clean', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  const prompt = (req.body?.prompt || '').trim() || db.settings.productCleanPrompt || DEFAULT_PRODUCT_CLEAN_PROMPT;
+  const job = createJob({
+    type: 'image',
+    imagePaths: [a.path],
+    template: prompt,
+    videoLabel: `Ảnh sạch – ${a.name}`,
+    meta: { cleanOf: a.id, kind: a.kind },
+  });
+  res.json(viewJob(job));
+}));
+
+settledHooks.push((job) => {
+  if (job.type !== 'image' || job.status !== 'done' || !job.meta?.cleanOf || !job.outputPath) return;
+  if (job.meta.assetFrom === job.outputPath) return; // đã lưu rồi
+  const src = db.assets.find((x) => x.id === job.meta.cleanOf);
+  const id = newId();
+  const dest = path.join(DIRS.assets, id + path.extname(job.outputPath));
+  fs.copyFileSync(job.outputPath, dest);
+  const base = (src?.name || 'ảnh').replace(/ \(Flow\)( #\d+)?$/, '');
+  const n = db.assets.filter((x) => x.fromAssetId === job.meta.cleanOf).length + 1;
+  db.assets.unshift({ id, kind: job.meta.kind, name: `${base} (Flow)${n > 1 ? ` #${n}` : ''}`, path: dest, createdAt: Date.now(), fromJobId: job.id, fromAssetId: job.meta.cleanOf });
+  job.meta.assetId = id;
+  job.meta.assetFrom = job.outputPath;
+  save();
+});
 
 app.delete('/api/assets/:id', (req, res) => {
   const a = db.assets.find((x) => x.id === req.params.id);
