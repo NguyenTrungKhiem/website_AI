@@ -26,6 +26,13 @@ const DEFAULT_SETTINGS = {
   geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
   geminiModel: 'gemini-2.5-flash',
   productCleanPrompt: '', // prompt tạo lại ảnh sản phẩm sạch; trống = mặc định (server/prompts.js)
+  zernioApiKey: '', // API key từ Zernio để kết nối và lên lịch đăng đa nền tảng
+  removeWatermark: true, // Tự động xoá logo Gemini / Google Flow khi ghép video
+  watermarkMode: 'delogo', // 'delogo' (nội suy xoá) | 'brand' (đè logo riêng) | 'off'
+  watermarkType: 'text', // 'text' | 'image'
+  watermarkText: '', // ví dụ '@bubine1601' hoặc tên Shop
+  watermarkImageId: '', // ID của ảnh logo trong thư viện assets
+  watermarkFontSize: 20, // kích thước chữ mặc định
   motionTemplate: '', // trống = dùng prompt mẫu mặc định (server/prompts.js)
   backgroundTemplate: '',
   workflows: {}, // prompt mẫu người dùng đã sửa cho từng quy trình: { dancing: { prompts: { background: '...' } } }

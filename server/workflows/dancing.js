@@ -38,6 +38,8 @@ export default {
   options: [
     { key: 'replaceBackground', label: 'Tạo bối cảnh mới và thay vào video', default: true },
     { key: 'merge', label: 'Ghép các đoạn lại + chèn âm thanh gốc', default: true },
+    { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
+    { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },
   ],
 
   // Mỗi bước được gọi lặp lại cho tới khi trả về 'done'; phải an toàn khi gọi nhiều lần.
@@ -111,12 +113,17 @@ export default {
     },
     {
       id: 'merge',
-      label: 'Ghép video + âm thanh gốc',
+      label: 'Ghép video & xoá logo',
       when: (run) => run.options.merge,
       async run(ctx) {
         const finalKey = ctx.run.options.replaceBackground ? 'replace' : 'motion';
         const jobIds = ctx.clips.map((clip) => ctx.job(`${finalKey}:${clip.id}`).id);
-        return ctx.ensureMerge({ jobIds, name: `${ctx.source.name.replace(/\.[^.]+$/, '')} – AI Dancing` });
+        return ctx.ensureMerge({
+          jobIds,
+          name: `${ctx.source.name.replace(/\.[^.]+$/, '')} – AI Dancing`,
+          removeWatermark: ctx.run.options.removeWatermark ?? true,
+          watermarkMode: 'delogo',
+        });
       },
     },
   ],

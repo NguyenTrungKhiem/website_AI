@@ -162,6 +162,10 @@ figcaption { font-size: 11px; color: var(--muted); text-align: center; }
 .badge.blue { background: #1f2d5c; color: #9db2ff; }
 .badge.green { background: #173826; color: var(--green); }
 .badge.red { background: #3d1c1c; color: var(--red); }
+.badge.purple { background: #351c4a; color: #cb92f9; border: 1px solid #5d3482; }
+.badge.amber { background: #3d311c; color: var(--amber); }
+
+.quick-time-btn { font-size: 11px; padding: 3px 8px; border-radius: 6px; }
 
 .pill { border: 1px solid var(--line); border-radius: 20px; padding: 6px 12px; }
 .pill.off { opacity: 0.55; }

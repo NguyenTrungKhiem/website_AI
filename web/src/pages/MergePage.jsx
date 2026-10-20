@@ -12,6 +12,9 @@ export default function MergePage({ state, refresh, go, handoff }) {
   const [offset, setOffset] = useState(0);
   const [name, setName] = useState('');
   const [selected, setSelected] = useState([]);
+  const [watermarkMode, setWatermarkMode] = useState(
+    state.settings.watermarkMode || (state.settings.removeWatermark === false ? 'off' : 'delogo')
+  );
   const { busy, error, run } = useAction();
 
   useEffect(() => setSeq(sortBySource(handoff.merge, byId)), [handoff.merge]);
@@ -43,7 +46,15 @@ export default function MergePage({ state, refresh, go, handoff }) {
 
   const submit = () =>
     run(async () => {
-      await api.merge({ jobIds: seq, audioId, audioMode: mode, offset, name });
+      await api.merge({
+        jobIds: seq,
+        audioId,
+        audioMode: mode,
+        offset,
+        name,
+        watermarkMode,
+        removeWatermark: watermarkMode !== 'off',
+      });
       await refresh();
     });
 
@@ -191,6 +202,65 @@ export default function MergePage({ state, refresh, go, handoff }) {
           Tên video
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Review son môi – bản full" />
         </label>
+
+        <div className="stack" style={{ background: 'var(--panel2)', padding: 12, borderRadius: 8, gap: 10 }}>
+          <b>Xử lý logo Gemini (ngôi sao ở góc dưới phải):</b>
+          <label className="check" style={{ alignItems: 'flex-start' }}>
+            <input
+              type="radio"
+              name="watermarkOption"
+              checked={watermarkMode === 'delogo'}
+              onChange={() => setWatermarkMode('delogo')}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <b>Nội suy delogo (Xoá mờ logo Gemini)</b>
+              <br />
+              <small className="muted">Thuật toán nội suy các pixel xung quanh để làm mờ xoá logo. Phù hợp khi góc dưới ít chuyển động.</small>
+            </span>
+          </label>
+
+          <label className="check" style={{ alignItems: 'flex-start' }}>
+            <input
+              type="radio"
+              name="watermarkOption"
+              checked={watermarkMode === 'brand'}
+              onChange={() => setWatermarkMode('brand')}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <span className="row" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <b>Đè Logo thương hiệu riêng</b>
+                <span className="badge blue" style={{ fontSize: 11 }}>Khuyên dùng cho video nhảy</span>
+                {state.settings.watermarkType === 'image' && state.settings.watermarkImageId ? (
+                  <span className="badge" style={{ fontSize: 11, background: '#222', color: '#fff' }}>[Ảnh logo]</span>
+                ) : (
+                  <span className="badge" style={{ fontSize: 11, background: 'rgba(0,0,0,0.6)', color: '#fff' }}>
+                    {state.settings.watermarkText?.trim() || '@kenh_cua_ban'}
+                  </span>
+                )}
+              </span>
+              <br />
+              <small className="muted">
+                Đè logo/handle riêng đã cấu hình trong Cài đặt lên góc phải, che kín logo Gemini mà không bao giờ bị nhoè hình khi nhảy hoặc cử động.
+              </small>
+            </span>
+          </label>
+
+          <label className="check" style={{ alignItems: 'flex-start' }}>
+            <input
+              type="radio"
+              name="watermarkOption"
+              checked={watermarkMode === 'off'}
+              onChange={() => setWatermarkMode('off')}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <b>Không xử lý</b> <small className="muted">— Giữ nguyên logo gốc của Flow/Gemini</small>
+            </span>
+          </label>
+        </div>
+
         <button className="primary" disabled={busy || !items.length} onClick={submit}>
           🎞️ Ghép {items.length} video{audio ? ' + âm thanh' : ''}
         </button>
@@ -217,6 +287,11 @@ export default function MergePage({ state, refresh, go, handoff }) {
               <div className="row">
                 {m.status === 'done' && <input type="checkbox" checked={selected.includes(m.id)} onChange={() => toggleSel(m.id)} />}
                 <small className="grow ellipsis" title={m.name}>{m.name}</small>
+                {m.watermarkMode === 'brand' ? (
+                  <span className="badge blue" title="Đã đè logo riêng che logo Gemini">✓ Logo riêng</span>
+                ) : m.watermarkRemoved !== false ? (
+                  <span className="badge green" title="Đã nội suy xoá logo Gemini góc dưới phải">✓ Xoá logo</span>
+                ) : null}
                 <Badge status={m.status} />
               </div>
               <small className="muted">
@@ -225,6 +300,7 @@ export default function MergePage({ state, refresh, go, handoff }) {
               {m.error && <div className="err small">{m.error}</div>}
               <div className="row">
                 {m.url && <a href={m.url} download={`${m.name}.mp4`}>Tải về</a>}
+                {m.status === 'done' && <button className="primary small-btn" onClick={() => go('publish', [m.id])}>🚀 Đăng video</button>}
                 <a onClick={() => { setSeq(m.jobIds); setAudioId(m.audioId); window.scrollTo(0, 0); }}>Ghép lại</a>
                 <span className="grow" />
                 <ConfirmButton link className="" armedText="Bấm lần nữa để xoá" onConfirm={() => run(async () => { await api.deleteMerge(m.id); setSelected((s) => s.filter((x) => x !== m.id)); await refresh(); })}>Xoá</ConfirmButton>

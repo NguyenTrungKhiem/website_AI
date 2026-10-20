@@ -1,4 +1,5 @@
 // Cắt video + tắt tiếng bằng ffmpeg (cài sẵn qua npm: ffmpeg-static, ffprobe-static).
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobe from 'ffprobe-static';
@@ -65,14 +66,63 @@ export function extractAudio(src, dest) {
 }
 
 /**
- * Nối nhiều video thành 1 và (tuỳ chọn) chèn âm thanh.
+ * Tính toạ độ logo Gemini/Flow (ngôi sao 4 cánh) ở góc dưới bên phải
+ * Mẫu gốc 720x1280: x=572, y=1132, w=56, h=56
+ */
+export function getWatermarkBox(width, height) {
+  const isPortrait = height >= width;
+  let scaleX, scaleY, boxW, boxH, marginR, marginB;
+
+  if (isPortrait) {
+    scaleX = width / 720;
+    scaleY = height / 1280;
+    boxW = Math.max(32, Math.round(56 * Math.min(scaleX, scaleY)));
+    boxH = Math.max(32, Math.round(56 * Math.min(scaleX, scaleY)));
+    marginR = Math.round(92 * scaleX);
+    marginB = Math.round(92 * scaleY);
+  } else {
+    scaleX = width / 1280;
+    scaleY = height / 720;
+    boxW = Math.max(32, Math.round(56 * Math.min(scaleX, scaleY)));
+    boxH = Math.max(32, Math.round(56 * Math.min(scaleX, scaleY)));
+    marginR = Math.round(64 * scaleX);
+    marginB = Math.round(64 * scaleY);
+  }
+
+  const x = Math.max(0, Math.min(width - boxW - 2, width - marginR - boxW));
+  const y = Math.max(0, Math.min(height - boxH - 2, height - marginB - boxH));
+  return { x, y, w: boxW, h: boxH };
+}
+
+/**
+ * Nối nhiều video thành 1 và (tuỳ chọn) chèn âm thanh, tự động xoá logo Gemini hoặc đè logo riêng.
  * segments: [{ file, duration? }] — có duration thì ép đoạn đó đúng độ dài (cắt bớt hoặc giữ khung cuối)
  * audio: null | { file, ranges: [[start, end], ...] } (ghép từng khúc âm thanh) | { file, offset } (phát liên tục)
  */
-export function mergeVideos({ segments, width, height, fps = 30, audio, dest }) {
+export function mergeVideos({
+  segments,
+  width,
+  height,
+  fps = 30,
+  audio,
+  dest,
+  removeWatermark = true,
+  watermarkMode = 'delogo',
+  watermarkText = '',
+  watermarkImagePath = null,
+  watermarkFontSize = 20,
+}) {
+  const mode = removeWatermark === false ? 'off' : (watermarkMode || 'delogo');
   const args = ['-y'];
   for (const s of segments) args.push('-i', s.file);
   if (audio) args.push('-i', audio.file);
+
+  const hasBrandImage = mode === 'brand' && watermarkImagePath && fs.existsSync(watermarkImagePath);
+  let brandImageInputIndex = -1;
+  if (hasBrandImage) {
+    brandImageInputIndex = segments.length + (audio ? 1 : 0);
+    args.push('-i', watermarkImagePath);
+  }
 
   const filters = [];
   segments.forEach((s, i) => {
@@ -81,7 +131,33 @@ export function mergeVideos({ segments, width, height, fps = 30, audio, dest }) 
     if (s.duration) f += `,tpad=stop_mode=clone:stop_duration=${s.duration},trim=duration=${s.duration}`;
     filters.push(`${f},setpts=PTS-STARTPTS[v${i}]`);
   });
-  filters.push(`${segments.map((_, i) => `[v${i}]`).join('')}concat=n=${segments.length}:v=1:a=0[v]`);
+
+  const needsFilter = mode !== 'off';
+  const concatTag = needsFilter ? 'vconcat' : 'v';
+  filters.push(`${segments.map((_, i) => `[v${i}]`).join('')}concat=n=${segments.length}:v=1:a=0[${concatTag}]`);
+
+  if (mode === 'brand') {
+    const box = getWatermarkBox(width, height);
+    const cx = box.x + Math.round(box.w / 2);
+    const cy = box.y + Math.round(box.h / 2);
+
+    if (hasBrandImage) {
+      const imgW = Math.max(48, Math.round(box.w * 1.3));
+      filters.push(`[${brandImageInputIndex}:v]scale=${imgW}:-1[brand_logo]`);
+      filters.push(`[${concatTag}][brand_logo]overlay=x=${cx}-(overlay_w/2):y=${cy}-(overlay_h/2)[v]`);
+    } else if (watermarkText?.trim()) {
+      const cleanText = watermarkText.trim().replace(/'/g, "\\'").replace(/:/g, "\\:");
+      const fsize = Number(watermarkFontSize) || 20;
+      filters.push(
+        `[${concatTag}]drawtext=text='${cleanText}':x=${cx}-(text_w/2):y=${cy}-(text_h/2):fontsize=${fsize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=8[v]`
+      );
+    } else {
+      filters.push(`[${concatTag}]delogo=x=${box.x}:y=${box.y}:w=${box.w}:h=${box.h}:show=0[v]`);
+    }
+  } else if (mode === 'delogo') {
+    const box = getWatermarkBox(width, height);
+    filters.push(`[${concatTag}]delogo=x=${box.x}:y=${box.y}:w=${box.w}:h=${box.h}:show=0[v]`);
+  }
 
   const maps = ['-map', '[v]'];
   if (audio) {
@@ -102,6 +178,43 @@ export function mergeVideos({ segments, width, height, fps = 30, audio, dest }) 
     '-movflags', '+faststart',
     dest,
   );
+  return run(ffmpegPath, args);
+}
+
+/**
+ * Xoá logo Gemini hoặc đè logo riêng cho 1 video đơn lẻ đã có sẵn
+ */
+export async function removeWatermarkVideo(src, dest, { width, height, watermarkMode = 'delogo', watermarkText = '', watermarkImagePath = null, watermarkFontSize = 20 } = {}) {
+  let w = width;
+  let h = height;
+  if (!w || !h) {
+    const meta = await probe(src);
+    w = meta.width;
+    h = meta.height;
+  }
+  const box = getWatermarkBox(w, h);
+  const cx = box.x + Math.round(box.w / 2);
+  const cy = box.y + Math.round(box.h / 2);
+
+  const args = ['-y', '-i', src];
+
+  if (watermarkMode === 'brand') {
+    if (watermarkImagePath && fs.existsSync(watermarkImagePath)) {
+      args.push('-i', watermarkImagePath);
+      const imgW = Math.max(48, Math.round(box.w * 1.3));
+      args.push('-filter_complex', `[1:v]scale=${imgW}:-1[brand_logo];[0:v][brand_logo]overlay=x=${cx}-(overlay_w/2):y=${cy}-(overlay_h/2)[v]`, '-map', '[v]', '-map', '0:a?');
+    } else if (watermarkText?.trim()) {
+      const cleanText = watermarkText.trim().replace(/'/g, "\\'").replace(/:/g, "\\:");
+      const fsize = Number(watermarkFontSize) || 20;
+      args.push('-vf', `drawtext=text='${cleanText}':x=${cx}-(text_w/2):y=${cy}-(text_h/2):fontsize=${fsize}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=8`, '-c:a', 'copy');
+    } else {
+      args.push('-vf', `delogo=x=${box.x}:y=${box.y}:w=${box.w}:h=${box.h}:show=0`, '-c:a', 'copy');
+    }
+  } else {
+    args.push('-vf', `delogo=x=${box.x}:y=${box.y}:w=${box.w}:h=${box.h}:show=0`, '-c:a', 'copy');
+  }
+
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', dest);
   return run(ffmpegPath, args);
 }
 

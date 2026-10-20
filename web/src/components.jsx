@@ -31,6 +31,7 @@ const STATUS = {
   running: ['Đang tạo…', 'blue'],
   done: ['Xong', 'green'],
   failed: ['Lỗi', 'red'],
+  scheduled: ['⏰ Đã lên lịch', 'purple'],
 };
 export function Badge({ status }) {
   const [label, color] = STATUS[status] || [status, 'gray'];

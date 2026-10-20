@@ -1,6 +1,6 @@
 // Trang chạy 1 quy trình tự động (AI Dancing…). Giao diện dựng từ mô tả quy trình do server gửi (wf),
 // nên thêm quy trình mới ở server/workflows là tự có trang riêng.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { AssetPicker, ConfirmButton, FileDrop, JobCard, JobList, fmt, useAction } from '../components.jsx';
 
@@ -21,6 +21,28 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
     if (!source && state.sources[0]) setSourceId(state.sources[0].id);
   }, [state.sources, source]);
   useEffect(() => setClipIds(clips.map((c) => c.id)), [sourceId, clips.length]);
+
+  const redirectedRef = useRef(new Set());
+
+  // Tự động chuyển sang trang Đăng video khi quy trình hoàn tất nếu bật tuỳ chọn autoPublish
+  useEffect(() => {
+    for (const r of runs) {
+      if (
+        r.status === 'done' &&
+        r.merge?.status === 'done' &&
+        r.options?.autoPublish &&
+        !redirectedRef.current.has(r.id)
+      ) {
+        // Chỉ tự chuyển nếu hoàn thành gần đây (trong vòng 60 giây)
+        const justFinished = r.finishedAt && (Date.now() - r.finishedAt < 60000);
+        if (justFinished) {
+          redirectedRef.current.add(r.id);
+          go('publish', [r.merge.id]);
+          break;
+        }
+      }
+    }
+  }, [runs, go]);
 
   const toggleClip = (id) => setClipIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const missing = wf.inputs.filter((i) => i.required && !inputs[i.key]).map((i) => i.label);
@@ -264,7 +286,10 @@ function RunCard({ run: r, state, refresh, go }) {
           {r.merge?.url && (
             <figure className="mini">
               <video src={r.merge.url} controls preload="metadata" poster={r.merge.thumbUrl} />
-              <figcaption>Video hoàn chỉnh</figcaption>
+              <figcaption>
+                Video hoàn chỉnh
+                {r.merge?.watermarkRemoved !== false && <span style={{ display: 'block', color: 'var(--green)', fontSize: 10 }}>✓ Đã xoá logo Gemini</span>}
+              </figcaption>
             </figure>
           )}
         </div>

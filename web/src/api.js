@@ -40,6 +40,8 @@ export const api = {
   deleteJob: (id) => req('DELETE', `/api/jobs/${id}`),
   deleteAttempt: (id, n) => req('DELETE', `/api/jobs/${id}/attempts/${n}`),
   post: (body) => req('POST', '/api/posts', body),
+  zernioAccounts: (apiKey) => req('GET', apiKey ? `/api/zernio/accounts?apiKey=${encodeURIComponent(apiKey)}` : '/api/zernio/accounts'),
+  syncZernioPosts: () => req('POST', '/api/posts/sync-zernio'),
   importVideos: (files, clipId) => {
     const f = new FormData();
     if (clipId) f.append('clipId', clipId);
@@ -68,4 +70,5 @@ export const api = {
   deleteAudio: (id) => req('DELETE', `/api/audios/${id}`),
   merge: (body) => req('POST', '/api/merges', body),
   deleteMerge: (id) => req('DELETE', `/api/merges/${id}`),
+  delogoMerge: (id) => req('POST', `/api/merges/${id}/delogo`),
 };

@@ -3,9 +3,10 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
-import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip } from './ffmpeg.js';
+import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo } from './ffmpeg.js';
 import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks } from './queue.js';
 import { publish } from './social.js';
+import * as zernio from './zernio.js';
 import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
@@ -206,7 +207,7 @@ app.delete('/api/clips/:id', (req, res) => {
 // ---------- Ảnh: model / sản phẩm / bối cảnh ----------
 app.post('/api/assets', upload.single('file'), wrap(async (req, res) => {
   const kind = req.body.kind;
-  if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
+  if (!['model', 'product', 'background', 'logo'].includes(kind)) throw new Error('kind không hợp lệ');
   const id = newId();
   const dest = path.join(DIRS.assets, id + path.extname(req.file.filename));
   fs.renameSync(req.file.path, dest);
@@ -393,8 +394,32 @@ app.delete('/api/jobs/:id', wrap(async (req, res) => {
 
 // ---------- Ghép video + chèn âm thanh (logic trong merge.js) ----------
 app.post('/api/merges', wrap(async (req, res) => {
-  const { jobIds = [], audioId = null, audioMode = 'match', offset = 0, name } = req.body;
-  res.json(createMerge({ jobIds, audioId, audioMode, offset, name }));
+  const { jobIds = [], audioId = null, audioMode = 'match', offset = 0, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId } = req.body;
+  res.json(createMerge({ jobIds, audioId, audioMode, offset, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId }));
+}));
+
+app.post('/api/merges/:id/delogo', wrap(async (req, res) => {
+  const m = db.merges.find((x) => x.id === req.params.id);
+  if (!m) throw new Error('Không tìm thấy video ghép');
+  if (m.status !== 'done' || !fs.existsSync(m.outputPath)) throw new Error('Video chưa ghép xong hoặc file không còn');
+
+  const tmpOut = m.outputPath.replace(/\.mp4$/, '-delogo.mp4');
+  let watermarkImagePath = null;
+  if (db.settings.watermarkImageId) {
+    const asset = db.assets.find((a) => a.id === db.settings.watermarkImageId);
+    if (asset?.path && fs.existsSync(asset.path)) watermarkImagePath = asset.path;
+  }
+  await removeWatermarkVideo(m.outputPath, tmpOut, {
+    watermarkMode: db.settings.watermarkMode || 'delogo',
+    watermarkText: db.settings.watermarkText || '',
+    watermarkImagePath,
+    watermarkFontSize: db.settings.watermarkFontSize || 20,
+  });
+  fs.renameSync(tmpOut, m.outputPath);
+  m.watermarkRemoved = true;
+  m.watermarkMode = db.settings.watermarkMode || 'delogo';
+  save();
+  res.json({ ok: true, merge: m });
 }));
 
 app.delete('/api/merges/:id', wrap(async (req, res) => {
@@ -430,10 +455,96 @@ app.delete('/api/runs/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ---------- Zernio API ----------
+app.get('/api/zernio/accounts', wrap(async (req, res) => {
+  const apiKey = req.query.apiKey || db.settings.zernioApiKey;
+  if (!apiKey?.trim()) throw new Error('Chưa cấu hình Zernio API Key');
+  const accounts = await zernio.getAccounts(apiKey);
+  res.json({ accounts });
+}));
+
+app.post('/api/posts/sync-zernio', wrap(async (req, res) => {
+  const apiKey = db.settings.zernioApiKey;
+  if (!apiKey?.trim()) throw new Error('Chưa cấu hình Zernio API Key');
+  const pendingPosts = db.posts.filter((p) => p.provider === 'zernio' && (p.status === 'scheduled' || p.status === 'queued') && p.zernioPostId);
+  const updated = [];
+  for (const p of pendingPosts) {
+    try {
+      const zPost = await zernio.getPost(apiKey, p.zernioPostId);
+      if (zPost) {
+        if (zPost.status === 'published') {
+          p.status = 'done';
+          p.finishedAt = Date.now();
+          const pubUrl = zPost.platforms?.find((pl) => pl.platformPostUrl)?.platformPostUrl;
+          if (pubUrl) p.result = { ...(p.result || {}), url: pubUrl };
+          updated.push(p);
+        } else if (zPost.status === 'failed') {
+          p.status = 'failed';
+          p.error = zPost.error || 'Đăng bài thất bại trên Zernio';
+          p.finishedAt = Date.now();
+          updated.push(p);
+        }
+      }
+    } catch (e) {
+      console.warn('Lỗi đồng bộ bài đăng Zernio:', p.zernioPostId, e.message);
+    }
+  }
+  if (updated.length) save();
+  res.json({ updatedCount: updated.length, posts: db.posts });
+}));
+
 // ---------- Đăng mạng xã hội ----------
 app.post('/api/posts', wrap(async (req, res) => {
-  const { jobIds = [], platforms = [], caption = '', title = '' } = req.body;
+  const {
+    jobIds = [],
+    platforms = [],
+    caption = '',
+    title = '',
+    useZernio = false,
+    zernioAccounts = [],
+    scheduledFor = null,
+    timezone = 'Asia/Ho_Chi_Minh',
+  } = req.body;
   const { mergeIds = [] } = req.body;
+
+  // Đăng hoặc lên lịch qua Zernio
+  if (useZernio || zernioAccounts.length > 0) {
+    if (!db.settings.zernioApiKey) throw new Error('Chưa nhập Zernio API Key trong Cài đặt');
+    if (!zernioAccounts.length) throw new Error('Chưa chọn tài khoản mạng xã hội Zernio');
+    const videos = [
+      ...jobIds.map((id) => db.jobs.find((j) => j.id === id)).map((j) => j && { label: j.videoLabel, file: j.outputPath, jobId: j.id }),
+      ...mergeIds.map((id) => db.merges.find((m) => m.id === id)).map((m) => m && m.status === 'done' && { label: m.name, file: m.outputPath, mergeId: m.id }),
+    ];
+    if (!videos.length) throw new Error('Chưa chọn video để đăng');
+    if (videos.some((v) => !v?.file)) throw new Error('Có video chưa xong hoặc đã bị xoá');
+
+    const created = [];
+    for (const v of videos) {
+      const post = {
+        id: newId(),
+        jobId: v.jobId || null,
+        mergeId: v.mergeId || null,
+        filePath: v.file,
+        videoLabel: v.label,
+        provider: 'zernio',
+        platform: zernioAccounts.map((a) => a.platform).join(', '),
+        zernioAccounts,
+        caption,
+        title,
+        scheduledFor: scheduledFor || null,
+        timezone: timezone || 'Asia/Ho_Chi_Minh',
+        status: 'queued',
+        createdAt: Date.now(),
+      };
+      db.posts.unshift(post);
+      created.push(post);
+    }
+    save();
+    runZernioPosts(created);
+    return res.json(created);
+  }
+
+  // Đăng trực tiếp qua developer token cá nhân (cũ)
   if (!(jobIds.length + mergeIds.length) || !platforms.length) throw new Error('Chọn video và nền tảng');
   const videos = [
     ...jobIds.map((id) => db.jobs.find((j) => j.id === id)).map((j) => j && { label: j.videoLabel, file: j.outputPath, jobId: j.id }),
@@ -455,6 +566,48 @@ app.post('/api/posts', wrap(async (req, res) => {
   runPosts(created);
   res.json(created);
 }));
+
+// Đăng hoặc lên lịch bài qua Zernio
+async function runZernioPosts(posts) {
+  for (const post of posts) {
+    post.status = 'running';
+    save();
+    try {
+      if (!fs.existsSync(post.filePath)) throw new Error('File video không còn tồn tại');
+      const apiKey = db.settings.zernioApiKey;
+      if (!apiKey) throw new Error('Chưa cấu hình Zernio API Key');
+
+      const zRes = await zernio.createOrSchedulePost(apiKey, {
+        content: post.caption,
+        title: post.title,
+        filePath: post.filePath,
+        platforms: post.zernioAccounts,
+        scheduledFor: post.scheduledFor,
+        timezone: post.timezone,
+        publishNow: !post.scheduledFor,
+      });
+
+      const zPost = zRes.post || zRes;
+      post.zernioPostId = zPost._id || zPost.id;
+      post.result = zRes;
+
+      if (post.scheduledFor) {
+        post.status = 'scheduled';
+      } else {
+        post.status = zPost.status === 'failed' ? 'failed' : 'done';
+        const pubUrl = zPost.platforms?.find((pl) => pl.platformPostUrl)?.platformPostUrl;
+        if (pubUrl) {
+          post.result.url = pubUrl;
+        }
+      }
+    } catch (e) {
+      post.status = 'failed';
+      post.error = e.message;
+    }
+    post.finishedAt = Date.now();
+    save();
+  }
+}
 
 // Đăng lần lượt để tránh bị nền tảng chặn vì spam
 async function runPosts(posts) {
@@ -485,7 +638,9 @@ recoverJobs();
 setTimeout(advanceAll, 1000);
 backfillSources().catch((e) => console.error(e));
 for (const p of [...db.posts, ...db.merges]) {
-  if (p.status === 'running' || p.status === 'queued') Object.assign(p, { status: 'failed', error: 'Server bị dừng giữa chừng' });
+  if ((p.status === 'running' || p.status === 'queued') && p.status !== 'scheduled') {
+    Object.assign(p, { status: 'failed', error: 'Server bị dừng giữa chừng' });
+  }
 }
 // Bài đăng cũ chưa lưu filePath
 for (const p of db.posts) if (!p.filePath && p.jobId) p.filePath = db.jobs.find((j) => j.id === p.jobId)?.outputPath;

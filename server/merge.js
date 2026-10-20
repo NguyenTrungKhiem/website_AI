@@ -44,14 +44,42 @@ export function planMerge({ jobIds, audioId, audioMode, offset }) {
   };
 }
 
-export function createMerge({ jobIds = [], audioId = null, audioMode = 'match', offset = 0, name, runId = null }) {
+export function createMerge({
+  jobIds = [],
+  audioId = null,
+  audioMode = 'match',
+  offset = 0,
+  name,
+  runId = null,
+  removeWatermark = true,
+  watermarkMode,
+  watermarkText,
+  watermarkImageId,
+}) {
   const plan = planMerge({ jobIds, audioId, audioMode, offset });
   const id = newId();
+  const effectiveMode = watermarkMode || (removeWatermark === false ? 'off' : (db.settings.watermarkMode || 'delogo'));
+  const effectiveText = watermarkText !== undefined ? watermarkText : (db.settings.watermarkText || '');
+  const effectiveImgId = watermarkImageId !== undefined ? watermarkImageId : (db.settings.watermarkImageId || '');
+
   const merge = {
-    id, name: name?.trim() || `Video ghép ${new Date().toLocaleString('vi-VN')}`,
-    jobIds, audioId, audioMode: audioId ? audioMode : null, offset, runId,
+    id,
+    name: name?.trim() || `Video ghép ${new Date().toLocaleString('vi-VN')}`,
+    jobIds,
+    audioId,
+    audioMode: audioId ? audioMode : null,
+    offset,
+    runId,
+    watermarkMode: effectiveMode,
+    watermarkText: effectiveText,
+    watermarkImageId: effectiveImgId,
+    watermarkRemoved: effectiveMode !== 'off',
     inputPaths: plan.segments.map((s) => s.file), // để biết video nguồn có đổi sau khi ghép không
-    status: 'running', error: null, outputPath: null, thumbPath: null, createdAt: Date.now(),
+    status: 'running',
+    error: null,
+    outputPath: null,
+    thumbPath: null,
+    createdAt: Date.now(),
   };
   db.merges.unshift(merge);
   save();
@@ -64,8 +92,26 @@ async function runMerge(merge, plan) {
     const first = await probe(plan.segments[0].file);
     const [w, h] = first.width && first.height ? [first.width, first.height] : db.settings.aspectRatio === '16:9' ? [1280, 720] : [720, 1280];
     const dest = path.join(DIRS.merged, `${merge.id}.mp4`);
+
+    let watermarkImagePath = null;
+    if (merge.watermarkMode === 'brand' && merge.watermarkImageId) {
+      const asset = db.assets.find((a) => a.id === merge.watermarkImageId);
+      if (asset?.path && fs.existsSync(asset.path)) {
+        watermarkImagePath = asset.path;
+      }
+    }
+
     // libx264 cần kích thước chẵn
-    await mergeVideos({ ...plan, width: w - (w % 2), height: h - (h % 2), dest });
+    await mergeVideos({
+      ...plan,
+      width: w - (w % 2),
+      height: h - (h % 2),
+      dest,
+      watermarkMode: merge.watermarkMode,
+      watermarkText: merge.watermarkText,
+      watermarkImagePath,
+      watermarkFontSize: db.settings.watermarkFontSize || 20,
+    });
     const thumbPath = path.join(DIRS.merged, `${merge.id}.jpg`);
     await thumbnail(dest, thumbPath).catch(() => {});
     const { duration } = await probe(dest);

@@ -277,13 +277,22 @@ function makeCtx(run, wf) {
       return a;
     },
 
-    // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) nếu có
-    ensureMerge({ jobIds, name }) {
+    // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) nếu có, tuỳ chọn xoá logo
+    ensureMerge({ jobIds, name, removeWatermark, watermarkMode }) {
       const st = this.state;
       let merge = st.mergeId && db.merges.find((m) => m.id === st.mergeId);
       if (!merge) {
         const audio = db.audios.find((a) => a.sourceId === source.id);
-        merge = createMerge({ jobIds, audioId: audio?.id || null, audioMode: audio ? 'match' : null, name, runId: run.id });
+        const shouldRemoveWatermark = removeWatermark ?? run.options.removeWatermark ?? db.settings.removeWatermark ?? true;
+        merge = createMerge({
+          jobIds,
+          audioId: audio?.id || null,
+          audioMode: audio ? 'match' : null,
+          name,
+          runId: run.id,
+          removeWatermark: shouldRemoveWatermark,
+          watermarkMode: watermarkMode || 'delogo',
+        });
         st.mergeId = merge.id;
         save();
       }
