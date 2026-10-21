@@ -86,9 +86,12 @@ export function FileDrop({ accept, multiple, onFiles, children }) {
 // Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới.
 // state (tuỳ chọn) = state toàn app, để popup xem ảnh to biết job/cài đặt/prompt mặc định.
 export function AssetPicker({ kind, label, assets, value, onChange, refresh, state }) {
-  const list = assets.filter((a) => a.kind === kind);
+  // Ảnh nháp (bóc tách / kết quả làm sạch chưa bấm Dùng) không hiện trong thư viện
+  const list = assets.filter((a) => a.kind === kind && !a.staging);
   const { busy, error, run } = useAction();
-  const [viewing, setViewing] = useState(null); // id ảnh đang mở to
+  const [viewing, setViewing] = useState(null); // id ảnh đang phóng to
+  const [found, setFound] = useState(null); // kết quả bóc tách gần nhất (giữ nguyên sau khi chọn ảnh)
+  const [slider, setSlider] = useState(null); // { images, startIdx } popup trượt + làm sạch
   const viewingAsset = list.find((a) => a.id === viewing);
   const upload = (files) =>
     run(async () => {
@@ -96,6 +99,22 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
       for (const f of files) last = await api.uploadAsset(kind, f);
       await refresh();
       if (last) onChange(last.id);
+    });
+  // Mở popup trượt: ưu tiên các ảnh vừa bóc tách; chưa bóc tách thì trượt qua ảnh sản phẩm trong thư viện
+  const openSlider = (startId) => {
+    const images = found?.images?.length ? found.images : list.map((a) => ({ id: a.id, url: a.url, name: a.name, assetId: a.id }));
+    const src = assets.find((a) => a.id === startId)?.source;
+    const i = images.findIndex((im) => im.id === startId || im.assetId === startId || (src && im.url === src));
+    setSlider({ images, startIdx: Math.max(0, i) });
+    setViewing(null);
+  };
+  // Dùng 1 ảnh (gốc hoặc kết quả làm sạch): đưa vào thư viện rồi chọn cho bước này; giao diện bóc tách giữ nguyên
+  const use = (id) =>
+    run(async () => {
+      await api.useAsset(id);
+      await refresh();
+      onChange(id);
+      setSlider(null);
     });
   return (
     <div className="picker">
@@ -132,15 +151,25 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
       {viewingAsset && (
         <Lightbox
           asset={viewingAsset}
-          assets={assets}
-          state={state}
           selected={value === viewingAsset.id}
           onSelect={(id) => onChange(id)}
           onClose={() => setViewing(null)}
-          refresh={refresh}
+          onTryOther={kind === 'product' ? () => openSlider(viewingAsset.id) : null}
         />
       )}
-      {kind === 'product' && <ProductImport kind={kind} refresh={refresh} onImported={(added) => onChange(added[0].id)} />}
+      {kind === 'product' && <ProductImport kind={kind} found={found} setFound={setFound} onOpen={(i) => setSlider({ images: found.images, startIdx: i })} />}
+      {slider && (
+        <ExtractPopup
+          images={slider.images}
+          startIdx={slider.startIdx}
+          kind={kind}
+          state={state}
+          refresh={refresh}
+          busyOuter={busy}
+          onUse={use}
+          onClose={() => setSlider(null)}
+        />
+      )}
     </div>
   );
 }
@@ -293,114 +322,35 @@ export function CompareModal({ job, refresh, onClose }) {
   );
 }
 
-// Popup xem ảnh to. Có ô prompt (tiếng Anh) + nút tạo lại ảnh sạch bằng Flow (Nano Banana, 0 credit);
-// ảnh tạo xong được lưu thành ảnh mới cùng loại và tự chọn làm ảnh dùng cho video.
-function Lightbox({ asset, assets, state, selected, onSelect, onClose, refresh }) {
-  const defaults = state?.defaults || {};
-  const settings = state?.settings || {};
-  const [prompt, setPrompt] = useState(settings.productCleanPrompt || defaults.productCleanPrompt || '');
-  const [savedOk, setSavedOk] = useState(false);
-  const { busy, error, run } = useAction();
-  const appliedRef = useRef(new Set());
-
-  // Job tạo ảnh sạch mới nhất của ảnh này + ảnh kết quả (nếu đã lưu)
-  const job = (state?.jobs || []).filter((j) => j.meta?.cleanOf === asset.id).sort((a, b) => b.createdAt - a.createdAt)[0];
-  const result = job?.meta?.assetId ? assets.find((a) => a.id === job.meta.assetId) : null;
-
-  // Ảnh sạch vừa xong -> tự chọn làm ảnh dùng cho video (1 lần cho mỗi kết quả)
-  useEffect(() => {
-    if (result && !appliedRef.current.has(result.id)) {
-      appliedRef.current.add(result.id);
-      onSelect(result.id);
-    }
-  }, [result?.id]);
-
+// Phóng to 1 ảnh trong thư viện: chỉ ảnh + nút Dùng / "Thử ảnh khác" (mở popup trượt để chọn ảnh khác và làm sạch lại).
+function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose]);
-
-  const generate = () =>
-    run(async () => {
-      await api.cleanAsset(asset.id, prompt);
-      await refresh();
-    });
-  const savePrompt = () =>
-    run(async () => {
-      await api.saveSettings({ productCleanPrompt: prompt });
-      await refresh();
-      setSavedOk(true);
-      setTimeout(() => setSavedOk(false), 2000);
-    });
-
-  const progress = job?.status === 'running' ? job.attempts?.at(-1)?.progress : null;
-  const engine = settings.engine;
-
   return (
     <div className="lightbox" onClick={onClose}>
-      <div className="lightbox-body" onClick={(e) => e.stopPropagation()}>
+      <div className="zoom-body" onClick={(e) => e.stopPropagation()}>
         <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
-        <div className="lightbox-img">
-          <img src={asset.url} alt={asset.name} />
-        </div>
-        <div className="lightbox-side stack">
-          <div>
-            <b>{asset.name}</b>
-            <div className="small muted">
-              {asset.kind === 'model' ? 'Ảnh model' : asset.kind === 'product' ? 'Ảnh sản phẩm' : 'Ảnh bối cảnh'}
-              {asset.fromJobId && ' · ✨ do Flow tạo lại'}
-            </div>
-          </div>
-          <div className="row">
-            {selected ? <span className="ok">✓ Đang dùng cho video</span> : <button onClick={() => onSelect(asset.id)}>Dùng ảnh này</button>}
-            <a href={asset.url} target="_blank" rel="noreferrer">Mở ảnh gốc</a>
-          </div>
-
-          <label>
-            <span>Prompt tạo lại ảnh sạch (tiếng Anh)</span>
-            <textarea rows={7} className="mono" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-          </label>
-          <div className="row">
-            <button className="primary" disabled={busy || job?.status === 'running' || job?.status === 'queued' || !prompt.trim()} onClick={generate}>
-              ✨ {result ? 'Tạo lại' : 'Tạo ảnh sạch'} bằng {engine === 'mock' ? 'engine giả' : 'Flow (0 credit)'}
-            </button>
-            <button className="link" disabled={busy} onClick={savePrompt}>Lưu prompt làm mặc định</button>
-            {savedOk && <span className="ok">Đã lưu</span>}
-          </div>
-          <small className="muted">Ảnh tạo xong được lưu vào thư viện cùng loại và tự chọn làm ảnh dùng cho video. Ảnh gốc vẫn giữ.</small>
-
-          {job && (
-            <div className={'card stack clean-result' + (job.status === 'failed' ? ' failed' : '')}>
-              <div className="row">
-                <Badge status={job.status} />
-                {progress && <small className="muted">{progress}</small>}
-                {job.status === 'failed' && <small className="err">{job.error}</small>}
-              </div>
-              {result && (
-                <div className="row">
-                  <img className="clean-thumb" src={result.url} alt="" />
-                  <div className="stack">
-                    <small>{result.name}</small>
-                    {assets.find((a) => a.id === result.id) && (
-                      <button onClick={() => onSelect(result.id)}>Dùng ảnh này</button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {error && <div className="err">{error}</div>}
+        <img src={asset.url} alt={asset.name} />
+        <div className="zoom-bar">
+          <span className="zoom-name" title={asset.name}>{asset.fromJobId && '✨ '}{asset.name}</span>
+          <span className="grow" />
+          {selected ? <span className="ok">✓ Đang dùng</span> : <button onClick={() => onSelect(asset.id)}>✓ Dùng ảnh này</button>}
+          {onTryOther && <button className="primary" onClick={onTryOther} title="Trượt qua các ảnh khác và làm sạch lại">🔄 Thử ảnh khác</button>}
         </div>
       </div>
     </div>
   );
 }
 
-// Bóc tách dữ liệu & ảnh sản phẩm đa sàn (Shopee, Lazada, TikTok Shop) với AI làm sạch và Fallback tìm kiếm ảnh
-export function ProductImport({ kind, refresh, onImported }) {
+// Bóc tách dữ liệu & ảnh sản phẩm đa sàn (Shopee, Lazada, TikTok Shop) với AI làm sạch và Fallback tìm kiếm ảnh.
+// Kết quả bóc tách (found) do AssetPicker giữ, nên vẫn còn sau khi chọn ảnh. Chế độ 1 ảnh (AI Dancing): bấm 1 ảnh
+// -> onOpen(i) mở popup trượt (xem to, làm sạch bằng Flow, chọn dùng). Module nào cần nhiều ảnh thì truyền
+// multiple (chọn nhiều rồi thêm thẳng vào thư viện).
+export function ProductImport({ kind, found, setFound, onOpen, refresh, onImported, multiple = false }) {
   const [url, setUrl] = useState('');
-  const [found, setFound] = useState(null);
   const [picked, setPicked] = useState([]);
   const [showRawTitle, setShowRawTitle] = useState(false);
   const { busy, error, run } = useAction();
@@ -409,21 +359,24 @@ export function ProductImport({ kind, refresh, onImported }) {
     run(async () => {
       const r = await api.fetchProduct(url);
       setFound(r);
-      setPicked(r.images.filter((im) => im.suggested).map((im) => im.id));
+      const suggested = r.images.filter((im) => im.suggested).map((im) => im.id);
+      setPicked(multiple ? suggested : suggested.slice(0, 1));
     });
 
-  const toggle = (id) => setPicked((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const toggle = (id) =>
+    setPicked((s) => (s.includes(id) ? s.filter((x) => x !== id) : multiple ? [...s, id] : [id]));
 
+  // Chế độ nhiều ảnh: chỉ thêm vào thư viện
   const importPicked = () =>
     run(async () => {
       const images = found.images
         .filter((im) => picked.includes(im.id))
         .map((im) => ({ url: im.url, name: `${found.title} – ${im.name || 'ảnh'}` }));
       const added = await api.importProduct(kind, images);
-      await refresh();
+      await refresh?.();
       setFound(null);
       setUrl('');
-      onImported(added);
+      onImported?.(added);
     });
 
   return (
@@ -450,11 +403,6 @@ export function ProductImport({ kind, refresh, onImported }) {
               <span className="badge ai-pill" title={found.usedGemini ? 'Đã làm sạch bằng Gemini AI' : 'Đã làm sạch bằng Heuristic Regex'}>
                 {found.usedGemini ? '✨ Gemini AI' : '⚡ Heuristic'}
               </span>
-              {found.usedBrowser && (
-                <span className="badge ai-pill" title={found.imageSource === 'api' ? 'Đọc trực tiếp dữ liệu sản phẩm của sàn qua Chrome (đủ bộ ảnh gốc + giá)' : 'Lấy ảnh từ trang sản phẩm mở trong Chrome'}>
-                  🌐 {found.imageSource === 'api' ? 'Dữ liệu sàn (Chrome)' : 'Ảnh từ trang (Chrome)'}
-                </span>
-              )}
               {found.usedFallbackImage && (
                 <span className="badge fallback-pill" title="Ảnh bổ sung từ DuckDuckGo do sàn chặn/thiếu ảnh — có thể KHÔNG đúng sản phẩm">
                   🔍 Tìm ảnh ngoài (có thể sai sản phẩm)
@@ -493,17 +441,22 @@ export function ProductImport({ kind, refresh, onImported }) {
 
           <div className="thumbs-info">
             <small className="muted">
-              Tìm thấy {found.images.length} ảnh. {found.images.length ? 'Bấm ảnh để chọn / bỏ chọn (3 ảnh đầu chọn sẵn):' : 'Không tìm thấy ảnh.'}
+              Tìm thấy {found.images.length} ảnh.{' '}
+              {!found.images.length
+                ? 'Không tìm thấy ảnh.'
+                : multiple
+                  ? 'Bấm ảnh để chọn / bỏ chọn (3 ảnh đầu chọn sẵn):'
+                  : 'Bấm 1 ảnh để xem to, trượt qua các ảnh, làm sạch bằng Flow rồi chọn ảnh dùng:'}
             </small>
             {found.note && <div className={found.images.length ? 'muted small' : 'err small'}>{found.note}</div>}
           </div>
 
           <div className="thumbs">
-            {found.images.map((im) => (
+            {found.images.map((im, i) => (
               <div
                 key={im.id}
                 className={'thumb' + (picked.includes(im.id) ? ' selected' : '')}
-                onClick={() => toggle(im.id)}
+                onClick={() => (multiple ? toggle(im.id) : (setPicked([im.id]), onOpen(i)))}
                 title={im.name || ''}
               >
                 <img src={im.url} alt="" loading="lazy" />
@@ -517,9 +470,11 @@ export function ProductImport({ kind, refresh, onImported }) {
           </div>
 
           <div className="row">
-            <button className="primary" disabled={busy || !picked.length} onClick={importPicked}>
-              Thêm {picked.length} ảnh vào thư viện
-            </button>
+            {multiple && (
+              <button className="primary" disabled={busy || !picked.length} onClick={importPicked}>
+                Thêm {picked.length} ảnh vào thư viện
+              </button>
+            )}
             <button onClick={() => setFound(null)}>Đóng</button>
           </div>
         </div>
@@ -531,6 +486,158 @@ export function ProductImport({ kind, refresh, onImported }) {
 }
 
 export const ShopeeImport = ProductImport;
+
+// Popup trượt + làm sạch. images = ảnh vừa bóc tách ({ id, url, name }) hoặc ảnh trong thư viện (có assetId).
+// - Trái: ảnh đang xem, trượt ◀ ▶ / ←/→ / dải ảnh nhỏ. Phải: prompt + "Làm sạch ảnh này" (ảnh gốc được tải về
+//   thư viện dưới dạng nháp rồi chạy Flow, 0 credit) + "Chọn ảnh này" (dùng nguyên ảnh).
+// - Dưới: mọi kết quả đã làm sạch của các ảnh này, xếp cạnh nhau theo thứ tự tạo. Kết quả nằm trên server
+//   (ảnh nháp, nhận lại theo URL ảnh gốc) nên đóng/mở lại popup, bóc tách lại hay khởi động lại server vẫn còn.
+//   Rê chuột vào kết quả: 👁 Xem to · 🔄 Thử lại · ✓ Dùng · 🗑 Xoá (bấm 2 lần).
+function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse, onClose }) {
+  const defaults = state?.defaults || {};
+  const settings = state?.settings || {};
+  const [idx, setIdx] = useState(startIdx);
+  const [viewId, setViewId] = useState(null); // kết quả đang xem to (null = ảnh gốc)
+  const [prompt, setPrompt] = useState(settings.productCleanPrompt || defaults.productCleanPrompt || '');
+  const [armed, setArmed] = useState(null); // kết quả đang chờ bấm lần 2 để xoá
+  const { busy: busyIn, error, run } = useAction();
+  const busy = busyIn || busyOuter;
+  const assets = state?.assets || [];
+  const jobs = state?.jobs || [];
+
+  const cur = images[idx];
+  const go = (d) => { setIdx((i) => (i + d + images.length) % images.length); setViewId(null); };
+  // Ảnh bóc tách <-> ảnh trong thư viện: theo assetId (ảnh thư viện) hoặc URL ảnh gốc (đã tải về trước đó)
+  const assetIdOf = (im) => im.assetId || assets.find((a) => a.source === im.url)?.id || null;
+  const ensureAsset = async (im) => {
+    const have = assetIdOf(im);
+    if (have) return have;
+    const [added] = await api.importProduct(kind, [{ url: im.url, name: im.name || 'Ảnh sản phẩm' }], true);
+    await refresh();
+    return added.id;
+  };
+  // id thư viện -> số thứ tự ảnh (để ghi "#n" lên kết quả)
+  const srcNo = {};
+  images.forEach((im, i) => { const id = assetIdOf(im); if (id) srcNo[id] = i + 1; });
+  const results = assets.filter((a) => srcNo[a.fromAssetId]).sort((a, b) => a.createdAt - b.createdAt);
+  const jobOf = (assetId) => jobs.filter((j) => j.meta?.cleanOf === assetId).sort((a, b) => b.createdAt - a.createdAt)[0];
+  const isWorking = (j) => j && (j.status === 'running' || j.status === 'queued');
+  const curAssetId = assetIdOf(cur);
+  const curJob = curAssetId ? jobOf(curAssetId) : null;
+  const pending = Object.keys(srcNo).map((aId) => ({ aId, job: jobOf(aId) })).filter(({ job }) => isWorking(job));
+  const viewing = viewId ? results.find((r) => r.id === viewId) : null;
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft') go(-1);
+      if (e.key === 'ArrowRight') go(1);
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  });
+
+  const clean = (im) => run(async () => { await api.cleanAsset(await ensureAsset(im), prompt); await refresh(); });
+  const retry = (r) => run(async () => { await api.cleanAsset(r.fromAssetId, prompt); await refresh(); });
+  const pickSource = () => run(async () => onUse(await ensureAsset(cur)));
+  const remove = (r) => {
+    if (armed !== r.id) { setArmed(r.id); setTimeout(() => setArmed((a) => (a === r.id ? null : a)), 3000); return; }
+    setArmed(null);
+    run(async () => { await api.deleteAsset(r.id); if (viewId === r.id) setViewId(null); await refresh(); });
+  };
+  const engine = settings.engine;
+
+  return (
+    <div className="lightbox" onClick={onClose}>
+      <div className="lightbox-body extract-body" onClick={(e) => e.stopPropagation()}>
+        <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
+
+        <div className="lightbox-left">
+          <div className="lightbox-img">
+            {images.length > 1 && <button className="slide-nav prev" onClick={() => go(-1)} title="Ảnh trước (←)">‹</button>}
+            <img key={viewing?.id || cur.id} src={viewing ? viewing.url : cur.url} alt="" />
+            {images.length > 1 && <button className="slide-nav next" onClick={() => go(1)} title="Ảnh sau (→)">›</button>}
+            <div className="img-label">
+              {viewing ? (
+                <>✨ Kết quả của ảnh #{srcNo[viewing.fromAssetId]} · <a onClick={() => setViewId(null)}>về ảnh gốc</a></>
+              ) : (
+                <>{idx + 1} / {images.length}{cur.name ? ` · ${cur.name}` : ''}</>
+              )}
+            </div>
+          </div>
+          {images.length > 1 && (
+            <div className="lightbox-strip">
+              {images.map((im, i) => (
+                <img key={im.id} src={im.url} alt="" title={im.name || ''} className={i === idx ? 'on' : ''} onClick={() => { setIdx(i); setViewId(null); }} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="lightbox-side stack">
+          <div>
+            <b>{viewing ? `Kết quả sạch của ảnh #${srcNo[viewing.fromAssetId]}` : `Ảnh #${idx + 1}`}</b>
+            <div className="small muted">{viewing ? viewing.name : cur.name || 'Ảnh sản phẩm'}</div>
+          </div>
+          {viewing ? (
+            <div className="row">
+              <button className="primary" disabled={busy} onClick={() => onUse(viewing.id)}>✓ Dùng ảnh này</button>
+              <button disabled={busy} onClick={() => retry(viewing)} title="Tạo bản sạch khác từ cùng ảnh gốc">🔄 Thử lại</button>
+              <button className={armed === viewing.id ? 'armed' : ''} disabled={busy} onClick={() => remove(viewing)}>
+                {armed === viewing.id ? 'Bấm lần nữa để xoá' : '🗑 Xoá'}
+              </button>
+            </div>
+          ) : (
+            <div className="row">
+              <button className="primary" disabled={busy || isWorking(curJob) || !prompt.trim()} onClick={() => clean(cur)}>
+                ✨ Làm sạch ảnh này {engine === 'mock' ? '(engine giả)' : '(Flow, 0 credit)'}
+              </button>
+              <button disabled={busy} onClick={pickSource} title="Dùng nguyên ảnh này, không làm sạch">✓ Chọn ảnh này</button>
+            </div>
+          )}
+          {isWorking(curJob) && <small className="muted">⏳ {curJob.attempts?.at(-1)?.progress || 'Đang chờ đến lượt…'}</small>}
+          {curJob?.status === 'failed' && !isWorking(curJob) && <div className="err small">{curJob.error}</div>}
+
+          <label>
+            <span>Prompt làm sạch (tiếng Anh)</span>
+            <textarea rows={6} className="mono" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          </label>
+          <small className="muted">
+            Trượt ◀ ▶ (←/→) tới ảnh muốn làm sạch rồi bấm Làm sạch; làm sạch được nhiều ảnh, kết quả xếp cạnh nhau bên dưới
+            và vẫn còn khi mở lại. Chỉ ảnh bạn bấm Dùng mới hiện trong thư viện.
+          </small>
+          {error && <div className="err">{error}</div>}
+        </div>
+
+        {(results.length > 0 || pending.length > 0) && (
+          <div className="extract-results">
+            <small className="muted">Kết quả đã làm sạch ({results.length}) — bấm để xem to, rê chuột để thao tác:</small>
+            <div className="result-strip">
+              {results.map((r) => (
+                <div key={r.id} className={'rthumb' + (viewId === r.id ? ' on' : '')} onClick={() => setViewId(r.id)}>
+                  <img src={r.url} alt="" />
+                  <span className="src-no">#{srcNo[r.fromAssetId]}</span>
+                  <div className="acts" onClick={(e) => e.stopPropagation()}>
+                    <button className="icon-btn" data-tip="Xem to" onClick={() => setViewId(r.id)}>👁</button>
+                    <button className="icon-btn" data-tip="Thử lại" disabled={busy} onClick={() => retry(r)}>🔄</button>
+                    <button className="icon-btn" data-tip="Dùng ảnh này" disabled={busy} onClick={() => onUse(r.id)}>✓</button>
+                    <button className={'icon-btn' + (armed === r.id ? ' danger' : '')} data-tip={armed === r.id ? 'Bấm lần nữa để xoá' : 'Xoá'} disabled={busy} onClick={() => remove(r)}>🗑</button>
+                  </div>
+                </div>
+              ))}
+              {pending.map(({ aId, job }) => (
+                <div key={aId} className="rthumb pending" title={job.attempts?.at(-1)?.progress || ''}>
+                  <span>⏳ #{srcNo[aId]}<br />{job.attempts?.at(-1)?.progress || 'Đang chờ…'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Thẻ 1 job: xem trước/sau, lịch sử các lần tạo, nút Thử lại (có thể sửa prompt).
 // compact = chỉ video kết quả + các lần tạo + nút (dùng trong bảng từng đoạn của quy trình)

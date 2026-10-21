@@ -27,17 +27,20 @@ export function canonicalShopeeUrl(u) {
     const host = url.hostname.toLowerCase();
     if (!/(shopee\.|shope\.ee|shp\.ee)/.test(host)) return null;
     const p = decodeURIComponent(url.pathname);
-    const m = p.match(/-i\.(\d+)\.(\d+)/) || p.match(/\/product\/(\d+)\/(\d+)/) || p.match(/\/[^/]+\/(\d{4,})\/(\d{6,})(?:\/|$)/);
+    const m = p.match(/-i\.(\d+)\.(\d+)/)
+           || p.match(/\/product\/(\d+)\/(\d+)/)
+           || p.match(/\/[^/]+\/(\d{4,})\/(\d{6,})(?:\/|$)/)
+           || p.match(/\/opaanlp\/(\d+)\/(\d+)/);
     const shop = m?.[1] || url.searchParams.get('shopid');
     const item = m?.[2] || url.searchParams.get('itemid');
-    const baseHost = /(shope\.ee|shp\.ee)/.test(host) ? 'shopee.vn' : host;
+    const baseHost = /(shope\.ee|shp\.ee|s\.shopee\.vn)/.test(host) ? 'shopee.vn' : host;
     return shop && item ? `https://${baseHost}/product-i.${shop}.${item}` : null;
   } catch {
     return null;
   }
 }
 
-const isShopeeProductPage = (u) => /(shopee\.[a-z.]+|shope\.ee|shp\.ee)\/.*(-i\.\d+\.\d+|\/product\/\d+\/\d+|\/universal-link\/)/i.test(u);
+const isShopeeProductPage = (u) => /(shopee\.[a-z.]+|shope\.ee|shp\.ee)\/.*(-i\.\d+\.\d+|\/product\/\d+\/\d+|\/opaanlp\/\d+\/\d+|\/universal-link\/)/i.test(u);
 
 /**
  * Mở url trong tab mới của Chrome (Flow), gom: JSON API sản phẩm của sàn, thẻ meta, ảnh trong DOM.

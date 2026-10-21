@@ -92,7 +92,8 @@ export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // Sinh ảnh (Nano Banana) từ ảnh tham chiếu + prompt, vd. tạo bối cảnh mới từ khung hình video gốc
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
-async function generate({ settings, prompt, video, images = [], outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video' }) {
+// flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
+async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video' }) {
   const page = await flowPage();
   await page.bringToFront();
   if (page.url().includes('/about') || page.url().includes('accounts.google.com')) {
@@ -100,21 +101,33 @@ async function generate({ settings, prompt, video, images = [], outputFile, log 
   }
   await openProject(page, settings);
 
-  // Tên file = mã băm nội dung -> cùng 1 ảnh/video thì luôn cùng tên trên Flow,
-  // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại.
-  // Thứ tự trong ô prompt: ảnh model -> ảnh sản phẩm (hoặc ảnh bối cảnh) -> video gốc
-  const files = [...images, video].filter(Boolean).map((f) => {
+  // Mỗi nguyên liệu: file tải lên (tên = mã băm nội dung -> cùng 1 ảnh/video thì luôn cùng tên trên Flow,
+  // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại), hoặc ảnh do Flow tạo (title)
+  // dùng thẳng từ thư viện dự án. Thứ tự trong ô prompt: ảnh model -> ảnh sản phẩm (hoặc ảnh bối cảnh) -> video gốc
+  const toUpload = (f) => {
     const dest = path.join(DATA_DIR, 'tmp', `vs-${hashFile(f)}${path.extname(f).toLowerCase()}`);
     fs.copyFileSync(f, dest);
     return dest;
-  });
-  const names = files.map((f) => path.parse(f).name);
+  };
+  const items = [...images, video].filter(Boolean).map((f) => (flowRefs[f] ? { src: f, title: flowKey(flowRefs[f]) } : { src: f, file: toUpload(f) }));
+  const keyOf = (it) => it.title || path.parse(it.file).name;
+  let names = items.map(keyOf);
   const tag = names.join('+');
 
   try {
     const clear = page.getByRole('button', { name: 'Clear prompt' });
     if (await clear.isVisible().catch(() => false)) await clear.click();
 
+    // Ảnh Flow tạo mà không còn trong dự án (đã xoá / dự án khác) -> tải lên như file thường
+    for (const it of items) {
+      if (it.title && !(await hasAsset(page, it.title))) {
+        log(`Không thấy "${it.title}" trên Flow, tải ảnh lên`);
+        it.file = toUpload(it.src);
+        it.title = null;
+      }
+    }
+    names = items.map(keyOf);
+    const files = items.filter((it) => it.file).map((it) => it.file);
     const missing = [];
     for (const f of files) {
       if (!(await hasAsset(page, path.parse(f).name))) missing.push(f);
@@ -125,11 +138,11 @@ async function generate({ settings, prompt, video, images = [], outputFile, log 
         : `Tải ${missing.length}/${files.length} file lên Flow (còn lại đã có sẵn)`);
       await uploadFiles(page, missing, settings);
     } else {
-      log('File đã có sẵn trên Flow, không tải lại');
+      log(files.length ? 'File đã có sẵn trên Flow, không tải lại' : 'Dùng lại ảnh có sẵn trên Flow, không tải lên');
     }
-    for (const f of files) {
-      log(`Thêm vào prompt: ${path.basename(f)}`);
-      await addIngredient(page, path.parse(f).name);
+    for (const it of items) {
+      log(`Thêm vào prompt: ${it.title ? `${it.title} (ảnh Flow tạo)` : path.basename(it.file)}`);
+      await addIngredient(page, keyOf(it));
     }
 
     log(kind === 'image' ? 'Chọn Ảnh · Nano Banana' : 'Chọn Video · Omni 1.1 Flash');
@@ -149,13 +162,19 @@ async function generate({ settings, prompt, video, images = [], outputFile, log 
     await start.click();
 
     const tile = await waitForResult(page, before, log, names, kind);
+    // Tên Flow đặt cho kết quả -> ảnh này về sau dùng lại được làm nguyên liệu (không tải lên lại)
+    const title = (await tile.getAttribute('aria-label').catch(() => '')) || '';
     log(kind === 'image' ? 'Tải ảnh về' : 'Tải video về');
-    await downloadTile(page, tile, outputFile, kind, onResult);
-    return { id: tag, outputFile, text: `Google Flow · ${credits}` };
+    await downloadTile(page, tile, outputFile, kind, (src) => onResult(src, { title }));
+    return { id: tag, outputFile, text: `Google Flow · ${credits}`, title };
   } finally {
-    for (const f of files) fs.rm(f, { force: true }, () => {});
+    for (const it of items) if (it.file) fs.rm(it.file, { force: true }, () => {});
   }
 }
+
+// Tên hiển thị của ảnh trên Flow bị cắt bớt với "…" -> tìm theo phần đầu
+const flowKey = (title) => String(title).replace(/…\s*$/, '').trim();
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Dùng chung 1 dự án Flow cho mọi video (tạo mới lần đầu, lưu lại URL)
 async function openProject(page, settings) {
@@ -203,7 +222,7 @@ async function searchAssets(page, name) {
   const search = page.getByRole('textbox', { name: 'Search assets' });
   await search.fill(name);
   await sleep(800);
-  return assetList(page).getByRole('option', { name: new RegExp('^' + name + '\\b') });
+  return assetList(page).getByRole('option', { name: new RegExp('^' + escapeRe(name)) });
 }
 
 async function hasAsset(page, name) {

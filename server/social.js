@@ -136,16 +136,23 @@ async function waitStatus(url, label) {
 }
 
 // ---------- TikTok (Content Posting API, Direct Post) ----------
-async function tiktok(s, file, { caption }) {
+async function tiktok(s, file, { caption, tiktokSettings }) {
   const { accessToken, privacy } = s.tiktok;
   if (!accessToken) throw new Error('Chưa cấu hình TikTok');
   const buf = fs.readFileSync(file);
+  const privacyLevel = tiktokSettings?.draft ? 'SELF_ONLY' : (tiktokSettings?.privacy_level || privacy || 'SELF_ONLY');
+  const postInfo = {
+    title: caption || '',
+    privacy_level: privacyLevel,
+    ...(tiktokSettings?.commercialContentType === 'brand_organic' ? { brand_organic_toggle: true } : {}),
+    ...(tiktokSettings?.commercialContentType === 'brand_content' ? { brand_content_toggle: true } : {}),
+  };
   const init = await json(
     await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' },
       body: JSON.stringify({
-        post_info: { title: caption || '', privacy_level: privacy || 'SELF_ONLY' },
+        post_info: postInfo,
         source_info: { source: 'FILE_UPLOAD', video_size: buf.length, chunk_size: buf.length, total_chunk_count: 1 },
       }),
     }),

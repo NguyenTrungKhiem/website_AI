@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   detectPlatform,
   parseProductIds,
+  normalizeShopeeUrl,
   extractFromHtml,
   extractSlugFallback,
   cleanWithHeuristic,
@@ -24,20 +25,28 @@ async function runTests() {
   assert.equal(detectPlatform('https://www.tiktok.com/@shop/video/123'), 'tiktok');
   console.log('  ✔ Bước 1: Nhận diện sàn chính xác 100%');
 
-  // 2. KIỂM THỬ BƯỚC 2: Tách mã định danh (Regex Parser)
-  console.log('\n▶ Test 2: Tách mã định danh (parseProductIds)');
+  // 2. KIỂM THỬ BƯỚC 2: Tách mã định danh & Chuẩn hóa URL (Regex Parser & Normalizer)
+  console.log('\n▶ Test 2: Tách mã định danh (parseProductIds & normalizeShopeeUrl)');
   const shopeeIds = parseProductIds('https://shopee.vn/Ao-Thun-Nam-i.12345678.98765432', 'shopee');
   assert.deepEqual(shopeeIds, { shopId: '12345678', itemId: '98765432' });
 
   const shopeeIds2 = parseProductIds('https://shopee.vn/product/88889999/111222333', 'shopee');
   assert.deepEqual(shopeeIds2, { shopId: '88889999', itemId: '111222333' });
 
+  // Kiểm tra link Shopee Affiliate dạng opaanlp
+  const affiliateIds = parseProductIds('https://shopee.vn/opaanlp/1908715934/41434228389?__mobile__=1', 'shopee');
+  assert.deepEqual(affiliateIds, { shopId: '1908715934', itemId: '41434228389' });
+  assert.equal(
+    normalizeShopeeUrl('https://shopee.vn/opaanlp/1908715934/41434228389?__mobile__=1'),
+    'https://shopee.vn/product-i.1908715934.41434228389'
+  );
+
   const lazadaIds = parseProductIds('https://www.lazada.vn/products/tai-nghe-i123456-s987654.html', 'lazada');
   assert.deepEqual(lazadaIds, { itemId: '123456', skuId: '987654' });
 
   const tiktokIds = parseProductIds('https://www.tiktok.com/view/product/1729384756', 'tiktok');
   assert.deepEqual(tiktokIds, { productId: '1729384756' });
-  console.log('  ✔ Bước 2: Regex bóc tách Product ID, Shop ID, SKU ID chính xác');
+  console.log('  ✔ Bước 2: Regex bóc tách Product ID, Shop ID, SKU ID & Chuẩn hóa Shopee Affiliate chính xác');
 
   // 3. KIỂM THỬ BƯỚC 3: Bóc tách HTML 4 tầng ưu tiên
   console.log('\n▶ Test 3: Bóc tách HTML đa tầng (extractFromHtml)');
@@ -162,7 +171,21 @@ async function runTests() {
   console.log(`     - Số lượng ảnh: ${fullResult.images.length}`);
   console.log(`     - Nguồn ảnh: ${fullResult.usedFallbackImage ? 'Fallback (DuckDuckGo)' : 'Sàn gốc'}`);
 
-  console.log('\n🎉 TẤT CẢ 7 BÀI TEST ĐÃ VƯỢT QUA 100%!');
+  // 8. KIỂM THỬ THỰC TẾ: Link Shopee Affiliate rút gọn (s.shopee.vn)
+  console.log('\n▶ Test 8: Kiểm thử bóc tách từ link Shopee Affiliate (s.shopee.vn)');
+  const affiliateUrl = 'https://s.shopee.vn/9zyfsJkbgz';
+  const affiliateResult = await fetchProduct(affiliateUrl);
+  assert.equal(affiliateResult.platform, 'shopee');
+  assert.equal(affiliateResult.platformLabel, 'Shopee');
+  assert.ok(affiliateResult.title.toLowerCase().includes('đầm') || affiliateResult.title.toLowerCase().includes('váy'));
+  assert.ok(affiliateResult.images.length >= 5, `Phải lấy được ít nhất 5 ảnh từ link affiliate, thực tế: ${affiliateResult.images.length}`);
+  assert.ok(affiliateResult.images[0].url.includes('susercontent.com'));
+  console.log('  ✔ Kết quả bóc tách Link Shopee Affiliate thành công:');
+  console.log(`     - Tiêu đề: ${affiliateResult.title}`);
+  console.log(`     - Số lượng ảnh sản phẩm: ${affiliateResult.images.length}`);
+  console.log(`     - Ảnh đầu tiên: ${affiliateResult.images[0].url}`);
+
+  console.log('\n🎉 TẤT CẢ 8 BÀI TEST ĐÃ VƯỢT QUA 100%!');
 }
 
 runTests().catch((err) => {

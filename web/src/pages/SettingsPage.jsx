@@ -327,6 +327,33 @@ export default function SettingsPage({ state, refresh }) {
             )}
           </div>
         )}
+
+        <div className="card stack" style={{ border: '1px solid #fe2c5544', background: 'rgba(254, 44, 85, 0.03)', borderRadius: 10, padding: 14, margin: '8px 0 0' }}>
+          <h3>🛍️ Cài đặt mặc định TikTok Shop Affiliate</h3>
+          <p className="muted small">Cấu hình sẵn link tiếp thị liên kết và lời kêu gọi mua hàng (CTA) để tự động điền khi đăng hoặc lên lịch video TikTok qua Zernio.</p>
+          <div className="grid2">
+            <Field {...f} path="tiktokShop.defaultLink" label="Link Affiliate mặc định" hint="https://vt.tiktok.com/... hoặc link showcase của bạn" />
+            <Field {...f} path="tiktokShop.defaultCta" label="Lời kêu gọi mua hàng (CTA) mặc định" hint="Ví dụ: 🛒 Xem ngay sản phẩm trong giỏ hàng hoặc tại:" />
+          </div>
+          <div className="row wrap gap-md">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={s.tiktokShop?.enabled || false}
+                onChange={(e) => set({ ...s, tiktokShop: { ...(s.tiktokShop || {}), enabled: e.target.checked } })}
+              />
+              <span>Mặc định bật gắn TikTok Shop Affiliate khi đăng video</span>
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={s.tiktokShop?.autoAppendCaption ?? true}
+                onChange={(e) => set({ ...s, tiktokShop: { ...(s.tiktokShop || {}), autoAppendCaption: e.target.checked } })}
+              />
+              <span>Tự động nối link vào Caption / Mô tả</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <div className="card stack">

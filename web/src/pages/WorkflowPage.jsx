@@ -230,7 +230,7 @@ function ClipTable({ run: r, jobs, refresh }) {
             </tbody>
           </table>
           <small className="muted">
-            Thử lại hoặc chọn lần tạo khác ở cột trái → web tự thay bối cảnh lại cho đoạn đó và ghép lại. Đổi ở cột phải → chỉ ghép lại.
+            Thử lại hoặc chọn lần tạo khác ở cột trái → web dừng lại để bạn kiểm tra, bấm Tiếp tục mới thay bối cảnh lại cho đoạn đó và ghép lại. Đổi ở cột phải → chỉ ghép lại.
           </small>
           {error && <div className="err">{error}</div>}
         </>
@@ -239,7 +239,7 @@ function ClipTable({ run: r, jobs, refresh }) {
   );
 }
 
-const RUN_STATUS = { running: ['Đang chạy', 'blue'], done: ['Hoàn thành', 'green'], failed: ['Dừng vì lỗi', 'red'], cancelled: ['Đã huỷ', 'gray'] };
+const RUN_STATUS = { running: ['Đang chạy', 'blue'], paused: ['Chờ bạn kiểm tra', 'amber'], done: ['Hoàn thành', 'green'], failed: ['Dừng vì lỗi', 'red'], cancelled: ['Đã huỷ', 'gray'] };
 
 function RunCard({ run: r, state, refresh, go }) {
   const [showJobs, setShowJobs] = useState(false);
@@ -265,7 +265,7 @@ function RunCard({ run: r, state, refresh, go }) {
           <React.Fragment key={s.id}>
             {i > 0 && <span className="arrow">→</span>}
             <span className={'stage ' + s.status} title={s.label}>
-              {s.status === 'done' ? '✓' : s.status === 'running' ? '⏳' : s.status === 'skipped' ? '–' : '○'} {s.label}
+              {s.status === 'done' ? '✓' : s.status === 'running' ? '⏳' : s.status === 'paused' ? '⏸' : s.status === 'skipped' ? '–' : '○'} {s.label}
               {s.total > 1 && <small> {s.done}/{s.total}</small>}
             </span>
           </React.Fragment>
@@ -296,13 +296,20 @@ function RunCard({ run: r, state, refresh, go }) {
       )}
 
       {r.error && <div className="err">{r.error}</div>}
+      {r.status === 'paused' && (
+        <div className="alert warn small">
+          ⏸ Đã thay nhân vật + sản phẩm xong. Xem video ở bảng <b>Từng đoạn</b> bên dưới; chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc thay bằng video từ máy.
+          Ưng rồi bấm <b>▶ Tiếp tục</b> để thay bối cảnh (bước này bắt đầu tốn credit).
+        </div>
+      )}
 
       <ClipTable run={r} jobs={jobs} refresh={refresh} />
 
       <div className="row">
+        {r.status === 'paused' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục: thay bối cảnh</button>}
         {r.status === 'failed' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục</button>}
         {r.status === 'cancelled' && <button disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Chạy tiếp</button>}
-        {r.status === 'running' && <button disabled={busy} onClick={() => act(() => api.cancelRun(r.id))}>⏹ Huỷ</button>}
+        {(r.status === 'running' || r.status === 'paused') && <button disabled={busy} onClick={() => act(() => api.cancelRun(r.id))}>⏹ Huỷ</button>}
         {r.merge?.status === 'done' && <button className="primary" onClick={() => go('publish', [r.merge.id])}>🚀 Đăng video →</button>}
         {r.merge?.status === 'done' && <button onClick={() => go('merge')}>Xem ở Ghép video</button>}
         <button className="link" onClick={() => setShowJobs(!showJobs)}>{showJobs ? 'Ẩn' : 'Xem'} {jobs.length} video của lần chạy</button>

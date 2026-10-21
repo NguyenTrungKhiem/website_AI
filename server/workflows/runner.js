@@ -46,6 +46,8 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, opt
 
 export function resumeRun(run) {
   if (run.status === 'done') return run;
+  // Đang dừng chờ kiểm tra -> người dùng đã duyệt bước đó
+  if (run.status === 'paused' && run.stage && run.stages[run.stage]) run.stages[run.stage].approved = true;
   run.status = 'running';
   run.error = null;
   // Chạy lại các job lỗi mà lần chạy đang dùng (job đã bị thay bằng video từ máy thì không còn trong danh sách)
@@ -111,7 +113,8 @@ export async function replaceClipVideos(run, clipId, files) {
     delete jobsMap[`replace:${cid}`]; // thay nền lại cho đoạn này
     replaced.push(cid);
   }
-  // Các bước phía sau phải chạy lại
+  // Các bước phía sau phải chạy lại (kể cả kiểm tra lại video)
+  if (run.stages.review && run.stages.review.status !== 'skipped') run.stages.review = { status: 'pending' };
   if (run.stages.replace && run.stages.replace.status !== 'skipped') run.stages.replace.status = 'pending';
   if (run.stages.merge && run.stages.merge.status !== 'skipped') run.stages.merge = { status: 'pending' };
   if (run.status === 'done' || run.status === 'failed' || run.status === 'cancelled') {
@@ -143,18 +146,22 @@ function syncRun(run) {
   const bgJob = get('background:bg');
   if (bgState?.assetId && bgJob?.outputPath && bgState.assetFrom && bgState.assetFrom !== bgJob.outputPath) {
     const a = db.assets.find((x) => x.id === bgState.assetId);
-    if (a) { fs.copyFileSync(bgJob.outputPath, a.path); }
+    if (a) {
+      fs.copyFileSync(bgJob.outputPath, a.path);
+      a.flowTitle = bgJob.attempts.find((x) => x.outputPath === bgJob.outputPath)?.flowTitle || null; // ảnh mới trên Flow
+    }
     bgState.assetFrom = bgJob.outputPath;
     for (const cid of run.clipIds) delete jobsMap[`replace:${cid}`];
     reset('replace');
     stale = true;
   }
-  // Thay nền: đầu vào phải là video motion hiện tại của đoạn đó
+  // Thay nền: đầu vào phải là video motion hiện tại của đoạn đó; video motion đổi -> kiểm tra lại trước khi thay nền
   for (const cid of run.clipIds) {
     const mj = get(`motion:${cid}`);
     const rj = get(`replace:${cid}`);
     if (rj && mj?.outputPath && rj.videoPath !== mj.outputPath) {
       delete jobsMap[`replace:${cid}`];
+      if (run.stages.review && run.stages.review.status !== 'skipped') run.stages.review = { status: 'pending' };
       reset('replace');
       stale = true;
     }
@@ -183,7 +190,7 @@ export function touchJob(jobId) {
     run.finishedAt = null;
     save();
   }
-  advance(run);
+  advance(run); // đang dừng chờ kiểm tra thì vẫn dừng (advance bỏ qua)
 }
 
 // Chạy tiếp quy trình từ bước đang dở. Gọi lại bao nhiêu lần cũng được.
@@ -203,6 +210,7 @@ export async function advance(run) {
       st.status = 'running';
       save();
       const result = await stage.run(ctx);
+      if (result === 'paused') { st.status = 'paused'; run.status = 'paused'; save(); return; } // chờ người dùng bấm Tiếp tục
       if (result !== 'done') { save(); return; } // 'waiting': chờ job xong rồi quay lại
       st.status = 'done';
       save();
@@ -267,11 +275,12 @@ function makeCtx(run, wf) {
     },
 
     // Lưu file thành 1 ảnh trong thư viện (để dùng lại ở bước khác / quy trình khác)
-    registerAsset(kind, file, name) {
+    // extra: vd. { flowTitle } = tên ảnh trên Flow để dùng lại làm nguyên liệu mà không tải lên lại
+    registerAsset(kind, file, name, extra = {}) {
       const id = newId();
       const dest = path.join(DIRS.assets, id + path.extname(file));
       fs.copyFileSync(file, dest);
-      const a = { id, kind, name, path: dest, createdAt: Date.now(), runId: run.id };
+      const a = { id, kind, name, path: dest, createdAt: Date.now(), runId: run.id, ...extra };
       db.assets.unshift(a);
       save();
       return a;

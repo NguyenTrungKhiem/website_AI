@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DATA_DIR = path.resolve('data');
+export const DATA_DIR = path.resolve(import.meta.dirname, '../data');
 export const DIRS = {
   sources: path.join(DATA_DIR, 'sources'),
   clips: path.join(DATA_DIR, 'clips'),
@@ -42,6 +42,13 @@ const DEFAULT_SETTINGS = {
   instagram: { igUserId: '', accessToken: '' },
   threads: { userId: '', accessToken: '' },
   tiktok: { accessToken: '', privacy: 'SELF_ONLY' },
+  tiktokShop: {
+    enabled: false,
+    defaultLink: '',
+    defaultCta: '🛒 Xem ngay sản phẩm trong giỏ hàng hoặc tại:',
+    autoAppendCaption: true,
+    postMode: 'draft', // 'draft' | 'direct'
+  },
 };
 
 const EMPTY = { settings: DEFAULT_SETTINGS, sources: [], clips: [], assets: [], jobs: [], audios: [], merges: [], posts: [], runs: [] };

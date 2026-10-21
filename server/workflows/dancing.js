@@ -37,6 +37,7 @@ export default {
   },
   options: [
     { key: 'replaceBackground', label: 'Tạo bối cảnh mới và thay vào video', default: true },
+    { key: 'reviewMotion', label: 'Dừng lại để kiểm tra video sau bước thay nhân vật (bấm Tiếp tục mới thay bối cảnh)', default: true },
     { key: 'merge', label: 'Ghép các đoạn lại + chèn âm thanh gốc', default: true },
     { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
     { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },
@@ -67,7 +68,9 @@ export default {
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
         if (!ctx.state.assetId) {
-          ctx.state.assetId = ctx.registerAsset('background', job.outputPath, `Bối cảnh – ${ctx.source.name}`).id;
+          // flowTitle = tên ảnh này trên Flow -> bước thay bối cảnh dùng lại ngay, không tải lên lại
+          const att = job.attempts.find((a) => a.outputPath === job.outputPath);
+          ctx.state.assetId = ctx.registerAsset('background', job.outputPath, `Bối cảnh – ${ctx.source.name}`, { flowTitle: att?.flowTitle || null }).id;
           ctx.state.assetFrom = job.outputPath; // để biết khi ảnh bối cảnh được tạo lại
         }
         return 'done';
@@ -91,10 +94,21 @@ export default {
       },
     },
     {
+      id: 'review',
+      label: 'Kiểm tra video',
+      when: (run) => run.options.replaceBackground && run.options.reviewMotion !== false,
+      // Dừng lại cho người dùng xem video thay nhân vật (Thử lại / Sửa prompt nếu chưa ưng);
+      // bấm "Tiếp tục" mới sang bước thay bối cảnh (bắt đầu tốn credit). Video motion đổi -> kiểm tra lại.
+      async run(ctx) {
+        return ctx.state.approved ? 'done' : 'paused';
+      },
+    },
+    {
       id: 'replace',
       label: 'Thay bối cảnh vào video',
       when: (run) => run.options.replaceBackground,
-      // Đầu vào mỗi đoạn = video motion của đoạn đó, hoặc video người dùng nhập thay thế (xem runner.replaceClipVideo)
+      // Đầu vào mỗi đoạn = video motion của đoạn đó, hoặc video người dùng nhập thay thế (xem runner.replaceClipVideo).
+      // Ảnh bối cảnh do Flow tạo được dùng lại ngay trên Flow (asset có flowTitle), không tải lên lại.
       async run(ctx) {
         const jobs = ctx.clips.map((clip) => {
           const parent = ctx.job(`motion:${clip.id}`);

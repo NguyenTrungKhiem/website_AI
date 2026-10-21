@@ -36,8 +36,9 @@ export default function PublishPage({ state, refresh, go, handoff }) {
   const merges = state.merges.filter((m) => m.status === 'done');
   const done = [
     ...merges.map((m) => ({ id: m.id, kind: 'merge', label: m.name, thumbUrl: m.thumbUrl, icon: '🎞️', watermarkRemoved: m.watermarkRemoved })),
+    // Chỉ video (job sinh ảnh — bối cảnh, ảnh sạch — không đăng được)
     ...state.jobs
-      .filter((j) => j.status === 'done')
+      .filter((j) => j.status === 'done' && j.type !== 'image')
       .map((j) => ({ id: j.id, kind: 'job', label: j.videoLabel, thumbUrl: j.thumbUrl, icon: j.type === 'import' ? '📥' : j.type === 'background' ? '🏞️' : '🕺' })),
   ];
 
@@ -56,6 +57,17 @@ export default function PublishPage({ state, refresh, go, handoff }) {
   const [publishMode, setPublishMode] = useState('schedule'); // 'schedule' | 'now'
   const [scheduleTime, setScheduleTime] = useState(getDefaultScheduleTime());
   const [syncing, setSyncing] = useState(false);
+
+  // TikTok Shop Affiliate state
+  const defaultShop = state.settings.tiktokShop || {};
+  const [tiktokShop, setTiktokShop] = useState({
+    enabled: defaultShop.enabled || false,
+    link: defaultShop.defaultLink || '',
+    cta: defaultShop.defaultCta || '🛒 Xem ngay sản phẩm trong giỏ hàng hoặc tại:',
+    postMode: defaultShop.postMode || 'draft', // 'draft' | 'direct'
+    autoAppendCaption: defaultShop.autoAppendCaption ?? true,
+    commercialType: 'brand_organic',
+  });
 
   const { busy, error, run } = useAction();
 
@@ -102,6 +114,10 @@ export default function PublishPage({ state, refresh, go, handoff }) {
     setScheduleTime(toLocalISOString(d));
   };
 
+  const hasTikTokSelected = provider === 'zernio'
+    ? zernioAccounts.some((a) => selectedZernioAccountIds.includes(a._id || a.id || a.accountId) && (a.platform || '').toLowerCase().includes('tiktok'))
+    : platforms.includes('tiktok');
+
   const submit = () =>
     run(async () => {
       const isMerge = (id) => merges.some((m) => m.id === id);
@@ -139,6 +155,7 @@ export default function PublishPage({ state, refresh, go, handoff }) {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Ho_Chi_Minh',
           title,
           caption,
+          tiktokShop: hasTikTokSelected && tiktokShop.enabled ? tiktokShop : null,
         });
       } else {
         await api.post({
@@ -147,6 +164,7 @@ export default function PublishPage({ state, refresh, go, handoff }) {
           platforms,
           title,
           caption,
+          tiktokShop: hasTikTokSelected && tiktokShop.enabled ? tiktokShop : null,
         });
       }
       await refresh();
@@ -342,6 +360,93 @@ export default function PublishPage({ state, refresh, go, handoff }) {
           </div>
         )}
 
+        {/* Cấu hình TikTok Shop / Tiếp thị liên kết (Affiliate) */}
+        {hasTikTokSelected && (
+          <div className="card stack" style={{ border: '1px solid #fe2c5566', background: 'rgba(254, 44, 85, 0.04)', borderRadius: 10, padding: 14 }}>
+            <div className="row between">
+              <label className="check" style={{ cursor: 'pointer', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={tiktokShop.enabled}
+                  onChange={(e) => setTiktokShop((s) => ({ ...s, enabled: e.target.checked }))}
+                />
+                <span style={{ fontSize: '15px' }}>
+                  <b>🛍️ Gắn liên kết TikTok Shop Affiliate</b>
+                </span>
+              </label>
+              <span className="badge" style={{ background: '#fe2c55', color: '#fff', fontWeight: 600 }}>TikTok Shop</span>
+            </div>
+
+            {tiktokShop.enabled && (
+              <div className="stack" style={{ gap: 10, marginTop: 8 }}>
+                <label>
+                  <b>Link sản phẩm TikTok Shop / Link Affiliate:</b>
+                  <input
+                    type="url"
+                    value={tiktokShop.link}
+                    onChange={(e) => setTiktokShop((s) => ({ ...s, link: e.target.value }))}
+                    placeholder="https://vt.tiktok.com/... hoặc link sản phẩm showcase"
+                  />
+                  <small className="muted">Dán link tiếp thị liên kết (affiliate) sản phẩm TikTok Shop của bạn.</small>
+                </label>
+
+                <label>
+                  <b>Lời kêu gọi mua hàng (Call To Action - CTA):</b>
+                  <input
+                    type="text"
+                    value={tiktokShop.cta}
+                    onChange={(e) => setTiktokShop((s) => ({ ...s, cta: e.target.value }))}
+                    placeholder="🛒 Xem ngay sản phẩm trong giỏ hàng hoặc tại:"
+                  />
+                </label>
+
+                <div className="stack" style={{ gap: 8, background: 'var(--panel2)', padding: 12, borderRadius: 8 }}>
+                  <b>Chế độ đăng TikTok Shop:</b>
+                  <label className="check" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="tiktokPostMode"
+                      checked={tiktokShop.postMode === 'draft'}
+                      onChange={() => setTiktokShop((s) => ({ ...s, postMode: 'draft' }))}
+                    />
+                    <span>
+                      <b>📥 Lưu vào Bản nháp TikTok (Draft / Inbox) — KHUYÊN DÙNG ĐỂ GHI GIỎ HÀNG VÀNG</b>
+                      <br />
+                      <small className="muted">
+                        Video sẽ được chuyển an toàn vào Bản nháp/Hộp thư TikTok. Bạn mở app TikTok trên điện thoại chạm 1 nút là chọn đúng sản phẩm để ghim <b>Giỏ hàng vàng chính thức</b> của TikTok Shop!
+                      </small>
+                    </span>
+                  </label>
+                  <label className="check" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="tiktokPostMode"
+                      checked={tiktokShop.postMode === 'direct'}
+                      onChange={() => setTiktokShop((s) => ({ ...s, postMode: 'direct' }))}
+                    />
+                    <span>
+                      <b>🚀 Đăng công khai trực tiếp</b>
+                      <br />
+                      <small className="muted">
+                        Đăng thẳng lên kênh TikTok kèm link trong Caption và tự động khai báo thương mại (brand_organic) để không bị TikTok bóp tương tác.
+                      </small>
+                    </span>
+                  </label>
+                </div>
+
+                <label className="check" style={{ cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={tiktokShop.autoAppendCaption}
+                    onChange={(e) => setTiktokShop((s) => ({ ...s, autoAppendCaption: e.target.checked }))}
+                  />
+                  <span>Tự động nối lời kêu gọi và link sản phẩm vào cuối Caption / Mô tả video</span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
+
         <label>
           Tiêu đề (YouTube Shorts / Tham khảo)
           <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} placeholder="Tiêu đề video..." />
@@ -399,7 +504,16 @@ export default function PublishPage({ state, refresh, go, handoff }) {
                     )}
                   </td>
                   <td>{p.videoLabel}</td>
-                  <td>{p.platform}</td>
+                  <td>
+                    {p.platform}
+                    {p.tiktokShop?.enabled && (
+                      <div style={{ marginTop: 4 }}>
+                        <span className="badge small" style={{ background: '#fe2c55', color: '#fff', fontSize: '11px', padding: '2px 6px', borderRadius: 4 }}>
+                          🛍️ TikTok Shop ({p.tiktokShop.postMode === 'draft' ? 'Bản nháp' : 'Đăng thẳng'})
+                        </span>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {p.provider === 'zernio' ? (
                       <span className="badge blue">Zernio</span>
@@ -412,9 +526,16 @@ export default function PublishPage({ state, refresh, go, handoff }) {
                     {isScheduled && <span className="muted">Đang đợi Zernio phát hành tự động</span>}
                     {p.error && <span className="err">{p.error}</span>}
                     {p.result?.url ? (
-                      <a href={p.result.url} target="_blank" rel="noreferrer">🔗 Mở bài viết</a>
+                      <div><a href={p.result.url} target="_blank" rel="noreferrer">🔗 Mở bài viết</a></div>
                     ) : (
                       p.zernioPostId && <span className="muted">ID: {p.zernioPostId}</span>
+                    )}
+                    {p.tiktokShop?.link && (
+                      <div style={{ marginTop: 4 }}>
+                        <a href={p.tiktokShop.link} target="_blank" rel="noreferrer" style={{ color: '#fe2c55', fontSize: '11px' }}>
+                          🛒 Link SP Affiliate
+                        </a>
+                      </div>
                     )}
                   </td>
                 </tr>

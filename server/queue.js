@@ -11,7 +11,10 @@ const running = new Set();
 // Được gọi mỗi khi 1 job xong/lỗi (quy trình tự động dùng để chuyển bước)
 export const settledHooks = [];
 
-const assetPath = (id) => (id ? db.assets.find((a) => a.id === id)?.path : null);
+const assetOf = (id) => (id ? db.assets.find((a) => a.id === id) : null);
+const assetPath = (id) => assetOf(id)?.path || null;
+// Ảnh do Flow tạo (có flowTitle) -> { đường dẫn file: tên trên Flow } để flow.js dùng lại, không tải lên lại
+const flowRefsOf = (...ids) => Object.fromEntries(ids.map(assetOf).filter((a) => a?.flowTitle).map((a) => [a.path, a.flowTitle]));
 
 export function createJob({
   type, batchId, videoPath, videoLabel, prompt = '', rawPrompt, assets = {}, parentJobId, sourceRange,
@@ -108,6 +111,7 @@ export function pump() {
 }
 
 // Ghép prompt cuối cùng + danh sách ảnh (thứ tự cố định: model -> sản phẩm | bối cảnh)
+// + flowRefs: ảnh nào do Flow tạo thì kèm tên trên Flow để dùng lại ngay trong dự án
 function prepare(job) {
   const images = [];
   if (job.type === 'motion') {
@@ -119,7 +123,7 @@ function prepare(job) {
       userPrompt: job.prompt, raw: job.rawPrompt,
       template: job.template || db.settings.motionTemplate,
     });
-    return { images, prompt };
+    return { images, prompt, flowRefs: flowRefsOf(job.assets.model, job.assets.product) };
   }
   if (job.type === 'background') {
     const bg = assetPath(job.assets.background);
@@ -128,19 +132,20 @@ function prepare(job) {
       userPrompt: job.prompt, raw: job.rawPrompt,
       template: job.template || db.settings.backgroundTemplate,
     });
-    return { images, prompt };
+    return { images, prompt, flowRefs: flowRefsOf(job.assets.background) };
   }
   // image
   for (const f of job.imagePaths || []) if (fs.existsSync(f)) images.push(f);
   const prompt = job.rawPrompt || !job.template ? job.prompt : fillTemplate(job.template, job.prompt);
-  return { images, prompt };
+  const flowRefs = Object.fromEntries(db.assets.filter((a) => a.flowTitle && images.includes(a.path)).map((a) => [a.path, a.flowTitle]));
+  return { images, prompt, flowRefs };
 }
 
 async function run(job) {
   running.add(job.id);
   job.status = 'running';
   const engine = engineName();
-  const { images, prompt: finalPrompt } = prepare(job);
+  const { images, prompt: finalPrompt, flowRefs } = prepare(job);
   const attempt = {
     n: Math.max(0, ...job.attempts.map((a) => a.n)) + 1, // không dùng length vì có thể đã xoá bớt lần tạo
     prompt: job.prompt,
@@ -157,8 +162,9 @@ async function run(job) {
   // Tiến trình từng bước (Flow) hiển thị trên thẻ video
   const log = (msg) => { attempt.progress = msg; save(); };
   // Flow: nhớ đường dẫn file kết quả ngay khi thấy, để nếu tải về lỗi thì lần Thử lại chỉ tải lại chứ không tạo mới
-  const onResult = (src) => { attempt.flowSrc = src; save(); };
-  const input = { settings: db.settings, prompt: finalPrompt, video: job.videoPath, images, outputFile, log, onResult };
+  // flowTitle = tên kết quả trên Flow: ảnh tạo ra có thể dùng lại làm nguyên liệu mà không tải lên lại
+  const onResult = (src, info = {}) => { attempt.flowSrc = src; if (info.title) attempt.flowTitle = info.title; save(); };
+  const input = { settings: db.settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
   try {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);

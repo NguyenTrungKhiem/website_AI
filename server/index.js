@@ -242,11 +242,23 @@ settledHooks.push((job) => {
   fs.copyFileSync(job.outputPath, dest);
   const base = (src?.name || 'ảnh').replace(/ \(Flow\)( #\d+)?$/, '');
   const n = db.assets.filter((x) => x.fromAssetId === job.meta.cleanOf).length + 1;
-  db.assets.unshift({ id, kind: job.meta.kind, name: `${base} (Flow)${n > 1 ? ` #${n}` : ''}`, path: dest, createdAt: Date.now(), fromJobId: job.id, fromAssetId: job.meta.cleanOf });
+  // Kết quả là ảnh nháp: chỉ vào thư viện khi người dùng bấm Dùng (POST /api/assets/:id/use).
+  // flowTitle = tên ảnh trên Flow -> dùng làm nguyên liệu sau này không phải tải lên lại.
+  const flowTitle = job.attempts.find((a) => a.outputPath === job.outputPath)?.flowTitle || null;
+  db.assets.unshift({ id, kind: job.meta.kind, name: `${base} (Flow)${n > 1 ? ` #${n}` : ''}`, path: dest, createdAt: Date.now(), fromJobId: job.id, fromAssetId: job.meta.cleanOf, staging: true, flowTitle });
   job.meta.assetId = id;
   job.meta.assetFrom = job.outputPath;
   save();
 });
+
+// Dùng 1 ảnh nháp (bóc tách / kết quả làm sạch) -> đưa vào thư viện
+app.post('/api/assets/:id/use', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  a.staging = false;
+  save();
+  res.json({ ...a, url: mediaUrl(a.path) });
+}));
 
 app.delete('/api/assets/:id', (req, res) => {
   const a = db.assets.find((x) => x.id === req.params.id);
@@ -261,10 +273,10 @@ app.delete('/api/assets/:id', (req, res) => {
 // ---------- Dữ liệu & Ảnh sản phẩm từ link sàn TMĐT (Shopee, Lazada, TikTok Shop) ----------
 app.post('/api/product/fetch', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
 app.post('/api/product/import', wrap(async (req, res) => {
-  const { kind = 'product', images = [] } = req.body || {};
+  const { kind = 'product', images = [], staging = false } = req.body || {};
   if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
   if (!images.length) throw new Error('Chưa chọn ảnh');
-  res.json(await productScraper.importImages(kind, images));
+  res.json(await productScraper.importImages(kind, images, { staging: !!staging }));
 }));
 // Tương thích ngược với các gọi cũ
 app.post('/api/shopee/product', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
@@ -504,8 +516,32 @@ app.post('/api/posts', wrap(async (req, res) => {
     zernioAccounts = [],
     scheduledFor = null,
     timezone = 'Asia/Ho_Chi_Minh',
+    tiktokShop = null,
+    tiktokSettings = null,
   } = req.body;
   const { mergeIds = [] } = req.body;
+
+  // Xử lý caption kèm link affiliate TikTok Shop nếu bật
+  let finalCaption = caption || '';
+  if (tiktokShop?.enabled && tiktokShop?.link?.trim() && tiktokShop?.autoAppendCaption !== false) {
+    const cta = (tiktokShop.cta || '🛒 Xem ngay sản phẩm trong giỏ hàng hoặc tại:').trim();
+    const link = tiktokShop.link.trim();
+    if (!finalCaption.includes(link)) {
+      finalCaption = finalCaption.trim() ? `${finalCaption.trim()}\n\n${cta} ${link}` : `${cta} ${link}`;
+    }
+  }
+
+  // Cấu hình tiktokSettings
+  let effectiveTiktokSettings = tiktokSettings || null;
+  if (tiktokShop?.enabled) {
+    effectiveTiktokSettings = {
+      ...(effectiveTiktokSettings || {}),
+      draft: tiktokShop.postMode === 'draft',
+      commercialContentType: tiktokShop.commercialType || 'brand_organic',
+      isBrandOrganicPost: true,
+      brand_organic_toggle: true,
+    };
+  }
 
   // Đăng hoặc lên lịch qua Zernio
   if (useZernio || zernioAccounts.length > 0) {
@@ -529,8 +565,10 @@ app.post('/api/posts', wrap(async (req, res) => {
         provider: 'zernio',
         platform: zernioAccounts.map((a) => a.platform).join(', '),
         zernioAccounts,
-        caption,
+        caption: finalCaption,
         title,
+        tiktokShop: tiktokShop?.enabled ? tiktokShop : null,
+        tiktokSettings: effectiveTiktokSettings,
         scheduledFor: scheduledFor || null,
         timezone: timezone || 'Asia/Ho_Chi_Minh',
         status: 'queued',
@@ -556,7 +594,7 @@ app.post('/api/posts', wrap(async (req, res) => {
     for (const platform of platforms) {
       const post = {
         id: newId(), jobId: v.jobId || null, mergeId: v.mergeId || null, filePath: v.file, videoLabel: v.label,
-        platform, caption, title, status: 'queued', createdAt: Date.now(),
+        platform, caption: finalCaption, title, tiktokShop: tiktokShop?.enabled ? tiktokShop : null, tiktokSettings: effectiveTiktokSettings, status: 'queued', createdAt: Date.now(),
       };
       db.posts.unshift(post);
       created.push(post);
@@ -585,6 +623,7 @@ async function runZernioPosts(posts) {
         scheduledFor: post.scheduledFor,
         timezone: post.timezone,
         publishNow: !post.scheduledFor,
+        tiktokSettings: post.tiktokSettings,
       });
 
       const zPost = zRes.post || zRes;
@@ -616,7 +655,7 @@ async function runPosts(posts) {
     save();
     try {
       if (!fs.existsSync(post.filePath)) throw new Error('File video không còn tồn tại');
-      const r = await publish(db.settings, post.platform, post.filePath, { caption: post.caption, title: post.title });
+      const r = await publish(db.settings, post.platform, post.filePath, { caption: post.caption, title: post.title, tiktokSettings: post.tiktokSettings });
       Object.assign(post, { status: 'done', result: r });
     } catch (e) {
       Object.assign(post, { status: 'failed', error: e.message });

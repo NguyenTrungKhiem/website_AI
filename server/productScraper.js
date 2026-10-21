@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fetch } from 'undici';
 import { db, save, DIRS, newId, mediaUrl } from './db.js';
-import { fetchProductWithBrowser, parseBrowserResult } from './browserScraper.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
@@ -42,6 +41,29 @@ export function getPlatformLabel(platform) {
   }
 }
 
+/**
+ * Chuẩn hóa URL Shopee từ bất kỳ định dạng nào (affiliate landing page opaanlp, link ngắn, v.v.)
+ * về dạng chuẩn product-i.<shopId>.<itemId> mà Shopee luôn mở được đầy đủ dữ liệu SSR.
+ */
+export function normalizeShopeeUrl(urlStr) {
+  try {
+    const u = new URL(urlStr.startsWith('http') ? urlStr : `https://${urlStr}`);
+    const host = u.hostname.toLowerCase();
+    if (!/(shopee\.|shope\.ee|shp\.ee)/.test(host)) return urlStr;
+    const p = decodeURIComponent(u.pathname);
+    const m = p.match(/\/opaanlp\/(\d+)\/(\d+)/)
+           || p.match(/-i\.(\d+)\.(\d+)/)
+           || p.match(/\/product\/(\d+)\/(\d+)/)
+           || p.match(/\/[^/]+\/(\d{4,})\/(\d{6,})(?:\/|$)/);
+    const shop = m?.[1] || u.searchParams.get('shopid');
+    const item = m?.[2] || u.searchParams.get('itemid');
+    if (shop && item) {
+      return `https://shopee.vn/product-i.${shop}.${item}`;
+    }
+  } catch {}
+  return urlStr;
+}
+
 export async function resolveRedirects(rawUrl, maxRedirects = 8) {
   let u = (rawUrl || '').trim();
   if (!u) throw new Error('Chưa nhập đường link sản phẩm');
@@ -58,20 +80,21 @@ export async function resolveRedirects(rawUrl, maxRedirects = 8) {
     } catch {}
 
     const platform = detectPlatform(u);
-    // Thử tách ID; nếu đã ra ID đầy đủ và không phải link rút gọn thì có thể dừng sớm
+    // Thử tách ID; nếu đã ra ID đầy đủ và không phải link rút gọn hay link affiliate trung gian thì có thể dừng sớm
     const ids = parseProductIds(u, platform);
     const isShortLink = /(shope\.ee|shp\.ee|s\.shopee\.vn|lzd\.co|s\.lazada\.vn|vt\.tiktok\.com)/i.test(u);
-    if (ids && !isShortLink) {
-      return { finalUrl: u, platform };
+    const isAffiliateLanding = /\/opaanlp\/\d+\/\d+/i.test(u);
+    if (ids && !isShortLink && !isAffiliateLanding) {
+      return { finalUrl: normalizeShopeeUrl(u), platform };
     }
 
     try {
-      const isShopee = /(shope\.ee|shp\.ee|s\.shopee\.vn|shopee\.)/i.test(u);
+      // Dùng Desktop UA cho redirect để các sàn (đặc biệt Shopee Affiliate) trả mã HTTP 301/302 chuẩn thay vì trang HTML 200 mời tải app.
       const res = await fetch(u, {
         method: 'GET',
         redirect: 'manual',
         headers: {
-          'user-agent': isShopee ? MOBILE_UA : UA,
+          'user-agent': UA,
           'accept': ACCEPT_HEADER,
           'accept-language': ACCEPT_LANG,
         },
@@ -79,7 +102,7 @@ export async function resolveRedirects(rawUrl, maxRedirects = 8) {
 
       const loc = res.headers.get('location');
       if (!loc) {
-        return { finalUrl: u, platform: detectPlatform(u) };
+        break;
       }
       u = new URL(loc, u).href;
     } catch (err) {
@@ -88,7 +111,8 @@ export async function resolveRedirects(rawUrl, maxRedirects = 8) {
     }
   }
 
-  return { finalUrl: u, platform: detectPlatform(u) };
+  const finalUrl = normalizeShopeeUrl(u);
+  return { finalUrl, platform: detectPlatform(finalUrl) };
 }
 
 /**
@@ -103,6 +127,10 @@ export function parseProductIds(urlStr, platform) {
     const search = u.searchParams;
 
     if (platform === 'shopee') {
+      // Mẫu /opaanlp/<shopId>/<itemId> (Shopee Affiliate Landing Page)
+      const m0 = pathname.match(/\/opaanlp\/(\d+)\/(\d+)/);
+      if (m0) return { shopId: m0[1], itemId: m0[2] };
+
       // Mẫu -i.<shopId>.<itemId>
       const m1 = pathname.match(/-i\.(\d+)\.(\d+)/);
       if (m1) return { shopId: m1[1], itemId: m1[2] };
@@ -161,6 +189,8 @@ export function extractFromHtml(html, platform, urlStr) {
     let clean = url.trim();
     if (clean.startsWith('//')) clean = 'https:' + clean;
     if (!/^https?:\/\//i.test(clean)) return;
+    // Bỏ các logo tĩnh, banner hệ thống và ảnh placeholder của sàn
+    if (/(homepagefe|shopee-mobilemall-live|shopee_logo|default_logo|\/assets\/)/i.test(clean)) return;
     // Bỏ các hậu tố thu nhỏ của Shopee (@resize_..., _tn) để lấy ảnh gốc độ nét cao
     clean = clean.replace(/@[^/?#]*$/, '').replace(/_tn$/, '');
     if (seenImgs.has(clean)) return;
@@ -613,77 +643,48 @@ export async function searchFallbackImages(query, limit = 6) {
  */
 export async function fetchProduct(inputUrl) {
   if (!inputUrl?.trim()) throw new Error('Chưa dán đường link sản phẩm');
+  const rawInput = inputUrl.trim().match(/^https?:\/\//i) ? inputUrl.trim() : 'https://' + inputUrl.trim();
 
-  // Bước 0: Ưu tiên mở bằng Chrome thật (cửa sổ Flow) — sàn chặn bot/tải bằng JS nên fetch "chay" lúc được lúc không.
-  // Chrome đi theo cả redirect bằng JavaScript của link rút gọn, và ta đọc được JSON API sản phẩm của sàn.
-  let browserData = null;
-  let browserNote = '';
-  try {
-    const r = await fetchProductWithBrowser(inputUrl.trim().match(/^https?:\/\//i) ? inputUrl.trim() : 'https://' + inputUrl.trim());
-    if (r) {
-      browserData = { ...parseBrowserResult(r), finalUrl: r.finalUrl, blocked: r.blocked };
-      if (r.blocked && !browserData.images.length) browserNote = 'Sàn đang yêu cầu xác minh (captcha) trong cửa sổ Chrome của Flow — mở cửa sổ đó, qua bước xác minh rồi thử lại.';
-      else if (r.notProduct) browserNote = 'Link này không mở ra trang sản phẩm (Shopee chuyển về trang chủ) — kiểm tra lại link hoặc sản phẩm đã bị gỡ.';
-    } else {
-      browserNote = 'Chưa mở Chrome cho Flow nên chỉ tải HTML thường (dễ bị sàn chặn) — vào Cài đặt bấm "Mở Chrome & đăng nhập" để lấy ảnh ổn định hơn.';
-    }
-  } catch (e) {
-    console.warn('[Browser scrape] lỗi:', e.message);
-  }
-
-  // Bước 1: Nhận diện sàn & Theo vết chuyển hướng
-  const resolved = await resolveRedirects(browserData?.finalUrl || inputUrl);
-  const finalUrl = resolved.finalUrl;
-  const platform = resolved.platform !== 'unknown' ? resolved.platform : detectPlatform(inputUrl);
+  // Bước 1: Nhận diện sàn & Theo vết chuyển hướng (tự động phân giải link rút gọn, affiliate và đưa về URL chuẩn)
+  const resolved = await resolveRedirects(rawInput);
+  const finalUrl = normalizeShopeeUrl(resolved.finalUrl);
+  const platform = resolved.platform !== 'unknown' ? resolved.platform : detectPlatform(finalUrl);
 
   // Bước 2: Tách mã định danh
   const ids = parseProductIds(finalUrl, platform);
 
-  // Bước 3: Tải HTML & Bóc tách đa tầng (chỉ khi trình duyệt chưa lấy đủ)
-  let extracted;
-  if (browserData && browserData.images.length >= 1 && browserData.title) {
-    extracted = { title: browserData.title, description: browserData.description, price: browserData.price, currency: 'VND', images: browserData.images };
-  } else {
-    let rawHtml = '';
-    // Shopee chỉ kích hoạt Server-Side Rendering (SSR) khi client là Mobile.
-    // Nếu dùng Desktop UA, Shopee trả về SPA rỗng không có ảnh hay dữ liệu sản phẩm.
-    const reqUa = platform === 'shopee' ? MOBILE_UA : UA;
+  // Bước 3: Tải trực tiếp HTML SSR ngầm (tải thuần túy qua HTTP, không mở bất kỳ tab trình duyệt nào)
+  let rawHtml = '';
+  // Shopee chỉ kích hoạt Server-Side Rendering (SSR) khi client là Mobile.
+  // Nếu dùng Desktop UA, Shopee trả về SPA rỗng không có ảnh hay dữ liệu sản phẩm.
+  const reqUa = platform === 'shopee' ? MOBILE_UA : UA;
+  try {
+    const res = await fetch(finalUrl, {
+      headers: {
+        'user-agent': reqUa,
+        'accept': ACCEPT_HEADER,
+        'accept-language': ACCEPT_LANG,
+        'referer': `https://${new URL(finalUrl).hostname}/`,
+      },
+    });
+    if (res.ok) rawHtml = await res.text();
+  } catch {}
+
+  // Dự phòng lần 2: Nếu là Shopee mà vẫn chưa có hash ảnh hay dữ liệu, thử lại với Mobile UA rõ ràng
+  if (platform === 'shopee' && (!rawHtml || !rawHtml.includes('susercontent.com'))) {
     try {
-      const res = await fetch(finalUrl, {
+      const res2 = await fetch(finalUrl, {
         headers: {
-          'user-agent': reqUa,
-          'accept': ACCEPT_HEADER,
-          'accept-language': ACCEPT_LANG,
-          'referer': `https://${new URL(finalUrl).hostname}/`,
+          'user-agent': MOBILE_UA,
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
         },
       });
-      if (res.ok) rawHtml = await res.text();
+      if (res2.ok) rawHtml = await res2.text();
     } catch {}
-
-    // Dự phòng lần 2: Nếu là Shopee mà vẫn chưa có hash ảnh hay dữ liệu, thử lại với Mobile UA rõ ràng
-    if (platform === 'shopee' && (!rawHtml || !rawHtml.includes('susercontent.com'))) {
-      try {
-        const res2 = await fetch(finalUrl, {
-          headers: {
-            'user-agent': MOBILE_UA,
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-          },
-        });
-        if (res2.ok) rawHtml = await res2.text();
-      } catch {}
-    }
-
-    extracted = extractFromHtml(rawHtml, platform, finalUrl);
-    // Gộp thêm những gì trình duyệt lấy được (nếu có)
-    if (browserData) {
-      if (!extracted.title) extracted.title = browserData.title;
-      if (!extracted.description) extracted.description = browserData.description;
-      if (extracted.price == null) extracted.price = browserData.price;
-      const seen = new Set(extracted.images.map((i) => i.url));
-      for (const im of browserData.images) if (!seen.has(im.url)) extracted.images.push(im);
-    }
   }
+
+  const extracted = extractFromHtml(rawHtml, platform, finalUrl);
 
   // Bước 4: Cơ chế dự phòng từ Slug nếu tiêu đề bị thiếu hoặc chặn bot
   let rawTitle = extracted.title;
@@ -708,7 +709,7 @@ export async function fetchProduct(inputUrl) {
 
   // Chỉ tìm ảnh ngoài khi thật sự có tên sản phẩm (không phải trang chủ/trang chặn) — tránh trả ảnh sai sản phẩm
   const titleLooksReal = rawTitle && !isGenericTitle && !/hot deals|best prices|mua sắm online/i.test(rawTitle);
-  if (images.length === 0 && titleLooksReal && !browserData?.notProduct) {
+  if (images.length === 0 && titleLooksReal) {
     const fallbackImgs = await searchFallbackImages(cleaned.cleanTitle || rawTitle, 6);
     if (fallbackImgs.length > 0) {
       images = fallbackImgs;
@@ -737,9 +738,9 @@ export async function fetchProduct(inputUrl) {
     images,
     usedFallbackImage,
     usedGemini: cleaned.usedGemini,
-    usedBrowser: !!(browserData && browserData.source !== 'none'),
-    imageSource: browserData?.source || (extracted.images.length ? 'html' : 'none'),
-    note: browserNote || (images.length === 0 ? 'Không lấy được ảnh nào từ link này.' : ''),
+    usedBrowser: false,
+    imageSource: extracted.images.length ? 'html' : 'none',
+    note: images.length === 0 ? 'Không lấy được ảnh nào từ link này.' : '',
   };
 }
 
@@ -748,7 +749,8 @@ export async function fetchProduct(inputUrl) {
  * Tải các ảnh đã chọn về Thư viện Assets (data/assets)
  * ============================================================================
  */
-export async function importImages(kind = 'product', images = []) {
+// staging = ảnh "nháp" (bóc tách để làm sạch / xem thử): không hiện trong thư viện cho tới khi người dùng bấm Dùng
+export async function importImages(kind = 'product', images = [], { staging = false } = {}) {
   if (!images.length) throw new Error('Chưa chọn ảnh nào để thêm vào thư viện');
   const out = [];
 
@@ -792,6 +794,7 @@ export async function importImages(kind = 'product', images = []) {
       path: dest,
       createdAt: Date.now(),
       source: urlStr,
+      staging: !!staging,
     };
 
     db.assets.unshift(asset);

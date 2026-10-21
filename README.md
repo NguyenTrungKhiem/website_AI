@@ -18,6 +18,8 @@ Không cần cài ffmpeg riêng — đã có sẵn qua npm (`ffmpeg-static`). D�
 
 Menu **AI Dancing** chạy trọn gói cho 1 video gốc đã cắt: cắt khung hình 0.1s → sinh **bối cảnh mới** (ảnh) → **thay người + sản phẩm** cho từng đoạn → **thay bối cảnh** vào video đã tạo → **ghép** lại + chèn âm thanh gốc. Mỗi bước có prompt mẫu riêng, sửa được ngay trên trang (lưu trong Cài đặt), và được "đóng băng" vào từng lần chạy.
 
+- Sau bước **Thay nhân vật + sản phẩm**, lần chạy dừng lại (⏸ Chờ bạn kiểm tra) để bạn xem video từng đoạn; ưng rồi bấm **▶ Tiếp tục: thay bối cảnh** (bước này mới tốn credit). Bỏ tick tuỳ chọn "Dừng lại để kiểm tra…" nếu muốn chạy thẳng. Video motion đổi (thử lại / thay file) thì kiểm tra lại.
+- Ảnh bối cảnh do Flow tạo được dùng lại ngay trong dự án Flow khi thay bối cảnh (nhận theo tên ảnh trên Flow), không tải ảnh lên lại; nếu ảnh không còn trên Flow thì tự tải lên như thường.
 - Lần chạy dừng khi có video lỗi: bấm **Tiếp tục** trên lần chạy để tạo lại các video lỗi và chạy tiếp (muốn sửa prompt trước thì dùng **Sửa prompt** trên video đó). Server khởi động lại cũng tiếp tục được.
 - Mỗi lần chạy hiện tiến trình từng bước, khung hình gốc, bối cảnh mới, video hoàn chỉnh và nút **Đăng video**.
 - Mục **Từng đoạn** trong lần chạy: mỗi đoạn có thẻ video motion và thẻ video đã thay nền — xem video, **Thử lại** / **Sửa prompt**, chọn lần tạo tốt nhất, xoá lần tạo. Đổi kết quả ở cột motion → web tự thay nền lại cho đoạn đó và ghép lại; đổi ở cột thay nền → chỉ ghép lại.

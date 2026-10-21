@@ -101,6 +101,7 @@ export async function createOrSchedulePost(apiKey, {
   scheduledFor = null, // Chuỗi ISO-8601 hoặc null
   timezone = 'Asia/Ho_Chi_Minh',
   publishNow = false,
+  tiktokSettings = null,
 }) {
   if (!apiKey?.trim()) throw new Error('Chưa cung cấp Zernio API Key');
   if (!platforms.length) throw new Error('Chưa chọn tài khoản mạng xã hội để đăng trên Zernio');
@@ -111,10 +112,16 @@ export async function createOrSchedulePost(apiKey, {
   }
   if (!mediaUrl) throw new Error('Không có URL video để đăng');
 
-  const formattedPlatforms = platforms.map((p) => ({
-    platform: p.platform,
-    accountId: p.accountId || p._id || p.id,
-  }));
+  const formattedPlatforms = platforms.map((p) => {
+    const item = {
+      platform: p.platform,
+      accountId: p.accountId || p._id || p.id,
+    };
+    if (p.platform === 'youtube' && title) {
+      item.platformSpecificData = { youtube: { title: title.slice(0, 100) } };
+    }
+    return item;
+  });
 
   const body = {
     content: content || title || 'Video',
@@ -130,8 +137,21 @@ export async function createOrSchedulePost(apiKey, {
 
   if (title) {
     body.title = title;
-    body.platformSpecificData = {
-      youtube: { title: title.slice(0, 100) },
+  }
+
+  // Cấu hình chuyên biệt cho TikTok (bao gồm TikTok Shop Affiliate / Draft / Commercial Disclosure)
+  if (tiktokSettings) {
+    body.tiktokSettings = {
+      privacy_level: tiktokSettings.draft ? 'SELF_ONLY' : (tiktokSettings.privacy_level || 'PUBLIC_TO_EVERYONE'),
+      allow_comment: tiktokSettings.allow_comment ?? true,
+      allow_duet: tiktokSettings.allow_duet ?? true,
+      allow_stitch: tiktokSettings.allow_stitch ?? true,
+      content_preview_confirmed: true,
+      express_consent_given: true,
+      ...(tiktokSettings.draft ? { draft: true } : {}),
+      ...(tiktokSettings.commercialContentType ? { commercialContentType: tiktokSettings.commercialContentType } : {}),
+      ...(tiktokSettings.isBrandOrganicPost ? { isBrandOrganicPost: true, brand_organic_toggle: true } : {}),
+      ...(tiktokSettings.brandContentToggle ? { brand_content_toggle: true } : {}),
     };
   }
 

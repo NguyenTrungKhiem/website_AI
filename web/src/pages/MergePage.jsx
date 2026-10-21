@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { Badge, ConfirmButton, FileDrop, fmt, useAction } from '../components.jsx';
 
 export default function MergePage({ state, refresh, go, handoff }) {
-  const done = state.jobs.filter((j) => j.status === 'done');
+  const done = state.jobs.filter((j) => j.status === 'done' && j.type !== 'image'); // chỉ video, không lấy job sinh ảnh
   const byId = useMemo(() => Object.fromEntries(state.jobs.map((j) => [j.id, j])), [state.jobs]);
   const [seq, setSeq] = useState(handoff.merge);
   const [filter, setFilter] = useState('all');
