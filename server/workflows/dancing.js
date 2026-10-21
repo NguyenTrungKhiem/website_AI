@@ -7,16 +7,28 @@ Identify the key objects and architectural elements in the original reference an
 If the space appears too empty, add a few subtle, small decorative details consistent with the setting.
 Strictly preserve the original camera angle, perspective, spatial depth and light direction to maintain the exact same environment, but render the lighting bright, soft and evenly exposed so a person placed in this scene later will be well lit.`;
 
-const MOTION_PROMPT = `[PROTOCOL: TOTAL_VISUAL_RECONSTRUCTION]
-IDENTITY_FUSION (MULTI-VIEW): Using 3D skeletal motion transfer.
-[CORE DIRECTIVE: SKELETAL_IDENTITY_ANCHORING]
-1. KINETIC_PRIORITY: The rhythmic timing, speed, and spatial translation of the source video are SACROSANCT. Do not alter the dance path.
-2. GEOMETRIC_RECONSTRUCTION: Sculpt the target face's bone structure (jawline, brow, eye sockets) EXACTLY as the reference photo.
-3. MOTION_MAP: Anchor every facial pixel onto the source video's head-skeleton. The face must "slide" perfectly with the original dance movement.
-4. IDENTITY_OVER_EXPRESSION: If there is a conflict, prioritize the static geometry of the reference face over the fluid expressions of the source.
-5. SILENT_WORKFLOW: Ignore all audio data. No lip-sync or speech editing.
-STRICT MOTION LOCK: Maintain 100% original skeletal movement. Zero spatial distortion. Keep limb and torso trajectories identical to source.
-FINAL_OBJECTIVE: Force the source body to wear the reference outfit and the reference face. The face MUST look like the photo, but the dance MUST be identical to the source video.`;
+// Bước 2 – thay nhân vật + sản phẩm. Thứ tự file trong ô prompt Flow: ảnh 1 = model, ảnh 2 = sản phẩm, rồi video gốc.
+// Viết bằng câu rõ ràng (model video hiểu tốt hơn thuật ngữ giả kỹ thuật), tách 3 phần: GIỮ NGUYÊN / THAY / CẤM,
+// nhấn mạnh khớp từng khung với video gốc vì đây là chỗ hay lệch nhất.
+const MOTION_PROMPT = `Video-to-video character and outfit replacement. Inputs, in order: image 1 = the model (face and identity), image 2 = the outfit (product), then the source video.
+
+KEEP EXACTLY FROM THE SOURCE VIDEO, frame by frame, for its full duration:
+- The same dance: every movement, pose, gesture, step, turn and hair flip, with identical timing, speed and rhythm. Each output frame must match the source frame at the same moment. Do not add, skip, smooth out, slow down or speed up any movement.
+- The same body position and size in the frame, the same distance to the camera, and the same camera framing, angle, zoom and camera movement. If the camera is static in the source, keep it static.
+- The same background, room, lighting direction and color temperature. Do not change or clean up the background.
+- The same body proportions and silhouette as the dancer, so the movement fits naturally.
+
+REPLACE:
+- The dancer's face, head and hair with the person in image 1. Match her face exactly: face shape, jawline, eyes, eyebrows, nose, lips, skin tone and hairstyle. Keep this same face consistent in every frame, including when she turns her head, moves fast or is partly in profile. The facial expression may follow the source naturally, but the identity must stay the same.
+- The dancer's clothing with the garment in image 2. Reproduce it exactly: same color, pattern, print, fabric and sheen, neckline, straps, sleeves, length, fit and every detail. She wears only this garment as her outfit, and it moves, folds and stretches realistically with every dance movement.
+
+DO NOT:
+- Do not invent new moves, change the choreography, or change the camera.
+- Do not add text, logos, watermarks, captions, extra people, accessories or props that are not in the inputs.
+- Do not morph, flicker or drift the face, body or clothes between frames. Hands, fingers, arms and legs must stay natural and anatomically correct.
+- Ignore the audio of the source video. No lip-sync or speech.
+
+Output: a photorealistic video with the same duration, aspect ratio and framing as the source video, looking like the person in image 1 performed this exact dance wearing the garment from image 2.`;
 
 const REPLACE_PROMPT = `Keep the person, their motion, the product and the camera movement exactly the same as the input video.
 Replace only the background and environment with the scene shown in the reference image, with matching lighting, shadows and perspective so it looks naturally filmed there.`;
