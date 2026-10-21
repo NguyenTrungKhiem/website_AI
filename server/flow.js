@@ -244,8 +244,62 @@ async function hasAsset(page, name) {
   return found;
 }
 
+// Chrome của Flow đăng nhập nhiều tài khoản Google: trang dự án ở /u/N/ nhưng lời gọi tải video
+// (flow.google.com/upload/v1/flow/upload/...) không mang /u/N/ nên Google xử lý theo tài khoản mặc định u/0
+// -> 403 "User does not have access to project". Gắn thêm tài khoản đúng (header X-Goog-AuthUser + ?authuser=N)
+// vào các lời gọi đó. Chỉ có tác dụng khi dự án mở ở /u/N/ với N ≥ 1; một tài khoản thì không đổi gì.
+const routedPages = new WeakSet();
+const authUserOf = (url) => url.match(/flow\.google\.com\/u\/(\d+)\//)?.[1] || null;
+
+async function ensureAuthUserRoute(page, settings) {
+  if (routedPages.has(page)) return;
+  routedPages.add(page);
+  await page.route(/flow\.google\.com\/upload\//, (route) => {
+    const req = route.request();
+    const n = authUserOf(page.url()) || authUserOf(settings.flowProjectUrl || '');
+    if (!n || n === '0') return route.continue();
+    const url = new URL(req.url());
+    if (!url.searchParams.has('authuser')) url.searchParams.set('authuser', n);
+    return route.continue({ url: url.href, headers: { ...req.headers(), 'x-goog-authuser': n } });
+  });
+}
+
 async function uploadFiles(page, files, settings) {
   await openAssetPanel(page);
+  await ensureAuthUserRoute(page, settings);
+  // Bắt lỗi từ máy chủ upload của Flow (vd. 403 khi trình duyệt đăng nhập nhiều tài khoản Google:
+  // video upload không mang /u/N/ nên bị gửi theo tài khoản mặc định u/0)
+  const uploadErrors = [];
+  const onResponse = async (res) => {
+    if (!/\/upload\/v\d+\/flow\/upload\//.test(res.url()) || res.status() < 400) return;
+    let body = '';
+    try { body = (await res.text()).slice(0, 200); } catch {}
+    uploadErrors.push({ status: res.status(), body });
+  };
+  page.on('response', onResponse);
+  try {
+    await doUpload(page, files, settings, uploadErrors);
+  } finally {
+    page.off('response', onResponse);
+  }
+}
+
+function uploadErrorMessage(err, page) {
+  if (err.status === 403 && /does not have access to project/i.test(err.body)) {
+    const multi = /\/u\/[1-9]\d*\//.test(page.url());
+    return 'Flow từ chối tải video lên (403: tài khoản không có quyền với dự án).' +
+      (multi
+        ? ' Cửa sổ Chrome của Flow đang đăng nhập nhiều tài khoản Google và dự án thuộc tài khoản phụ (/u/1/…), nhưng Flow gửi video theo tài khoản mặc định. Cách sửa: trong cửa sổ Chrome của Flow, đăng xuất tài khoản cũ (chỉ giữ tài khoản dùng cho Flow), rồi xoá ô "Dự án Flow dùng chung" trong Cài đặt để web tạo dự án mới, bấm Thử lại.'
+        : ' Kiểm tra dự án trong Cài đặt có thuộc đúng tài khoản đang đăng nhập không (xoá ô "Dự án Flow dùng chung" để tạo dự án mới).');
+  }
+  return `Flow báo lỗi khi tải file lên (HTTP ${err.status}): ${err.body || 'không rõ'}`;
+}
+
+async function doUpload(page, files, settings, uploadErrors) {
+  // Ô "upload failed" của lần trước có thể còn trong dự án -> chỉ tính ô lỗi MỚI xuất hiện
+  const failedTileOf = (name) => page.locator(`main [role="group"][aria-label^="${name}"]`).filter({ hasText: /upload failed/i });
+  const failedBefore = {};
+  for (const f of files) failedBefore[path.parse(f).name] = await failedTileOf(path.parse(f).name).count().catch(() => 0);
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser', { timeout: 15_000 }),
     page.getByRole('button', { name: 'Upload media' }).click(),
@@ -263,8 +317,22 @@ async function uploadFiles(page, files, settings) {
     }
     await dialog.getByRole('button', { name: 'I agree', exact: true }).click();
   }
+  // Chờ từng file xuất hiện trong thư viện; dừng ngay nếu máy chủ upload báo lỗi hoặc ô file hiện "upload failed"
   for (const f of files) {
-    await assetList(page).getByRole('option', { name: new RegExp('^' + path.parse(f).name + '\\b') }).waitFor({ timeout: 180_000 });
+    const name = path.parse(f).name;
+    // Khi đang tải, option có tên "Uploading vs-…" nên không khớp ^name; tải xong mới thành "vs-… Video/Image"
+    const option = assetList(page).getByRole('option', { name: new RegExp('^' + name + '\\b') });
+    const failedTile = failedTileOf(name);
+    const deadline = Date.now() + 180_000;
+    for (;;) {
+      if (uploadErrors.length) throw new Error(uploadErrorMessage(uploadErrors[0], page));
+      if (await option.count().catch(() => 0)) break;
+      if ((await failedTile.count().catch(() => 0)) > failedBefore[name]) {
+        throw new Error(`Flow báo "Video upload failed" cho ${path.basename(f)}. Nếu cửa sổ Chrome của Flow đang đăng nhập nhiều tài khoản Google, hãy đăng xuất tài khoản cũ rồi thử lại.`);
+      }
+      if (Date.now() > deadline) throw new Error(`Quá 3 phút chưa tải xong ${path.basename(f)} lên Flow`);
+      await sleep(1000);
+    }
   }
 }
 
@@ -422,11 +490,16 @@ async function waitForResult(page, before, log, names, kind = 'video') {
       if (pct !== reported) log(`Đang tạo… ${(reported = pct)}`);
       continue;
     }
-    // Video: cần <video src>; ảnh: cần <img src> và không phải ô video
-    const media = kind === 'image' ? (t.src ? '' : t.isrc) : (t.hasVideo ? t.src : '');
-    if (!/^https?:/.test(media)) continue;
     if (Date.now() - startedAt < 25_000) continue;
-    if (media !== lastSrc) { lastSrc = media; continue; } // đợi src ổn định qua 2 lần kiểm tra
+    // Video: cần <video src>; ảnh: cần <img src> và không phải ô video
+    let media = kind === 'image' ? (t.src ? '' : t.isrc) : t.src;
+    if (kind !== 'image' && !/^https?:/.test(media || '') && /^https?:/.test(t.isrc || '')) {
+      // Video xong nhưng Flow chỉ hiện ảnh thu nhỏ, <video> chỉ được nạp khi rê chuột vào ô
+      // -> tự rê chuột vào ô kết quả thay cho người dùng
+      media = (await tileMediaSrc(page, page.locator(TILE).nth(t.i), 'video')) || '';
+    }
+    if (!/^https?:/.test(media || '')) continue;
+    if (mediaId(media) !== mediaId(lastSrc)) { lastSrc = media; continue; } // đợi src ổn định qua 2 lần kiểm tra
     return page.locator(TILE).nth(t.i);
   }
   throw new Error('Quá 20 phút chưa thấy video kết quả trên Flow');
