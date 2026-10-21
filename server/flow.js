@@ -41,7 +41,7 @@ export async function launchChrome() {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
   const p = spawn(
     exe,
-    [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', FLOW_URL],
+    [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', withEn(FLOW_URL)],
     { detached: true, stdio: 'ignore' },
   );
   p.unref();
@@ -66,7 +66,7 @@ export async function flowPage() {
   let page = ctx.pages().find((p) => isFlowUrl(p.url()));
   if (!page) {
     page = await ctx.newPage();
-    await page.goto(FLOW_URL, { waitUntil: 'domcontentloaded' });
+    await page.goto(withEn(FLOW_URL), { waitUntil: 'domcontentloaded' });
   }
   return page;
 }
@@ -176,29 +176,41 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
 const flowKey = (title) => String(title).replace(/…\s*$/, '').trim();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Mọi bộ chọn trong file này theo giao diện tiếng Anh của Flow -> luôn mở Flow với ?hl=en
+// (dự án mở bằng link khác có thể hiện tiếng Việt: "Bạn muốn tạo gì?" thay vì "What do you want to create?")
+const withEn = (url) => (/[?&]hl=/.test(url) ? url : url + (url.includes('?') ? '&' : '?') + 'hl=en');
+const pageLang = (page) => page.evaluate(() => document.documentElement.lang || '').catch(() => '');
+
 // Dùng chung 1 dự án Flow cho mọi video (tạo mới lần đầu, lưu lại URL)
 async function openProject(page, settings) {
   if (settings.flowProjectUrl) {
-    if (!page.url().startsWith(settings.flowProjectUrl)) {
-      await page.goto(settings.flowProjectUrl, { waitUntil: 'domcontentloaded' });
+    if (!page.url().startsWith(settings.flowProjectUrl) || !/^en/.test(await pageLang(page))) {
+      await page.goto(withEn(settings.flowProjectUrl), { waitUntil: 'domcontentloaded' });
     }
   } else {
     if (!page.url().includes('/project/')) {
-      await page.goto(FLOW_URL, { waitUntil: 'domcontentloaded' });
+      await page.goto(withEn(FLOW_URL), { waitUntil: 'domcontentloaded' });
       await page.getByRole('button', { name: 'New project' }).click();
       await page.waitForURL(/\/project\//, { timeout: 30_000 });
     }
     settings.flowProjectUrl = page.url().split('?')[0];
   }
-  // Trang dự án đôi khi kẹt "Loading…" (nhất là ngay sau khi mở Chrome) -> tải lại rồi chờ tiếp
+  // Trang dự án đôi khi kẹt "Loading…" (nhất là ngay sau khi mở Chrome) -> tải lại rồi chờ tiếp;
+  // trang không phải tiếng Anh -> mở lại với ?hl=en
   const box = page.getByRole('textbox', { name: 'What do you want to create?' });
   for (let i = 0; ; i++) {
     try {
       await box.waitFor({ timeout: 20_000 });
       break;
     } catch (e) {
-      if (i >= 2) throw new Error('Trang dự án Flow không tải được (kẹt "Loading…") — thử tải lại trang trong cửa sổ Chrome của Flow.');
-      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      const lang = await pageLang(page);
+      if (i >= 2) {
+        throw new Error(lang && !/^en/.test(lang)
+          ? `Trang Flow đang hiện ngôn ngữ "${lang}" nên web không nhận ra giao diện — mở lại link dự án kèm ?hl=en trong cửa sổ Chrome của Flow rồi thử lại.`
+          : 'Trang dự án Flow không tải được (kẹt "Loading…") — thử tải lại trang trong cửa sổ Chrome của Flow.');
+      }
+      if (lang && !/^en/.test(lang)) await page.goto(withEn(page.url()), { waitUntil: 'domcontentloaded' }).catch(() => {});
+      else await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
   }
 }
@@ -273,6 +285,12 @@ async function addIngredient(page, name) {
 // Video: Video / Ingredients / tỉ lệ / Omni 1.1 Flash / độ phân giải / x1.
 // Ảnh: Image / tỉ lệ / Nano Banana / x1. Trả về số credit sẽ tốn.
 async function configure(page, settings, kind = 'video') {
+  // Chế độ "Agent" của Flow (dự án mới mặc định bật) ẩn nút cài đặt model -> tắt đi
+  const agent = page.locator('button.agent-mode-chip-checked');
+  if (await agent.count()) {
+    await agent.click();
+    await sleep(800);
+  }
   await page.getByRole('button', { name: 'Settings trigger' }).click();
   const radio = (name) => page.getByRole('radio', { name, exact: true });
   const family = page.getByRole('button', { name: 'Select model family' });

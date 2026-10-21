@@ -75,7 +75,7 @@ Lưu ý:
 - Không được Google hỗ trợ chính thức, có thể vi phạm điều khoản → nguy cơ tài khoản bị hạn chế. Nên dùng tài khoản Google riêng.
 - Flow hỏi "Rights to use this video" mỗi lần tải lên. Mặc định web dừng lại chờ bạn tự bấm; chỉ tự bấm "I agree" khi bạn tick ô tương ứng trong Cài đặt.
 - Web không giải CAPTCHA/xác minh: nếu Google hỏi, tự làm trong cửa sổ Chrome rồi bấm Thử lại.
-- Google đổi giao diện Flow thì phần tự động có thể hỏng; bộ chọn nằm trong `server/flow.js`, công cụ khảo sát giao diện: `node scripts/flow-inspect.mjs`.
+- Google đổi giao diện Flow thì phần tự động có thể hỏng; bộ chọn nằm trong `server/flow.js` (theo giao diện **tiếng Anh**; web luôn mở Flow với `?hl=en`, nên dán link dự án nào cũng được), công cụ khảo sát giao diện: `node scripts/flow-inspect.mjs`.
 
 ## Token mạng xã hội
 
