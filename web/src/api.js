@@ -29,6 +29,7 @@ export const api = {
   },
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`),
   cleanAsset: (id, prompt) => req('POST', `/api/assets/${id}/clean`, { prompt }),
+  identitySheet: (id, prompt) => req('POST', `/api/assets/${id}/identity-sheet`, { prompt }),
   fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
   importProduct: (kind, images, staging = false) => req('POST', '/api/product/import', { kind, images, staging }),
   useAsset: (id) => req('POST', `/api/assets/${id}/use`),
@@ -61,6 +62,8 @@ export const api = {
   cancelRun: (id) => req('POST', `/api/runs/${id}/cancel`),
   deleteRun: (id, withJobs = true) => req('DELETE', `/api/runs/${id}?withJobs=${withJobs ? 1 : 0}`),
   flowStatus: () => req('GET', '/api/flow/status'),
+  agentStatus: () => req('GET', '/api/agent-status'),
+  agentTokenRegenerate: () => req('POST', '/api/agent-token/regenerate'),
   flowLaunch: () => req('POST', '/api/flow/launch'),
   extractAudio: (sourceId) => req('POST', `/api/sources/${sourceId}/extract-audio`),
   uploadAudio: (file) => {

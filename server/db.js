@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DATA_DIR = path.resolve(import.meta.dirname, '../data');
+// DATA_DIR=... để chạy thử với thư mục dữ liệu riêng (vd. engine giả) mà không đụng dữ liệu thật
+export const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(import.meta.dirname, '../data');
 export const DIRS = {
   sources: path.join(DATA_DIR, 'sources'),
   clips: path.join(DATA_DIR, 'clips'),
@@ -18,10 +19,11 @@ for (const d of Object.values(DIRS)) fs.mkdirSync(d, { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const DEFAULT_SETTINGS = {
-  engine: 'flow', // flow = tự động hoá Google Flow (dùng credit Flow) | mock = engine giả để thử quy trình
+  engine: 'extension', // extension = Flow qua extension trong Chrome thường (bạn bấm nút tạo) | mock = engine giả. (flow = Playwright, không còn dùng)
   flowResolution: '720p', // 360p rẻ hơn 1 nửa credit
   flowProjectUrl: '', // dự án Flow dùng chung, tự tạo lần đầu
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
+  agentToken: '', // token cho extension (engine "extension"), tự tạo lần đầu (server/agentApi.js)
   aspectRatio: '9:16',
   geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
   geminiModel: 'gemini-2.5-flash',
@@ -61,7 +63,8 @@ function load() {
   const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   const settings = deepMerge(structuredClone(DEFAULT_SETTINGS), data.settings || {});
   for (const k of REMOVED_SETTINGS) delete settings[k];
-  if (settings.engine !== 'mock') settings.engine = 'flow';
+  // Playwright (engine "flow") không còn dùng: cài đặt cũ tự chuyển sang extension
+  if (!['mock', 'extension', 'flow'].includes(settings.engine)) settings.engine = 'extension';
   return { ...structuredClone(EMPTY), ...data, settings };
 }
 

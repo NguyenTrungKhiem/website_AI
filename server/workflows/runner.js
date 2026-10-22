@@ -78,9 +78,40 @@ export function deleteRun(run, { withJobs = true } = {}) {
       for (const a of j.attempts) { rm(a.outputPath); rm(a.thumbPath); }
     }
     db.jobs = db.jobs.filter((j) => j.runId !== run.id);
+    // Ảnh nháp riêng của lần chạy (keyframe) bỏ luôn; ảnh bối cảnh (trong thư viện) và bảng mặt 360° (dùng lại) giữ lại
+    for (const a of db.assets.filter((a) => a.runId === run.id && a.staging && !a.identitySheet)) rm(a.path);
+    db.assets = db.assets.filter((a) => !(a.runId === run.id && a.staging && !a.identitySheet));
   }
   db.runs = db.runs.filter((r) => r !== run);
   save();
+}
+
+/**
+ * Job tạo bảng mặt 360° (meta.identityOf = id ảnh model) xong -> lưu thành ảnh nháp kind "model" gắn với ảnh model
+ * (fromAssetId), kèm flowTitle để dùng lại trên Flow. Gọi nhiều lần an toàn: job đổi kết quả (thử lại / chọn lần tạo khác)
+ * thì cập nhật file của ảnh đã có chứ không tạo ảnh mới. Trả về ảnh (hoặc null nếu job chưa xong / không phải job này).
+ */
+export function registerIdentitySheet(job) {
+  if (job?.type !== 'image' || job.status !== 'done' || !job.meta?.identityOf || !job.outputPath) return null;
+  let a = job.meta.assetId && db.assets.find((x) => x.id === job.meta.assetId);
+  if (a && job.meta.assetFrom === job.outputPath) return a;
+  const flowTitle = job.attempts.find((x) => x.outputPath === job.outputPath)?.flowTitle || null;
+  if (!a) {
+    const src = db.assets.find((x) => x.id === job.meta.identityOf);
+    const id = newId();
+    const dest = path.join(DIRS.assets, id + path.extname(job.outputPath));
+    fs.copyFileSync(job.outputPath, dest);
+    const n = db.assets.filter((x) => x.identitySheet && x.fromAssetId === job.meta.identityOf).length + 1;
+    a = { id, kind: 'model', name: `Bảng mặt 360°${n > 1 ? ` #${n}` : ''} – ${src?.name || 'model'}`, path: dest, createdAt: Date.now(), fromJobId: job.id, fromAssetId: job.meta.identityOf, staging: true, identitySheet: true, flowTitle, runId: job.runId || null };
+    db.assets.unshift(a);
+    job.meta.assetId = id;
+  } else {
+    fs.copyFileSync(job.outputPath, a.path);
+    a.flowTitle = flowTitle;
+  }
+  job.meta.assetFrom = job.outputPath;
+  save();
+  return a;
 }
 
 const rm = (f) => f && fs.rm(f, { force: true }, () => {});
@@ -92,7 +123,7 @@ const rm = (f) => f && fs.rm(f, { force: true }, () => {});
 export async function replaceClipVideos(run, clipId, files) {
   const startIdx = run.clipIds.indexOf(clipId);
   if (startIdx < 0) throw new Error('Đoạn này không thuộc lần chạy');
-  if (run.status === 'running' && run.stage && run.stage !== 'motion' && run.stage !== 'replace' && run.stage !== 'merge') {
+  if (run.status === 'running' && run.stage && !['keyframe', 'motion', 'replace', 'merge'].includes(run.stage)) {
     throw new Error('Chờ quy trình qua bước hiện tại rồi thay');
   }
   const jobsMap = (run.stages._jobs ||= {});
@@ -155,6 +186,31 @@ function syncRun(run) {
     reset('replace');
     stale = true;
   }
+  // Keyframe: job ảnh có kết quả mới (thử lại / chọn lần tạo khác) -> cập nhật ảnh keyframe của đoạn đó,
+  // video motion của đoạn phải tạo lại (trừ video nhập từ máy) và dừng lại duyệt keyframe lần nữa (nếu có bật)
+  const kfState = run.stages.keyframe;
+  for (const cid of run.clipIds) {
+    const kf = kfState?.assets?.[cid];
+    const kj = get(`keyframe:${cid}`);
+    if (!kf || !kj?.outputPath || kf.from === kj.outputPath) continue;
+    const a = db.assets.find((x) => x.id === kf.id);
+    if (a) {
+      fs.copyFileSync(kj.outputPath, a.path);
+      a.flowTitle = kj.attempts.find((x) => x.outputPath === kj.outputPath)?.flowTitle || null;
+    }
+    kf.from = kj.outputPath;
+    const mj = get(`motion:${cid}`);
+    if (mj && mj.type !== 'import') {
+      delete jobsMap[`motion:${cid}`];
+      delete jobsMap[`replace:${cid}`];
+      reset('motion');
+      if (run.stages.review && run.stages.review.status !== 'skipped') run.stages.review = { status: 'pending' };
+      reset('replace');
+    }
+    // Đã duyệt rồi mà keyframe đổi -> dừng duyệt lại (đang dừng ở bước keyframe thì cứ dừng tiếp)
+    if (run.options.reviewKeyframe !== false && !(run.status === 'paused' && run.stage === 'keyframe')) { kfState.approved = false; reset('keyframe'); }
+    stale = true;
+  }
   // Thay nền: đầu vào phải là video motion hiện tại của đoạn đó; video motion đổi -> kiểm tra lại trước khi thay nền
   for (const cid of run.clipIds) {
     const mj = get(`motion:${cid}`);
@@ -184,13 +240,17 @@ export function touchJob(jobId) {
   const job = db.jobs.find((j) => j.id === jobId);
   const run = job?.runId && db.runs.find((r) => r.id === job.runId);
   if (!run) return;
-  if (syncRun(run) && (run.status === 'done' || run.status === 'failed')) {
+  const stale = syncRun(run);
+  // Đang dừng chờ duyệt mà chính bước đang dừng (hoặc bước trước nó) phải làm lại -> chạy tiếp để làm lại
+  // rồi dừng đúng chỗ (vd. dừng ở Kiểm tra video, keyframe đổi -> làm lại motion rồi dừng duyệt keyframe)
+  const pausedStageReset = run.status === 'paused' && run.stages[run.stage]?.status !== 'paused';
+  if (stale && (run.status === 'done' || run.status === 'failed' || pausedStageReset)) {
     run.status = 'running';
     run.error = null;
     run.finishedAt = null;
     save();
   }
-  advance(run); // đang dừng chờ kiểm tra thì vẫn dừng (advance bỏ qua)
+  advance(run); // đang dừng chờ kiểm tra (bước đó không đổi) thì vẫn dừng (advance bỏ qua)
 }
 
 // Chạy tiếp quy trình từ bước đang dở. Gọi lại bao nhiêu lần cũng được.
@@ -250,6 +310,16 @@ function makeCtx(run, wf) {
       await frameAt(source.path, file, at);
       return file;
     },
+    // Khung hình đầu của 1 đoạn đã cắt (nguyên liệu scene/pose cho keyframe)
+    async clipFrame(clip, at = 0.1) {
+      const file = path.join(DIRS.assets, `frame-${run.id}-${clip.id}.jpg`);
+      await frameAt(clip.path, file, at);
+      return file;
+    },
+    asset: (id) => (id ? db.assets.find((a) => a.id === id) : null) || null,
+    // Bảng mặt 360° mới nhất đã có của 1 ảnh model (db.assets mới nhất đứng đầu)
+    identitySheetOf: (modelId) => db.assets.find((a) => a.identitySheet && a.fromAssetId === modelId && a.path && fs.existsSync(a.path)) || null,
+    registerIdentitySheet,
 
     // Tạo job 1 lần duy nhất cho mỗi khoá; lần sau trả về job đã có
     ensureJob(key, spec) {
@@ -322,6 +392,7 @@ export function viewRun(run) {
   const jobs = db.jobs.filter((j) => j.runId === run.id);
   const merge = run.stages.merge?.mergeId && db.merges.find((m) => m.id === run.stages.merge.mergeId);
   const bgAsset = run.stages.background?.assetId && db.assets.find((a) => a.id === run.stages.background.assetId);
+  const sheet = run.stages.identity?.assetId && db.assets.find((a) => a.id === run.stages.identity.assetId);
   const brief = (j) => j && { id: j.id, type: j.type, status: j.status, thumbUrl: mediaUrl(j.thumbPath), outputUrl: mediaUrl(j.outputPath), label: j.videoLabel, imported: j.type === 'import' };
   return {
     ...run,
@@ -331,19 +402,31 @@ export function viewRun(run) {
       const sj = Object.entries(active).filter(([k]) => k.startsWith(s.id + ':')).map(([, j]) => j);
       return { id: s.id, label: s.label, status: st.status, done: sj.filter((j) => j.status === 'done').length, total: sj.length };
     }),
-    // Từng đoạn: video motion (hoặc video nhập thay thế) và video đã thay nền
+    // Từng đoạn: khung hình đầu + keyframe (khoá nhận diện), video motion (hoặc video nhập thay thế) và video đã thay nền
     clipRows: run.clipIds.map((cid) => {
       const clip = db.clips.find((c) => c.id === cid);
-      return { clipId: cid, name: clip?.name || cid, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
+      return {
+        clipId: cid,
+        name: clip?.name || cid,
+        frameUrl: mediaUrl(run.stages.keyframe?.frames?.[cid]),
+        keyframe: brief(byKey(`keyframe:${cid}`)) || null,
+        motion: brief(byKey(`motion:${cid}`)) || null,
+        replace: brief(byKey(`replace:${cid}`)) || null,
+      };
     }),
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)
+    identityUrl: sheet ? mediaUrl(sheet.path) : null, // bảng mặt 360° đang dùng (có thể là bảng có sẵn, không có job trong run)
+    identity: brief(byKey('identity:sheet')) || null, // job tạo bảng mặt 360° của lần chạy này (nếu phải tạo)
     jobIds: jobs.map((j) => j.id),
     merge: merge ? { id: merge.id, status: merge.status, url: mediaUrl(merge.outputPath), thumbUrl: mediaUrl(merge.thumbPath), error: merge.error } : null,
   };
 }
 
+// Job bảng mặt 360° (từ popup ảnh model hoặc từ quy trình) xong -> lưu thành ảnh nháp gắn với ảnh model.
+// Đặt trước hook chạy tiếp quy trình để bước Bảng mặt 360° thấy ảnh ngay.
+settledHooks.push((job) => { registerIdentitySheet(job); });
 // Job/merge xong -> chạy tiếp các quy trình đang chờ (và làm lại bước sau nếu kết quả đổi)
 settledHooks.push((job) => { if (job?.runId) touchJob(job.id); advanceAll(); });
 mergeSettledHooks.push(() => advanceAll());

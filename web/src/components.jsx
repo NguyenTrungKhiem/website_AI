@@ -135,6 +135,9 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
           >
             <img src={a.url} alt={a.name} />
             {a.fromJobId && <span className="flow-mark" title="Ảnh do Flow tạo lại">✨</span>}
+            {kind === 'model' && assets.some((s) => s.identitySheet && s.fromAssetId === a.id) && (
+              <span className="sheet-mark" title="Đã có bảng mặt 360° (khoá nhận diện)">360°</span>
+            )}
             <button className="zoom-btn" title="Xem ảnh to" onClick={(e) => { e.stopPropagation(); setViewing(a.id); }}>🔍</button>
             <ConfirmButton
               className="x"
@@ -155,6 +158,7 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
           onSelect={(id) => onChange(id)}
           onClose={() => setViewing(null)}
           onTryOther={kind === 'product' ? () => openSlider(viewingAsset.id) : null}
+          panel={kind === 'model' && state ? <IdentitySheets asset={viewingAsset} state={state} refresh={refresh} /> : null}
         />
       )}
       {kind === 'product' && <ProductImport kind={kind} found={found} setFound={setFound} onOpen={(i) => setSlider({ images: found.images, startIdx: i })} />}
@@ -323,7 +327,8 @@ export function CompareModal({ job, refresh, onClose }) {
 }
 
 // Phóng to 1 ảnh trong thư viện: chỉ ảnh + nút Dùng / "Thử ảnh khác" (mở popup trượt để chọn ảnh khác và làm sạch lại).
-function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
+// panel = khối thêm dưới thanh nút (vd. bảng mặt 360° của ảnh model).
+function Lightbox({ asset, selected, onSelect, onClose, onTryOther, panel }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     addEventListener('keydown', onKey);
@@ -331,7 +336,7 @@ function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
   }, [onClose]);
   return (
     <div className="lightbox" onClick={onClose}>
-      <div className="zoom-body" onClick={(e) => e.stopPropagation()}>
+      <div className={'zoom-body' + (panel ? ' with-panel' : '')} onClick={(e) => e.stopPropagation()}>
         <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
         <img src={asset.url} alt={asset.name} />
         <div className="zoom-bar">
@@ -340,7 +345,61 @@ function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
           {selected ? <span className="ok">✓ Đang dùng</span> : <button onClick={() => onSelect(asset.id)}>✓ Dùng ảnh này</button>}
           {onTryOther && <button className="primary" onClick={onTryOther} title="Trượt qua các ảnh khác và làm sạch lại">🔄 Thử ảnh khác</button>}
         </div>
+        {panel}
       </div>
+    </div>
+  );
+}
+
+// Bảng mặt 360° (identity sheet) của 1 ảnh model: ảnh 16:9 gồm nhiều góc mặt của cùng người, do Flow tạo (Nano Banana,
+// 0 credit), lưu làm ảnh nháp gắn với ảnh model (không hiện trong thư viện). AI Dancing dùng nó để khoá nhận diện khi
+// tạo keyframe; chưa có thì quy trình tự tạo. Tạo nhiều bảng được, quy trình lấy bảng mới nhất.
+export function IdentitySheets({ asset, state, refresh }) {
+  const wf = (state.workflows || []).find((w) => w.id === 'dancing');
+  const defaultPrompt = wf?.prompts?.identity?.text || '';
+  const savedPrompt = (state.settings?.workflows?.dancing?.prompts?.identity || '').trim();
+  const [prompt, setPrompt] = useState(savedPrompt || defaultPrompt);
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [view, setView] = useState(null); // bảng đang xem to
+  const { busy, error, run } = useAction();
+  const sheets = (state.assets || []).filter((a) => a.identitySheet && a.fromAssetId === asset.id).sort((a, b) => b.createdAt - a.createdAt);
+  const jobs = (state.jobs || []).filter((j) => j.meta?.identityOf === asset.id).sort((a, b) => b.createdAt - a.createdAt);
+  const working = jobs.find((j) => j.status === 'running' || j.status === 'queued');
+  const lastFailed = !working && jobs[0]?.status === 'failed' ? jobs[0] : null;
+  const engine = state.settings?.engine;
+  const create = () => run(async () => { await api.identitySheet(asset.id, prompt); await refresh(); });
+  const remove = (s) => run(async () => { await api.deleteAsset(s.id); if (view?.id === s.id) setView(null); await refresh(); });
+  return (
+    <div className="sheets stack">
+      <div className="row">
+        <b>Bảng mặt 360°</b>
+        <small className="muted">{sheets.length ? `${sheets.length} bảng · AI Dancing dùng bảng mới nhất` : 'chưa có · AI Dancing sẽ tự tạo khi chạy'}</small>
+        <span className="grow" />
+        <a onClick={() => setShowPrompt(!showPrompt)}>{showPrompt ? 'Ẩn prompt' : 'Sửa prompt'}</a>
+        <button className="primary" disabled={busy || !!working || !prompt.trim()} onClick={create}>
+          {working ? '⏳ Đang tạo…' : `✨ Tạo bảng mặt 360° ${engine === 'mock' ? '(engine giả)' : '(Flow, 0 credit)'}`}
+        </button>
+      </div>
+      {showPrompt && <textarea rows={6} className="mono" value={prompt} onChange={(e) => setPrompt(e.target.value)} />}
+      {working && <small className="muted">⏳ {working.attempts?.at(-1)?.progress || 'Đang chờ đến lượt…'}</small>}
+      {lastFailed && <div className="err small">{lastFailed.error}</div>}
+      {error && <div className="err small">{error}</div>}
+      {sheets.length > 0 && (
+        <div className="sheet-strip">
+          {sheets.map((s, i) => (
+            <div key={s.id} className="sheet" title={s.name}>
+              <img src={s.url} alt="" onClick={() => setView(s)} />
+              {i === 0 && <span className="cap">★ mới nhất</span>}
+              <ConfirmButton className="x" armedText="Xoá?" title="Xoá bảng này" disabled={busy} onConfirm={() => remove(s)}>×</ConfirmButton>
+            </div>
+          ))}
+        </div>
+      )}
+      {view && (
+        <div className="lightbox" onClick={() => setView(null)}>
+          <img className="sheet-full" src={view.url} alt={view.name} onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   );
 }

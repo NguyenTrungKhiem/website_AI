@@ -8,11 +8,12 @@ import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks }
 import { publish } from './social.js';
 import * as zernio from './zernio.js';
 import * as flow from './flow.js';
+import * as agent from './agentApi.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
 import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT } from './prompts.js';
 import { createMerge, rangeOf } from './merge.js';
-import { listWorkflows } from './workflows/index.js';
+import { listWorkflows, WORKFLOWS } from './workflows/index.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob } from './workflows/runner.js';
 
 const PORT = Number(process.env.PORT || 3001);
@@ -77,6 +78,25 @@ app.put('/api/settings', (req, res) => {
 // ---------- Google Flow (Playwright) ----------
 app.get('/api/flow/status', wrap(async (req, res) => res.json(await flow.status())));
 app.post('/api/flow/launch', wrap(async (req, res) => res.json(await flow.launchChrome())));
+
+// ---------- Google Flow qua extension "AutoAffiliate Trợ lý" (thư mục extension/, xem server/agentApi.js) ----------
+// Cho giao diện (không cần token): trạng thái + token để chép vào extension
+app.get('/api/agent-status', (req, res) => res.json({ ...agent.status(), token: agent.token() }));
+app.post('/api/agent-token/regenerate', (req, res) => res.json({ token: agent.regenerateToken() }));
+// Cho extension (Bearer token). Hợp đồng theo extension/background.js
+app.use('/api/agent', agent.auth);
+app.get('/api/agent/ping', (req, res) => res.json({ name: 'Video Studio' }));
+app.post('/api/agent/claim', (req, res) => res.json(agent.claim(req.body || {})));
+app.post('/api/agent/jobs/:id/file', express.raw({ type: () => true, limit: '2gb' }), wrap(async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error('Thiếu nội dung file');
+  res.json(agent.storeFile(req.params.id, { name: String(req.query.name || ''), mime: String(req.query.type || req.get('content-type') || ''), buffer: req.body }));
+}));
+app.post('/api/agent/jobs/:id', (req, res) => res.json(agent.report(req.params.id, req.body || {})));
+app.get('/api/agent/assets/:id/:i', (req, res) => {
+  const f = agent.assetPath(req.params.id, req.params.i);
+  if (!f || !fs.existsSync(f)) return res.status(404).json({ error: 'Không có file này' });
+  res.sendFile(f);
+});
 
 // ---------- Video gốc + cắt ----------
 app.post('/api/sources', upload.single('file'), wrap(async (req, res) => {
@@ -250,6 +270,24 @@ settledHooks.push((job) => {
   job.meta.assetFrom = job.outputPath;
   save();
 });
+
+// Tạo bảng mặt 360° (identity sheet, 16:9, Nano Banana, 0 credit) cho 1 ảnh model. Khi job xong, ảnh được lưu thành
+// ảnh nháp kind "model" gắn fromAssetId = ảnh model (xem runner.registerIdentitySheet); AI Dancing dùng để khoá nhận diện.
+app.post('/api/assets/:id/identity-sheet', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  if (a.kind !== 'model' || a.identitySheet) throw new Error('Chỉ tạo bảng mặt 360° cho ảnh model');
+  const prompt = (req.body?.prompt || '').trim() || (db.settings.workflows?.dancing?.prompts?.identity || '').trim() || WORKFLOWS.dancing.prompts.identity.text;
+  const job = createJob({
+    type: 'image',
+    imagePaths: [a.path],
+    template: prompt,
+    aspectRatio: '16:9',
+    videoLabel: `Bảng mặt 360° – ${a.name}`,
+    meta: { identityOf: a.id, kind: 'model' },
+  });
+  res.json(viewJob(job));
+}));
 
 // Dùng 1 ảnh nháp (bóc tách / kết quả làm sạch) -> đưa vào thư viện
 app.post('/api/assets/:id/use', wrap(async (req, res) => {

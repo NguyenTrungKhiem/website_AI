@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cài đặt AutoAffiliate Trợ lý</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; font-weight: 600; margin-top: 1rem; }
+    input { width: 100%; box-sizing: border-box; padding: .5rem .6rem; border: 1px solid #ccc; border-radius: 8px; font: inherit; }
+    button { margin-top: 1rem; padding: .55rem 1rem; border: 0; border-radius: 8px; background: #2f6f4f; color: #fff; font: inherit; cursor: pointer; }
+    #msg { margin-top: 1rem; }
+    .err { color: #b3261e; } .ok { color: #1b6b3a; } small { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>AutoAffiliate Trợ lý</h1>
+  <p>Điền địa chỉ web của bạn và token tạo ở trang <b>Trình hỗ trợ</b> trên web.</p>
+  <label for="server">Địa chỉ web</label>
+  <input id="server" placeholder="http://localhost:3000 hoặc https://ten-mien-cua-ban" autocomplete="off" />
+  <label for="token">Token</label>
+  <input id="token" type="password" placeholder="aa_..." autocomplete="off" />
+  <small>Token chỉ lưu trong Chrome của bạn, không gửi đi đâu ngoài web của bạn.</small>
+
+  <label for="flowAccount">Tài khoản Google Flow (u/0, u/1, u/2, u/4...)</label>
+  <input id="flowAccount" placeholder="auto (hoặc u/4, 4, u/0...)" autocomplete="off" />
+  <small>Mặc định là auto. Nếu bạn có nhiều tài khoản Google, hãy nhập u/4 để tiện ích tự động mở tài khoản u/4 có credit.</small>
+
+  <label for="geminiAccount">Tài khoản Gemini (u/0, u/1, u/2, u/4...)</label>
+  <input id="geminiAccount" placeholder="auto (hoặc u/4, 4, u/0...)" autocomplete="off" />
+  <small>Mặc định là auto. Nhập u/4 nếu tài khoản Gemini của bạn cũng nằm ở profile u/4.</small>
+  <div><button id="save">Lưu và kiểm tra</button></div>
+  <p id="msg" role="status"></p>
+  <script src="options.js"></script>
+</body>
+</html>

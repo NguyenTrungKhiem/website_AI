@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "AutoAffiliate Trợ lý",
+  "version": "0.9.3",
+  "icons": { "128": "icons/icon-128.png" },
+  "description": "Nhận việc từ web AutoAffiliate và làm trong chính Chrome của bạn: tạo nhạc trên Suno, tạo ảnh bìa và video clip trên Gemini / Google Flow bằng tài khoản bạn đã đăng nhập.",
+  "permissions": ["storage", "alarms", "tabs", "downloads", "webRequest", "notifications", "cookies", "declarativeNetRequest", "debugger"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "AutoAffiliate Trợ lý", "default_popup": "popup.html" },
+  "options_page": "options.html",
+  "content_scripts": [
+    { "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://*/*"], "js": ["content/web.js"], "run_at": "document_idle" },
+    { "matches": ["https://suno.com/*", "https://*.suno.com/*"], "js": ["content/common.js", "content/suno.js"], "run_at": "document_idle" },
+    { "matches": ["https://gemini.google.com/*"], "js": ["content/common.js", "content/gemini.js"], "run_at": "document_idle" },
+    { "matches": ["https://chatgpt.com/*"], "js": ["content/common.js", "content/chatgpt.js"], "run_at": "document_idle" },
+    {
+      "matches": ["https://flow.google/*", "https://*.flow.google/*", "https://flow.google.com/*", "https://*.flow.google.com/*", "https://labs.google/*", "https://*.labs.google/*"],
+      "js": ["content/flow-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://flow.google/*",
+        "https://*.flow.google/*",
+        "https://flow.google.com/*",
+        "https://*.flow.google.com/*",
+        "https://labs.google/*",
+        "https://*.labs.google/*"
+      ],
+      "js": ["content/common.js", "content/flow.js", "content/flow-studio.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

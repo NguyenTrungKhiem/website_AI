@@ -1,0 +1,10 @@
+{
+  "name": "autoaffiliate-extension-tests",
+  "private": true,
+  "scripts": {
+    "test": "node flow.test.cjs && node background.test.cjs && node chatgpt.test.cjs && node cine-reference.test.cjs && node cine-flow.test.cjs && node cine-turbo.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.0"
+  }
+}

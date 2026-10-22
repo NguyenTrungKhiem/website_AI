@@ -1,0 +1,25 @@
+const assert = require('node:assert/strict');
+const { JSDOM } = require('jsdom');
+const dom = new JSDOM('<form><textarea placeholder="Bạn muốn tạo gì?"></textarea><button aria-label="Bắt đầu tạo"></button></form>', {url:'https://flow.google.com/'});
+for (const key of ['window','document','Event','File','getComputedStyle','HTMLElement']) globalThis[key] = dom.window[key];
+Object.defineProperty(HTMLElement.prototype,'offsetWidth',{get(){return 50}});
+Object.defineProperty(HTMLElement.prototype,'offsetHeight',{get(){return 30}});
+Object.defineProperty(HTMLElement.prototype,'innerText',{get(){return this.textContent}});
+globalThis.chrome={runtime:{id:'test',onMessage:{addListener(){}},sendMessage:async()=>({})}};
+globalThis.DataTransfer=class{constructor(){this.files=[];this.items={add:f=>this.files.push(f)}}};
+globalThis.ClipboardEvent=class extends Event{constructor(type,opts){super(type,opts);this.clipboardData=opts.clipboardData}};
+globalThis.AA=require('../content/common.js').AA;
+AA.sleep=async()=>{};
+const requested=[];
+AA.send=async({url})=>{requested.push(url);return{mime:'image/png',b64:'YWJj'}};
+const flow=require('../content/flow.js');
+const inp=document.querySelector('textarea');const files=[];
+inp.addEventListener('paste',e=>{for(const file of e.clipboardData.files){files.push(file.name);document.querySelector('form').append(document.createElement('flow-ingredient-chip'))}});
+(async()=>{
+ const refs=['image-main','image-alternate','image-end'];
+ await flow.attachReferenceImages({say:async()=>{}},{referenceImages:refs,strictReferences:true,inp});
+ assert.deepEqual(requested,refs);
+ assert.deepEqual(files,['cine-reference-1.png','cine-reference-2.png','cine-reference-3.png']);
+ assert.equal(flow.attachmentCount(inp),3);
+ console.log('Cine Flow: all 3 frames attached in order passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

@@ -29,36 +29,55 @@ function Field({ s, set, path, label, type = 'text', hint, options }) {
   );
 }
 
-function FlowPanel() {
+// Engine "extension": extension AutoAffiliate Trợ lý (thư mục extension/) trong Chrome thường nhận việc từ server,
+// chuẩn bị trên Flow, bạn bấm nút tạo, extension tải kết quả về. Bảng này hiện token để chép vào extension + trạng thái.
+function AgentPanel() {
   const [st, setSt] = useState(null);
+  const [copied, setCopied] = useState(false);
   const { busy, error, run } = useAction();
-  const check = () => api.flowStatus().then(setSt).catch(() => setSt(null));
+  const check = () => api.agentStatus().then(setSt).catch(() => setSt(null));
   useEffect(() => {
     check();
     const t = setInterval(check, 4000);
     return () => clearInterval(t);
   }, []);
+  const copy = async () => { try { await navigator.clipboard.writeText(st.token); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch {} };
+  const origin = location.origin;
   return (
     <div className="stack flow-panel">
       <div className="alert warn small">
-        Tự động hoá Flow không được Google hỗ trợ chính thức và có thể vi phạm điều khoản sử dụng — tài khoản Google có nguy cơ bị hạn chế/khoá.
-        Nên dùng 1 tài khoản Google riêng cho việc này. Web không giải CAPTCHA: nếu Google hỏi xác minh, hãy tự làm trong cửa sổ Chrome.
+        Tự động hoá Flow không được Google hỗ trợ chính thức và có thể vi phạm điều khoản sử dụng — tài khoản Google có nguy cơ bị hạn chế.
+        Extension không giải CAPTCHA và không bấm hộ nút tạo: khi Flow hỏi xác minh hay cần bấm tạo, bạn làm trong tab Flow mà extension mở.
       </div>
       <div className="row">
-        <button className="primary" disabled={busy} onClick={() => run(async () => { await api.flowLaunch(); await check(); })}>
-          🌐 Mở Chrome & đăng nhập
-        </button>
         <span>
-          {!st ? '…' : !st.running ? '⚪ Chrome chưa mở' : !st.connected ? '🟠 Không kết nối được Chrome' : st.needsLogin ? '🟠 Đang chờ bạn đăng nhập' : st.flowOpen ? '🟢 Đã kết nối Flow' : '🟠 Chưa mở trang Flow'}
+          {!st ? '…' : st.current ? `🟢 Đang làm: ${st.current.label || st.current.kind} — ${st.current.message || ''}` : st.connected ? '🟢 Extension đang nối, chờ việc' : '⚪ Extension chưa gọi tới (chưa cài / chưa cấu hình / Chrome chưa mở)'}
+          {st?.pending > 0 && <small className="muted"> · {st.pending} việc đang chờ</small>}
         </span>
       </div>
+      {st?.token && (
+        <div className="row">
+          <code className="token">{st.token}</code>
+          <button onClick={copy}>{copied ? '✓ Đã chép' : '📋 Chép token'}</button>
+          <button disabled={busy} onClick={() => run(async () => { await api.agentTokenRegenerate(); await check(); })} title="Token cũ hết hiệu lực, phải cấu hình lại extension">🔄 Tạo token mới</button>
+        </div>
+      )}
       <small className="muted">
-        Chrome mở bằng hồ sơ riêng (data/flow-chrome), tách biệt với Chrome bạn đang dùng. Đăng nhập 1 lần, lần sau tự nhớ. Giữ cửa sổ đó mở khi đang tạo video.
+        Cài: <code>chrome://extensions</code> → Developer mode → Load unpacked → thư mục <code>extension</code> của dự án. Bấm biểu tượng extension → <b>Cài đặt</b>:
+        địa chỉ web <code>{origin}</code>, token ở trên → <b>Lưu và kiểm tra</b> (cho phép truy cập khi Chrome hỏi).
+        Mỗi lần tạo, extension mở tab Flow, chuẩn bị nguyên liệu + prompt + model rồi báo <b>cần bạn xử lý</b>: bạn bấm nút → trên Flow
+        (Flow chỉ nhận cú bấm thật ở nút này); extension theo dõi và tải kết quả về.
       </small>
       {error && <div className="err">{error}</div>}
     </div>
   );
 }
+
+// Playwright (Chrome riêng) không còn là lựa chọn: Flow chặn phiên bị điều khiển qua cổng gỡ lỗi
+const ENGINES = [
+  ['extension', 'Google Flow qua extension trong Chrome thường (bạn bấm nút tạo)'],
+  ['mock', 'Engine giả (thử quy trình, không tốn credit)'],
+];
 
 export default function SettingsPage({ state, refresh }) {
   const [s, set] = useState(state.settings);
@@ -100,8 +119,14 @@ export default function SettingsPage({ state, refresh }) {
 
       <div className="card stack">
         <h2>Google Flow tự động</h2>
-        <p className="muted small">Tạo video/ảnh bằng credit Flow, chạy lần lượt từng video trong 1 cửa sổ Chrome riêng.</p>
-        <FlowPanel />
+        <p className="muted small">Tạo video/ảnh bằng credit Flow, chạy lần lượt từng việc.</p>
+        <label>
+          Engine tạo ảnh/video
+          <select value={s.engine === 'mock' ? 'mock' : 'extension'} onChange={(e) => set({ ...s, engine: e.target.value })}>
+            {ENGINES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        {s.engine === 'mock' ? <small className="muted">Engine giả chép đầu vào thành đầu ra sau 2 giây.</small> : <AgentPanel />}
         <div className="grid3">
           <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Có video tham chiếu: 720p ≈ 20 credit, 360p ≈ 10 credit / video" />
           <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />

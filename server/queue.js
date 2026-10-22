@@ -5,6 +5,7 @@ import path from 'node:path';
 import { db, save, DIRS, newId } from './db.js';
 import { buildMotionPrompt, buildBackgroundPrompt, fillTemplate } from './prompts.js';
 import * as flow from './flow.js';
+import * as agent from './agentApi.js';
 import { thumbnail, imageThumb } from './ffmpeg.js';
 
 const running = new Set();
@@ -18,7 +19,7 @@ const flowRefsOf = (...ids) => Object.fromEntries(ids.map(assetOf).filter((a) =>
 
 export function createJob({
   type, batchId, videoPath, videoLabel, prompt = '', rawPrompt, assets = {}, parentJobId, sourceRange,
-  template, imagePaths, runId, stage, meta,
+  template, imagePaths, runId, stage, meta, aspectRatio,
 }) {
   const job = {
     id: newId(),
@@ -34,6 +35,7 @@ export function createJob({
     imagePaths: imagePaths || null, // image: các ảnh tham chiếu (đường dẫn file)
     template: template ?? null, // prompt mẫu riêng (quy trình); null = dùng prompt mẫu trong Cài đặt
     meta: meta || null, // thông tin thêm, vd. { cleanOf: assetId, kind } cho job tạo ảnh sản phẩm sạch
+    aspectRatio: aspectRatio || null, // '16:9' | '9:16' riêng cho job này (vd. bảng mặt 360° = 16:9); null = theo Cài đặt
     prompt,
     rawPrompt: !!rawPrompt,
     status: 'queued',
@@ -98,8 +100,10 @@ export function retryJob(job, { prompt } = {}) {
   return job;
 }
 
+// mock = engine giả | extension = Flow qua extension trong Chrome thường (người dùng bấm nút tạo).
+// Playwright (flow) chỉ còn chạy khi đặt tay settings.engine = "flow" trong db.json; giao diện không còn lựa chọn này.
 export function engineName() {
-  return db.settings.engine === 'mock' ? 'mock' : 'flow';
+  return ['mock', 'flow'].includes(db.settings.engine) ? db.settings.engine : 'extension';
 }
 
 export function pump() {
@@ -164,11 +168,12 @@ async function run(job) {
   // Flow: nhớ đường dẫn file kết quả ngay khi thấy, để nếu tải về lỗi thì lần Thử lại chỉ tải lại chứ không tạo mới
   // flowTitle = tên kết quả trên Flow: ảnh tạo ra có thể dùng lại làm nguyên liệu mà không tải lên lại
   const onResult = (src, info = {}) => { attempt.flowSrc = src; if (info.title) attempt.flowTitle = info.title; save(); };
-  const input = { settings: db.settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
+  const input = { settings: db.settings, aspectRatio: job.aspectRatio || null, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, label: job.videoLabel, log, onResult };
   try {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);
     if (engine === 'mock') result = await mockGenerate(input, isImage);
+    else if (engine === 'extension') result = await agent.generate(input, isImage ? 'image' : 'video');
     else if (prev?.flowSrc && !prev.outputPath && job.prompt === prev.prompt) {
       // Lần trước Flow đã tạo xong nhưng tải về lỗi -> lấy lại kết quả đó (không tốn credit)
       log('Lấy lại video đã tạo trên Flow ở lần trước (không tạo mới)');

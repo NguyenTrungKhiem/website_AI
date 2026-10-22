@@ -46,6 +46,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 
   const toggleClip = (id) => setClipIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const missing = wf.inputs.filter((i) => i.required && !inputs[i.key]).map((i) => i.label);
+  const sheetCount = state.assets.filter((a) => a.identitySheet && a.fromAssetId === inputs.model).length;
 
   const start = () =>
     run(async () => {
@@ -58,7 +59,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       <h1>{wf.icon} {wf.name}</h1>
       <p className="muted">{wf.description}</p>
       <p className="small muted">
-        Đang tạo bằng: <b>{engine === 'mock' ? 'engine giả (thử nghiệm)' : 'Google Flow tự động'}</b>
+        Đang tạo bằng: <b>{engine === 'mock' ? 'engine giả (thử nghiệm)' : 'Google Flow qua extension (bạn bấm nút tạo trên tab Flow khi được nhắc)'}</b>
         {' · '}<a onClick={() => go('settings')}>cài đặt</a>
       </p>
 
@@ -105,6 +106,13 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
             />
           ))}
         </div>
+        {inputs.model && options.identityLock && (
+          <small className="muted">
+            Bảng mặt 360° của ảnh model: {sheetCount > 0
+              ? `đã có ${sheetCount} bảng (quy trình dùng bảng mới nhất; bấm 🔍 trên ảnh model để xem / tạo lại).`
+              : 'chưa có → quy trình sẽ tự tạo khi chạy (Nano Banana, 0 credit). Muốn xem trước, bấm 🔍 trên ảnh model rồi "Tạo bảng mặt 360°".'}
+          </small>
+        )}
       </div>
 
       <div className="card stack">
@@ -182,9 +190,9 @@ function PromptEditor({ wf, settings, refresh }) {
   );
 }
 
-// Từng đoạn của lần chạy: video motion → video đã thay nền. Mỗi ô là thẻ video thu gọn:
-// xem video, các lần tạo (chọn bản tốt nhất), Thử lại / Sửa prompt. Có nút thay video motion bằng file từ máy.
-function ClipTable({ run: r, jobs, refresh }) {
+// Từng đoạn của lần chạy: keyframe (khoá nhận diện) → video motion → video đã thay nền. Mỗi ô là thẻ thu gọn:
+// xem kết quả, các lần tạo (chọn bản tốt nhất), Thử lại / Sửa prompt. Có nút thay video motion bằng file từ máy.
+function ClipTable({ run: r, jobs, refresh, state }) {
   const [open, setOpen] = useState(true);
   const { busy, error, run } = useAction();
   const byId = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
@@ -207,6 +215,7 @@ function ClipTable({ run: r, jobs, refresh }) {
             <thead>
               <tr>
                 <th>Đoạn</th>
+                {r.options.identityLock && <th>Keyframe (mặt đã khoá theo bảng 360°)</th>}
                 <th>Video motion (thay người + sản phẩm)</th>
                 {r.options.replaceBackground && <th>Đã thay bối cảnh</th>}
               </tr>
@@ -217,24 +226,94 @@ function ClipTable({ run: r, jobs, refresh }) {
                   <td className="clip-name">
                     <b>#{i + 1}</b>
                     <div className="small muted">{row.name}</div>
+                    {row.frameUrl && <img className="clip-frame" src={row.frameUrl} alt="" title="Khung hình đầu của đoạn (nguyên liệu pose/outfit cho keyframe)" />}
                     <FileDrop accept="video/*" multiple onFiles={(files) => replaceWith(row.clipId, files)}>
                       <button disabled={busy} className="small-btn" title="Thay video motion của đoạn này bằng file từ máy; chọn nhiều file thì các file sau thay các đoạn kế tiếp">
                         📥 Thay bằng video từ máy
                       </button>
                     </FileDrop>
                   </td>
-                  <td>{cell(row.motion)}</td>
+                  {r.options.identityLock && <td>{cell(row.keyframe)}</td>}
+                  <td>
+                    {cell(row.motion)}
+                    <ManualFlowBox run={r} row={row} index={i} jobs={byId} state={state} busy={busy} onImport={(files) => replaceWith(row.clipId, files)} />
+                  </td>
                   {r.options.replaceBackground && <td>{cell(row.replace)}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
           <small className="muted">
-            Thử lại hoặc chọn lần tạo khác ở cột trái → web dừng lại để bạn kiểm tra, bấm Tiếp tục mới thay bối cảnh lại cho đoạn đó và ghép lại. Đổi ở cột phải → chỉ ghép lại.
+            {r.options.identityLock && <>Keyframe (0 credit): Thử lại / Sửa prompt / chọn lần tạo khác tới khi mặt giống model; keyframe đổi → video motion của đoạn đó phải tạo lại (web dừng duyệt lại). </>}
+            Thử lại hoặc chọn lần tạo khác ở cột video motion → web dừng lại để bạn kiểm tra, bấm Tiếp tục mới thay bối cảnh lại cho đoạn đó và ghép lại. Đổi ở cột thay bối cảnh → chỉ ghép lại.
           </small>
           {error && <div className="err">{error}</div>}
         </>
       )}
+    </div>
+  );
+}
+
+// Tạo video motion bằng tay trên Flow (khi Flow chặn phiên tự động): tải đúng các nguyên liệu web đã chuẩn bị
+// (keyframe hoặc ảnh model, ảnh sản phẩm, đoạn gốc), chép prompt đã ghép, rồi nhập video kết quả ngay tại chỗ
+// (đi qua đúng đường "Thay bằng video từ máy" nên thay nền + ghép vẫn tự chạy tiếp). Tự mở khi job motion bị Flow chặn.
+function ManualFlowBox({ run: r, row, index, jobs, state, busy, onImport }) {
+  const motionJob = row.motion && jobs[row.motion.id];
+  const blocked = motionJob?.status === 'failed' && /Flow chặn|unusual activity/i.test(motionJob.error || '');
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (blocked) setOpen(true); }, [blocked]);
+  if (!open) {
+    return <a className="small" onClick={() => setOpen(true)}>🖐 Tạo tay trên Flow{blocked ? ' (Flow chặn phiên tự động)' : ''}</a>;
+  }
+  const lock = r.options.identityLock;
+  const clip = state.clips.find((c) => c.id === row.clipId);
+  const asset = (id) => state.assets.find((a) => a.id === id);
+  const product = asset(r.inputs?.product);
+  const model = asset(r.inputs?.model);
+  const keyframeJob = row.keyframe && jobs[row.keyframe.id];
+  const ext = (u) => (u || '').split('?')[0].match(/\.[a-z0-9]+$/i)?.[0] || '';
+  const n = index + 1;
+  // Thứ tự tải lên Flow đúng như web gửi: ảnh 1 (keyframe | model) -> ảnh sản phẩm -> video gốc
+  const files = [
+    lock
+      ? { label: `Ảnh 1 – keyframe đoạn #${n}`, url: keyframeJob?.outputUrl, name: `keyframe-${n}${ext(keyframeJob?.outputUrl) || '.png'}` }
+      : { label: 'Ảnh 1 – ảnh model', url: model?.url, name: `model${ext(model?.url)}` },
+    product && { label: 'Ảnh 2 – sản phẩm', url: product.url, name: `san-pham${ext(product.url)}` },
+    { label: `Video gốc – đoạn #${n}`, url: clip?.url, name: `doan-${n}${ext(clip?.url) || '.mp4'}` },
+  ].filter(Boolean);
+  // Prompt đúng như web đã/sẽ gửi: của job motion nếu có, không thì prompt đã đóng băng của lần chạy
+  const prompt = motionJob?.attempts?.at(-1)?.finalPrompt || motionJob?.prompt || r.prompts?.[lock ? 'motionKeyframe' : 'motion'] || '';
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(prompt); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* không có clipboard: dùng ô bên dưới */ }
+  };
+  return (
+    <div className="manual-box stack">
+      <div className="row between">
+        <b className="small">🖐 Tạo tay trên Flow – đoạn #{n}</b>
+        <a className="small" onClick={() => setOpen(false)}>Đóng</a>
+      </div>
+      <ol className="small muted manual-steps">
+        <li>Mở <a href="https://flow.google.com/?hl=en" target="_blank" rel="noreferrer">flow.google.com</a> trong Chrome <b>thường</b> (không phải cửa sổ do web mở), vào dự án bất kỳ.</li>
+        <li>Tải các file dưới lên và thêm vào prompt <b>theo đúng thứ tự</b>.</li>
+        <li>Chọn Video · Ingredients · Omni 1.1 Flash · {state.settings.aspectRatio || '9:16'} · {state.settings.flowResolution || '720p'}, dán prompt, bấm tạo.</li>
+        <li>Tải video về rồi nhập ở ô cuối; web sẽ thay nền và ghép tiếp như thường.</li>
+      </ol>
+      <div className="row wrap">
+        {files.map((f) => (
+          f.url
+            ? <a key={f.label} className="btn-link" href={f.url} download={f.name}>⬇ {f.label}</a>
+            : <span key={f.label} className="muted small">{f.label}: chưa có</span>
+        ))}
+      </div>
+      <div className="row">
+        <button className="small-btn" onClick={copy} disabled={!prompt}>{copied ? '✓ Đã chép' : '📋 Chép prompt'}</button>
+        <small className="muted">hoặc chọn hết trong ô dưới rồi chép</small>
+      </div>
+      <textarea readOnly rows={4} className="mono small" value={prompt} onFocus={(e) => e.target.select()} />
+      <FileDrop accept="video/*" onFiles={onImport}>
+        <button disabled={busy} className="small-btn primary">📥 Nhập video kết quả của đoạn #{n}</button>
+      </FileDrop>
     </div>
   );
 }
@@ -248,7 +327,10 @@ function RunCard({ run: r, state, refresh, go }) {
   const jobs = state.jobs.filter((j) => j.runId === r.id);
   const [label, color] = RUN_STATUS[r.status] || [r.status, 'gray'];
   const bgJob = r.background && jobs.find((j) => j.id === r.background.id);
+  const sheetJob = r.identity && jobs.find((j) => j.id === r.identity.id);
   const act = (fn) => run(async () => { await fn(); await refresh(); });
+  // Đang dừng ở bước nào thì lời nhắc / nút Tiếp tục nói về bước đó
+  const pausedAtKeyframe = r.status === 'paused' && r.stage === 'keyframe';
 
   return (
     <div className={'card stack run' + (r.status === 'failed' ? ' failed' : '')}>
@@ -272,9 +354,17 @@ function RunCard({ run: r, state, refresh, go }) {
         ))}
       </div>
 
-      {(r.frameUrl || bgJob || r.backgroundUrl) && (
+      {(r.frameUrl || bgJob || r.backgroundUrl || sheetJob || r.identityUrl) && (
         <div className="row">
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
+          {sheetJob ? (
+            // Bảng mặt 360° tạo trong lần chạy này: Thử lại / Sửa prompt / chọn lần tạo (các keyframe đã tạo không tự làm lại)
+            <div className="stack bg-job sheet-job">
+              <small className="muted">Bảng mặt 360° (khoá nhận diện)</small>
+              <JobCard compact job={sheetJob} refresh={refresh} />
+              <small className="muted">Bảng mới chỉ dùng cho keyframe tạo sau đó: muốn áp dụng, bấm Thử lại trên keyframe từng đoạn.</small>
+            </div>
+          ) : r.identityUrl && <figure className="mini wide"><img src={r.identityUrl} alt="" /><figcaption>Bảng mặt 360° (có sẵn)</figcaption></figure>}
           {bgJob ? (
             // Thẻ job ảnh bối cảnh: Thử lại / Sửa prompt / chọn lần tạo. Đổi bối cảnh → web tự thay nền lại cho mọi đoạn.
             <div className="stack bg-job">
@@ -296,17 +386,27 @@ function RunCard({ run: r, state, refresh, go }) {
       )}
 
       {r.error && <div className="err">{r.error}</div>}
-      {r.status === 'paused' && (
+      {pausedAtKeyframe && (
+        <div className="alert warn small">
+          ⏸ Đã tạo keyframe cho từng đoạn (0 credit). Xem cột <b>Keyframe</b> ở bảng <b>Từng đoạn</b> bên dưới: mặt phải giống model, pose / outfit / bối cảnh giống khung hình gốc;
+          chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc chọn lần tạo khác. Ưng rồi bấm <b>▶ Tiếp tục</b> để thay nhân vật theo keyframe (bước này bắt đầu tốn credit, ≈20 credit/đoạn).
+        </div>
+      )}
+      {r.status === 'paused' && !pausedAtKeyframe && (
         <div className="alert warn small">
           ⏸ Đã thay nhân vật + sản phẩm xong. Xem video ở bảng <b>Từng đoạn</b> bên dưới; chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc thay bằng video từ máy.
           Ưng rồi bấm <b>▶ Tiếp tục</b> để thay bối cảnh (bước này bắt đầu tốn credit).
         </div>
       )}
 
-      <ClipTable run={r} jobs={jobs} refresh={refresh} />
+      <ClipTable run={r} jobs={jobs} refresh={refresh} state={state} />
 
       <div className="row">
-        {r.status === 'paused' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục: thay bối cảnh</button>}
+        {r.status === 'paused' && (
+          <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>
+            {pausedAtKeyframe ? '▶ Tiếp tục: thay nhân vật theo keyframe' : '▶ Tiếp tục: thay bối cảnh'}
+          </button>
+        )}
         {r.status === 'failed' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục</button>}
         {r.status === 'cancelled' && <button disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Chạy tiếp</button>}
         {(r.status === 'running' || r.status === 'paused') && <button disabled={busy} onClick={() => act(() => api.cancelRun(r.id))}>⏹ Huỷ</button>}

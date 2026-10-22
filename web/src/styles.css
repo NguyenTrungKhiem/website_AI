@@ -130,6 +130,31 @@ button.link { background: none; border: 0; color: var(--accent); padding: 0; }
 .zoom-body { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; max-width: min(900px, 100%); max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; }
 .zoom-body > img { max-width: 100%; max-height: calc(92vh - 58px); object-fit: contain; background: #000; }
 .zoom-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); }
+/* Popup ảnh model có thêm khối bảng mặt 360° bên dưới */
+.zoom-body.with-panel > img { max-height: calc(92vh - 230px); }
+.sheets { padding: 10px 14px; border-top: 1px solid var(--line); gap: 8px; }
+.sheets .row { flex-wrap: wrap; }
+.sheet-strip { display: flex; gap: 8px; overflow-x: auto; }
+.sheet { position: relative; flex: 0 0 auto; width: 192px; height: 108px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); background: #000; }
+.sheet img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.sheet .cap { position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; background: #000b; padding: 2px 4px; pointer-events: none; }
+.sheet .x { position: absolute; top: 2px; right: 2px; padding: 0 6px; font-size: 12px; background: #000a; border: 0; display: none; }
+.sheet:hover .x, .sheet .x.armed { display: block; }
+.sheet-full { max-width: 96vw; max-height: 92vh; object-fit: contain; border-radius: 8px; }
+.thumb .sheet-mark { position: absolute; bottom: 2px; right: 3px; font-size: 10px; background: #000a; border-radius: 4px; padding: 0 3px; color: #9db2ff; pointer-events: none; }
+/* Ô "Tạo tay trên Flow" dưới thẻ video motion của từng đoạn */
+.manual-box { margin-top: 8px; max-width: 260px; padding: 8px; border: 1px dashed var(--amber); border-radius: 8px; background: var(--panel2); gap: 6px; }
+.manual-box .manual-steps { margin: 0; padding-left: 18px; }
+.manual-box .manual-steps li { margin-bottom: 2px; }
+.manual-box .btn-link { font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; text-decoration: none; }
+.manual-box textarea { font-size: 11px; }
+.manual-box .drop { border: 0; display: inline-block; }
+code.token { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12px; user-select: all; }
+.sheet-job { max-width: 320px; }
+.sheet-job .job-media img { aspect-ratio: 16/9; }
+.clip-table .clip-frame { display: block; width: 60px; aspect-ratio: 9/16; object-fit: cover; border-radius: 4px; margin-top: 6px; background: #000; }
+figure.mini.wide { width: 200px; }
+figure.mini.wide img { aspect-ratio: 16/9; }
 .zoom-name { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lightbox-img .img-label { position: absolute; left: 12px; bottom: 10px; background: #000a; color: #fff; font-size: 12px; padding: 3px 8px; border-radius: 6px; }
 .lightbox-img .img-label a { color: #9cf; cursor: pointer; }

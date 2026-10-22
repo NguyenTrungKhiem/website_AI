@@ -39,11 +39,20 @@ export async function launchChrome() {
   const exe = chromePath();
   if (!exe) throw new Error('Không tìm thấy Chrome/Edge trên máy');
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const p = spawn(
-    exe,
-    [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', withEn(FLOW_URL)],
-    { detached: true, stdio: 'ignore' },
-  );
+  const args = [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', withEn(FLOW_URL)];
+  let p;
+  if (process.platform === 'win32') {
+    // Server chạy từ tiến trình ẩn (vd. app khởi động ngầm) thì Chrome con có thể kế thừa trạng thái "không hiện cửa sổ"
+    // và chạy mù (vẫn điều khiển được nhưng người dùng không thấy). Mở qua Start-Process -WindowStyle Normal để ép hiện cửa sổ.
+    const ps = (s) => `'${s.replace(/'/g, "''")}'`; // chuỗi PowerShell
+    const arg = (s) => ps(/\s/.test(s) ? `"${s}"` : s); // phần tử ArgumentList có khoảng trắng phải tự bọc nháy kép
+    const cmd = `Start-Process -FilePath ${ps(exe)} -ArgumentList @(${args.map(arg).join(',')}) -WindowStyle Normal`;
+    // Không detach PowerShell: detach thì Chrome do Start-Process mở bị tắt ngay. PowerShell thoát ngay sau khi mở, Chrome chạy riêng.
+    p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { stdio: 'ignore', windowsHide: true });
+  } else {
+    p = spawn(exe, args, { detached: true, stdio: 'ignore' });
+  }
+  p.on('error', (e) => console.error('Mở Chrome lỗi:', e.message));
   p.unref();
   for (let i = 0; i < 30 && !(await isRunning()); i++) await sleep(500);
   if (!(await isRunning())) throw new Error('Mở Chrome không thành công');
@@ -93,7 +102,8 @@ export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
 // flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
-async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video' }) {
+// aspectRatio: tỉ lệ riêng cho lần tạo này ('16:9' | '9:16'); bỏ trống = theo Cài đặt (vd. bảng mặt 360° luôn 16:9)
+async function generate({ settings, aspectRatio = null, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video' }) {
   const page = await flowPage();
   await page.bringToFront();
   if (page.url().includes('/about') || page.url().includes('accounts.google.com')) {
@@ -146,7 +156,7 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
     }
 
     log(kind === 'image' ? 'Chọn Ảnh · Nano Banana' : 'Chọn Video · Omni 1.1 Flash');
-    const credits = await configure(page, settings, kind);
+    const credits = await configure(page, settings, kind, aspectRatio);
 
     const box = page.getByRole('textbox', { name: 'What do you want to create?' });
     await box.click();
@@ -158,6 +168,7 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
     for (let i = 0; i < 30 && !(await start.isEnabled()); i++) await sleep(500);
     if (!(await start.isEnabled())) throw new Error('Flow không cho bấm tạo (nút "Start generation" bị khoá)');
     if (dryRun) return { dryRun: true, credits }; // kiểm tra các bước mà không tốn credit
+
     log(`Bấm tạo (${credits})`);
     await start.click();
 
@@ -352,7 +363,8 @@ async function addIngredient(page, name) {
 
 // Video: Video / Ingredients / tỉ lệ / Omni 1.1 Flash / độ phân giải / x1.
 // Ảnh: Image / tỉ lệ / Nano Banana / x1. Trả về số credit sẽ tốn.
-async function configure(page, settings, kind = 'video') {
+async function configure(page, settings, kind = 'video', aspectRatio = null) {
+  const ratio = (aspectRatio || settings.aspectRatio) === '16:9' ? '16:9' : '9:16';
   // Chế độ "Agent" của Flow (dự án mới mặc định bật) ẩn nút cài đặt model -> tắt đi
   const agent = page.locator('button.agent-mode-chip-checked');
   if (await agent.count()) {
@@ -370,13 +382,13 @@ async function configure(page, settings, kind = 'video') {
   if (kind === 'image') {
     await radio('Image').click();
     await sleep(400);
-    await radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16').click();
+    await radio(ratio).click();
     await pickFamily(/Nano Banana/i);
   } else {
     await radio('Video').click();
     await sleep(400);
     await radio('Ingredients').click();
-    await radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16').click();
+    await radio(ratio).click();
     await pickFamily(/Omni/);
     await page.getByRole('radio', { name: settings.flowResolution === '360p' ? /^360p/ : /^720p/ }).click();
   }
@@ -411,8 +423,12 @@ const tiles = (page) =>
       };
     }),
   );
-const FAILED_RE = /couldn.t generate|failed to generate|something went wrong|try again later|violat/i;
+// Ô kết quả bị lỗi. "Failed … We noticed some unusual activity" = bộ lọc chống lạm dụng của Flow chặn lần tạo
+// (ô chỉ ghi "Failed" ở dòng đầu, không có "couldn't generate"). Chỉ bắt "Failed" đứng đầu dòng để không nhầm với
+// ô "upload failed" của file tải lên (ô đó được lọc riêng, xem isUploadTile).
+const FAILED_RE = /couldn.t generate|failed to generate|something went wrong|try again later|violat|unusual activity|^failed\b/im;
 const isFailed = (t) => FAILED_RE.test(t.text);
+const BLOCKED_RE = /unusual activity/i;
 const isGenerating = (t) => /\d+\s*%/.test(t.text);
 // Mã file media: phần cuối đường dẫn, bỏ chữ ký ?Expires=… (đổi theo thời gian).
 // Cùng 1 video Flow lúc hiện <video> (/video/<id>) lúc hiện ảnh thu nhỏ (/image/<id>).
@@ -483,7 +499,13 @@ async function waitForResult(page, before, log, names, kind = 'video') {
     }
     if (isFailed(t)) {
       const refunded = /will be refunded/i.test(t.text);
-      throw new Error('Flow báo lỗi: ' + t.text.split('\n').slice(0, 2).join(' ') + (refunded ? ' (Flow sẽ hoàn lại credit cho lần lỗi này)' : ''));
+      // innerText của ô có cả tên icon ("warning") đứng trước chữ Failed -> bỏ đi
+      const head = t.text.split('\n').map((l) => l.trim()).filter((l) => l && !/^(warning|error)$/i.test(l)).slice(0, 2).join(' ');
+      if (BLOCKED_RE.test(t.text)) {
+        throw new Error(`Flow chặn lần tạo này ("${head}"): bộ lọc chống lạm dụng của Google nghi ngờ hoạt động tự động hoặc tạo quá dồn dập. `
+          + 'Hãy thử bấm ↻ trên ô lỗi trong cửa sổ Chrome của Flow; nếu tạo tay được thì chờ 10–15 phút rồi bấm Tiếp tục, hoặc tải video tạo tay bằng "Thay bằng video từ máy".');
+      }
+      throw new Error('Flow báo lỗi: ' + head + (refunded ? ' (Flow sẽ hoàn lại credit cho lần lỗi này)' : ''));
     }
     const pct = t.text.match(/\d+\s*%/)?.[0];
     if (pct) {

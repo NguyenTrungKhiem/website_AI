@@ -1,0 +1,20 @@
+const assert = require('node:assert/strict');
+const { JSDOM } = require('jsdom');
+const dom = new JSDOM('<form><div contenteditable="true"></div><input type="file" accept="image/*" multiple></form>', {url:'https://chatgpt.com/'});
+for (const key of ['window','document','Event','File','ClipboardEvent','getComputedStyle']) globalThis[key] = dom.window[key];
+let count = 0;
+globalThis.chrome = {runtime:{id:'test',onMessage:{addListener(){}},sendMessage: async () => ({b64:'YWJj',mime:'image/png'})}};
+globalThis.DataTransfer = class { constructor(){this.files=[];this.items={add:(file)=>this.files.push(file)}} };
+const input=document.querySelector('input');
+Object.defineProperty(input,'files',{value:[],writable:true});
+input.addEventListener('change',()=> {count=input.files.length; for(const file of input.files){const img=document.createElement('img');img.alt=file.name;document.querySelector('form').append(img)}});
+const {AA}=require('../content/common.js');
+(async()=>{
+ const ctx={job:{payload:{referenceImages:['data:image/png;base64,YWJj','data:image/png;base64,YWJj']}},say:async()=>{},beat:async()=>{},needUser:async()=>{throw new Error('Unexpected manual intervention')}};
+ await AA.attachImageReferences(ctx,()=>document.querySelector('[contenteditable]'));
+ assert.equal(count,2);assert.equal(input.files[1].name,'cine-reference-2.png');
+ await AA.attachImageReferences({...ctx,job:{payload:{}}},()=>null);
+ chrome.runtime.sendMessage=async()=>({error:'Reference unavailable'});
+ await assert.rejects(()=>AA.attachImageReferences(ctx,()=>document.querySelector('[contenteditable]')),/Reference unavailable/);
+ console.log('Cine reference attachments: all identities attached; missing reference fails instead of generating passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

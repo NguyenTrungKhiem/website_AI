@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 24rem;
+      margin: 0;
+      padding: .85rem;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      background: #f8fafc;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: .6rem;
+      padding-bottom: .4rem;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: .35rem;
+    }
+    .badge-ver {
+      font-size: 10px;
+      font-weight: 600;
+      background: #e2e8f0;
+      color: #475569;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      margin: .25rem 0;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #cbd5e1;
+      flex-shrink: 0;
+    }
+    .dot.on { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
+    .dot.bad { background: #ef4444; box-shadow: 0 0 0 2px #fee2e2; }
+    .dot.working { background: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; animation: pulse 1.5s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .4; }
+    }
+    .state-text {
+      font-weight: 600;
+      color: #334155;
+    }
+
+    /* Queue & Job cards */
+    .status-card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: .55rem .7rem;
+      margin: .45rem 0;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .job-title {
+      font-weight: 600;
+      color: #1d4ed8;
+      display: flex;
+      align-items: center;
+      gap: .3rem;
+    }
+    .queue-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .25rem;
+      padding: .2rem .5rem;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: .35rem;
+    }
+    .queue-badge.has-pending {
+      background: #ffedd5;
+      color: #c2410c;
+      border: 1px solid #fed7aa;
+    }
+    .queue-badge.empty {
+      background: #f1f5f9;
+      color: #64748b;
+    }
+
+    .btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .4rem;
+      margin-top: .5rem;
+    }
+    .btn-full {
+      grid-column: span 2;
+    }
+    button {
+      padding: .45rem .6rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #fff;
+      color: #1e293b;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .3rem;
+      transition: all .15s ease;
+    }
+    button:hover {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+    button.btn-primary {
+      background: #2563eb;
+      color: #fff;
+      border-color: #1d4ed8;
+      font-weight: 600;
+    }
+    button.btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    /* Logs section */
+    .log-section {
+      margin-top: .65rem;
+    }
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: .3rem;
+    }
+    .log-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      color: #64748b;
+    }
+    .btn-clear {
+      background: none;
+      border: none;
+      color: #94a3b8;
+      font-size: 11px;
+      padding: 0;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .btn-clear:hover {
+      color: #ef4444;
+    }
+    .log-box {
+      background: #0f172a;
+      color: #cbd5e1;
+      border-radius: 6px;
+      padding: .5rem;
+      height: 7.5rem;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .log-box::-webkit-scrollbar {
+      width: 4px;
+    }
+    .log-box::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 2px;
+    }
+    .log-item {
+      margin-bottom: .25rem;
+      word-break: break-word;
+    }
+    .log-time {
+      color: #64748b;
+      margin-right: .3rem;
+    }
+    .log-info { color: #e2e8f0; }
+    .log-success { color: #4ade80; font-weight: 600; }
+    .log-warn { color: #fbbf24; }
+    .log-error { color: #f87171; font-weight: 600; }
+
+    .setting-row {
+      margin: .45rem 0 .2rem;
+      padding: .35rem .5rem;
+      background: #f1f5f9;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+    }
+    .setting-label {
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+      font-size: 11.5px;
+      color: #334155;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .setting-label input {
+      cursor: pointer;
+      margin: 0;
+    }
+    .err { color: #dc2626; font-size: 11px; margin-top: .3rem; }
+    textarea { width: 100%; box-sizing: border-box; height: 5rem; margin-top: .4rem; font: 10px monospace; border-radius: 4px; border: 1px solid #cbd5e1; }
+    small { color: #64748b; font-size: 11px; display: block; margin-top: .25rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">
+      AutoAffiliate Trợ lý
+      <span class="badge-ver">v0.6.2</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="dot" id="dot"></span>
+    <span class="state-text" id="state">Đang kiểm tra…</span>
+  </div>
+
+  <div class="status-card" id="status-card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div class="job-title" id="job-title">Chưa có công việc nào</div>
+      <button id="cancel-job" style="display:none; padding:2px 8px; font-size:11px; background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5; border-radius:4px; cursor:pointer;">✕ Hủy việc</button>
+    </div>
+    <div id="queue-badge" class="queue-badge empty">Hàng đợi: 0 công việc</div>
+    <div id="error" class="err" style="display:none"></div>
+  </div>
+
+  <div class="setting-row">
+    <label class="setting-label">
+      <input type="checkbox" id="keep-tab" />
+      <span>Chạy ngầm (không tự chuyển/giật tab)</span>
+    </label>
+  </div>
+
+  <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <span style="font-size: 11.5px; font-weight: 600; color: #334155;">Tài khoản Google Flow:</span>
+      <select id="flow-account" style="font-size: 11px; padding: 2px 5px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer; color: #0f172a; max-width: 135px;">
+        <option value="auto">Mặc định (u/0)</option>
+        <option value="u/0">u/0 (Tài khoản 1)</option>
+        <option value="u/1">u/1 (Tài khoản 2)</option>
+        <option value="u/2">u/2 (Tài khoản 3)</option>
+        <option value="u/3">u/3 (Tài khoản 4)</option>
+        <option value="u/4">u/4 (Tài khoản 5)</option>
+        <option value="u/5">u/5 (Tài khoản 6)</option>
+        <option value="u/6">u/6 (Tài khoản 7)</option>
+        <option value="custom">Tùy chỉnh...</option>
+      </select>
+    </div>
+    <div id="flow-custom-wrap" style="display: none; width: 100%; margin-top: 2px;">
+      <input type="text" id="flow-custom-input" placeholder="Ví dụ: u/4 hoặc 4" style="width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px;" />
+    </div>
+  </div>
+
+  <div class="setting-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <span style="font-size: 11.5px; font-weight: 600; color: #334155;">Tài khoản Gemini:</span>
+      <select id="gemini-account" style="font-size: 11px; padding: 2px 5px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer; color: #0f172a; max-width: 135px;">
+        <option value="auto">Mặc định (u/0)</option>
+        <option value="u/0">u/0 (Tài khoản 1)</option>
+        <option value="u/1">u/1 (Tài khoản 2)</option>
+        <option value="u/2">u/2 (Tài khoản 3)</option>
+        <option value="u/3">u/3 (Tài khoản 4)</option>
+        <option value="u/4">u/4 (Tài khoản 5)</option>
+        <option value="custom">Tùy chỉnh...</option>
+      </select>
+    </div>
+    <div id="gemini-custom-wrap" style="display: none; width: 100%; margin-top: 2px;">
+      <input type="text" id="gemini-custom-input" placeholder="Ví dụ: u/4 hoặc 4" style="width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px;" />
+    </div>
+  </div>
+
+  <div class="btn-grid">
+    <button class="btn-primary" id="poll">⚡ Nhận việc ngay</button>
+    <button id="options">⚙️ Cài đặt</button>
+    <button id="dump" class="btn-full">📋 Sao chép cấu trúc trang</button>
+  </div>
+
+  <div class="log-section">
+    <div class="log-header">
+      <span class="log-title">Nhật ký hoạt động</span>
+      <button class="btn-clear" id="clear-logs">Xóa log</button>
+    </div>
+    <div class="log-box" id="log-box">
+      <div style="color: #64748b; text-align: center; margin-top: 2rem;">Chưa có nhật ký hoạt động</div>
+    </div>
+  </div>
+
+  <textarea id="out" style="display:none" readonly></textarea>
+  <small id="hint"></small>
+
+  <script src="popup.js"></script>
+</body>
+</html>
