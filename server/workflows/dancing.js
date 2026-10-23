@@ -2,6 +2,7 @@
 // -> keyframe cho từng đoạn, người dùng duyệt) -> thay người + sản phẩm cho từng đoạn (animate keyframe theo video gốc)
 // -> thay bối cảnh vào video đã tạo -> ghép lại + chèn âm thanh gốc.
 // Quy trình khác (vd. Thay quần áo) viết thành file riêng cùng cấu trúc, không đụng vào file này.
+import fs from 'node:fs';
 
 const BACKGROUND_PROMPT = `Completely remove all people from the scene, leaving only the empty background.
 Identify the key objects and architectural elements in the original reference and transform their colors to a new harmonious palette: very bright and airy, dominated by soft milky white with only a subtle hint of light beige / pale brown (cream tones), high-key exposure, no yellow, orange or dark, moody tones.
@@ -151,10 +152,24 @@ export default {
       async run(ctx) {
         const model = ctx.asset(ctx.inputs.model);
         if (!model) throw new Error('Ảnh model không còn trong thư viện');
+
+        // 1. Kiểm tra trong local: nếu đã có bảng mặt 360° hợp lệ và file còn trên đĩa thì dùng lại
         if (!ctx.state.assetId) {
           const have = ctx.identitySheetOf(model.id);
-          if (have) { ctx.state.assetId = have.id; return 'done'; }
+          if (have && have.path && fs.existsSync(have.path)) {
+            ctx.state.assetId = have.id;
+            return 'done';
+          }
+        } else {
+          const existing = ctx.asset(ctx.state.assetId);
+          if (existing && existing.path && fs.existsSync(existing.path)) {
+            return 'done';
+          }
+          // File bảng mặt 360° không còn trong local -> xoá để tạo lại tự động
+          ctx.state.assetId = null;
         }
+
+        // 2. Không có trong local (hoặc file bị xoá): tự động tạo bảng mặt 360° mới bằng Nano Banana
         const job = ctx.ensureJob('identity:sheet', {
           type: 'image',
           imagePaths: [model.path],
@@ -178,8 +193,23 @@ export default {
       // Xong thì dừng (paused) cho người dùng duyệt (Thử lại / Sửa prompt / chọn lần tạo) vì bước sau tốn credit.
       // Keyframe đổi sau khi đã duyệt -> runner.syncRun làm lại motion của đoạn đó và dừng duyệt lại.
       async run(ctx) {
-        const sheet = ctx.asset(ctx.stages.identity?.assetId);
-        if (!sheet) throw new Error('Chưa có bảng mặt 360° — chạy lại bước Bảng mặt 360°');
+        let sheet = ctx.asset(ctx.stages.identity?.assetId);
+        // Kiểm tra tính toàn vẹn của dữ liệu local:
+        if (!sheet || !sheet.path || !fs.existsSync(sheet.path)) {
+          // Bảng mặt 360° không tồn tại trong local!
+          // Thử tìm lại trong local bằng identitySheetOf
+          const model = ctx.asset(ctx.inputs.model);
+          const have = model ? ctx.identitySheetOf(model.id) : null;
+          if (have && have.path && fs.existsSync(have.path)) {
+            sheet = have;
+            if (ctx.stages.identity) ctx.stages.identity.assetId = have.id;
+          } else {
+            // Local hoàn toàn không có file -> Tự động quay lại bước identity để tạo lại!
+            if (ctx.stages.identity) delete ctx.stages.identity.assetId;
+            if (ctx.stages._jobs?.['identity:sheet']) delete ctx.stages._jobs['identity:sheet'];
+            return 'waiting';
+          }
+        }
         const product = ctx.asset(ctx.inputs.product);
         const frames = (ctx.state.frames ||= {});
         for (const clip of ctx.clips) if (!frames[clip.id]) frames[clip.id] = await ctx.clipFrame(clip, 0.1);

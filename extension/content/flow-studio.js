@@ -89,7 +89,7 @@
       target.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true, ...(type.endsWith("down") ? { buttons: 1 } : {}), ...(type === "click" ? { detail: 1 } : {}) }));
     }
   };
-  const hover = (el) => { el.scrollIntoView?.({ block: "center" }); mouseEvents(el, ["pointerover", "mouseover", "pointerenter", "mouseenter", "pointermove", "mousemove"]); };
+  const hover = (el) => { mouseEvents(el, ["pointerover", "mouseover", "pointerenter", "mouseenter", "pointermove", "mousemove"]); };
   const click = (el) => {
     let target = el;
     if (el.tagName === "INPUT" && (el.type === "radio" || el.type === "checkbox")) target = el.labels?.[0] || el.closest("label") || el;
@@ -133,11 +133,20 @@
     click(btn);
     if (!(await waitFor(() => one("button", "Upload media") || one("textbox", "Search assets"), 15000))) throw new Error("Bảng nguyên liệu không mở");
   };
-  const assetOptions = () => { const list = one("listbox", "Asset list"); return list ? all("option", null, list) : []; };
+  const assetOptions = () => {
+    let list = one("listbox", "Asset list") || document.querySelector('[role="listbox"], [aria-label*="asset" i]');
+    if (list) {
+      const opts = all("option", null, list);
+      if (opts.length > 0) return opts;
+      const roleOpts = [...list.querySelectorAll('[role="option"], mat-list-option, .flow-asset-item')];
+      if (roleOpts.length > 0) return roleOpts;
+    }
+    return [...document.querySelectorAll('[role="dialog"] [role="option"], aside [role="option"], [role="listbox"] [role="option"]')];
+  };
   const flowKey = (title) => String(title).replace(/…\s*$/, "").trim();
 
   const clearSearch = async () => {
-    const s = one("textbox", "Search assets");
+    const s = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i]');
     if (!s) return;
     const cur = (s.value ?? s.textContent ?? "").trim();
     if (!cur) return;
@@ -154,13 +163,15 @@
   const findAsset = async (key) => {
     await openAssetPanel();
     await clearSearch();
-    const search = one("textbox", "Search assets");
+    const search = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i]');
     if (!search) return null;
     setText(search, key);
     await sleep(900);
+    const keyPrefix = key.slice(0, 12);
     const opt = assetOptions().find((o) => {
       const nm = nameOf(o);
-      return (nm.startsWith(key) || nm.includes(key)) && !/uploading/i.test(nm);
+      if (/uploading|đang tải/i.test(nm)) return false;
+      return nm.startsWith(key) || nm.includes(key) || nm.includes(keyPrefix) || key.includes(nm.replace(/[.…\s]/g, ""));
     }) || null;
     // Quan trọng: nếu không tìm thấy, PHẢI xoá ô tìm kiếm để Flow không kẹt ở "No assets found."
     if (!opt) {
@@ -170,12 +181,22 @@
   };
 
   const ingredientCount = () => all("button", "Ingredient").length;
-  const addIngredient = async (key) => {
-    const opt = await findAsset(key);
+  const addIngredient = async (key, item = null) => {
+    let opt = await findAsset(key);
+    if (!opt && item?.title) opt = await findAsset(flowKey(item.title));
+    if (!opt && key.length > 12) opt = await findAsset(key.slice(0, 12));
+    if (!opt) {
+      const keyPrefix = key.slice(0, 12);
+      opt = assetOptions().find((o) => {
+        const nm = nameOf(o);
+        if (/uploading|đang tải/i.test(nm)) return false;
+        return nm.includes(key) || nm.includes(keyPrefix) || (item?.title && nm.includes(flowKey(item.title)));
+      }) || null;
+    }
     if (!opt) throw new Error(`Không thấy nguyên liệu "${key}" trong dự án`);
     const n = ingredientCount();
     click(opt);
-    const add = await waitFor(() => one("button", "Add to prompt"), 5000);
+    const add = await waitFor(() => one("button", "Add to prompt") || [...document.querySelectorAll('button')].find((b) => /add to prompt|thêm vào câu lệnh/i.test(b.innerText || b.getAttribute('aria-label') || '')), 5000);
     if (add) click(add);
     await sleep(600);
     if (ingredientCount() <= n) throw new Error(`Không thêm được "${key}" vào prompt`);
@@ -190,10 +211,8 @@
     await sleep(400);
     await ctx.say(`Tải lên Flow: ${item.name}`);
 
-    const upBtn = one("button", "Upload media");
+    const upBtn = one("button", "Upload media") || [...document.querySelectorAll('button, [role="button"]')].find((b) => /upload media|tải lên/i.test(b.innerText || b.getAttribute('aria-label') || ''));
     if (!upBtn) throw new Error('Không thấy nút "Upload media" trong bảng nguyên liệu Flow');
-    upBtn.scrollIntoView?.({ block: "center", inline: "center" });
-    await sleep(300);
     const r = upBtn.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
@@ -212,7 +231,7 @@
     }
 
     if (!uploaded) {
-      // Dự phòng: thử qua input[type="file"] nếu có, hoặc click Upload media
+      // Dự phòng: thử qua input[type="file"] nếu có hoặc drag & drop
       const data = await AA.send({ type: "getImageData", url: item.url });
       if (data?.b64) {
         const bytes = Uint8Array.from(atob(data.b64), (c) => c.charCodeAt(0));
@@ -224,13 +243,18 @@
           input.files = dt.files;
           input.dispatchEvent(new Event("input", { bubbles: true }));
           input.dispatchEvent(new Event("change", { bubbles: true }));
+          uploaded = true;
         } else {
-          click(upBtn);
+          const dropTarget = document.querySelector('[role="listbox"], [role="dialog"], aside') || document.body;
+          dropTarget.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt }));
+          dropTarget.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+          dropTarget.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
         }
       }
     }
 
     const key = item.name.replace(/\.[^.]+$/, "");
+    const keyPrefix = key.slice(0, 12);
     const deadline = Date.now() + 180_000;
     let asked = false;
     const startTime = Date.now();
@@ -245,18 +269,30 @@
           await ctx.needUser('Flow hỏi "Rights to use this video": bấm "I agree" trong hộp thoại đó (hoặc bật "Tự bấm I agree" trong Cài đặt của web).');
         }
       }
-      const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${key}"]`)].some((t) => /upload failed/i.test(t.innerText));
+      const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${keyPrefix}"]`)].some((t) => /upload failed/i.test(t.innerText));
       if (failed) throw new Error(`Flow báo "upload failed" cho ${item.name}`);
 
       // 1. Kiểm tra trong danh sách hiện tại
       let opt = assetOptions().find((o) => {
         const nm = nameOf(o);
-        return (nm.includes(key) || (item.title && nm.includes(item.title))) && !/uploading/i.test(nm);
+        if (/uploading|đang tải/i.test(nm)) return false;
+        return nm.includes(key) || nm.includes(keyPrefix) || (item.title && nm.includes(flowKey(item.title))) || (item.name && nm.includes(item.name));
       });
 
-      // 2. Sau 6s, nếu danh sách dài thử tìm bằng ô search
-      if (!opt && Date.now() - startTime > 6000) {
+      // 2. Sau 4s, nếu danh sách dài thử tìm bằng ô search
+      if (!opt && Date.now() - startTime > 4000) {
         opt = await findAsset(key);
+        if (!opt && keyPrefix.length >= 8) opt = await findAsset(keyPrefix);
+      }
+
+      // 3. Sau 8s, kiểm tra phần tử đầu tiên nếu đã xong tải lên
+      if (!opt && Date.now() - startTime > 8000) {
+        const first = assetOptions()[0];
+        if (first && !/uploading|đang tải/i.test(nameOf(first))) {
+          if (/vs-/i.test(nameOf(first))) {
+            opt = first;
+          }
+        }
       }
 
       if (opt) break;
@@ -471,7 +507,7 @@
       // 2. Nếu không có hoặc không tìm thấy trên Flow, tìm bằng mã hash vs-...
       if (!key) {
         const base = item.name.replace(/\.[^.]+$/, "");
-        const found = await findAsset(base);
+        const found = await findAsset(base) || (base.length > 12 ? await findAsset(base.slice(0, 12)) : null);
         if (found) {
           key = base;
           await ctx.say(`Đã có trên Flow: ${item.name}`);
@@ -480,7 +516,7 @@
           key = base;
         }
       }
-      await addIngredient(key);
+      await addIngredient(key, item);
       await ctx.say(`+ nguyên liệu: ${key.slice(0, 50)}`);
     }
     await dismissOverlays();

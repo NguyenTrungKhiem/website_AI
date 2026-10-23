@@ -949,8 +949,8 @@ const handlers = {
       const chooserPromise = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           chrome.debugger.onEvent.removeListener(onEvent);
-          if (!chooserFired) reject(new Error("Không thấy Flow mở hộp thoại chọn file sau 12s"));
-        }, 12000);
+          if (!chooserFired) reject(new Error("Không thấy Flow mở hộp thoại chọn file sau 10s"));
+        }, 10000);
 
         function onEvent(source, method, params) {
           if (source.tabId === tabId && method === "Page.fileChooserOpened") {
@@ -963,30 +963,48 @@ const handlers = {
         chrome.debugger.onEvent.addListener(onEvent);
       });
 
-      // Di chuột và bấm chuột trái vào nút Upload media bằng trusted mouse event
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: Math.round(x),
-        y: Math.round(y),
-      });
-      await new Promise((r) => setTimeout(r, 60));
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: Math.round(x),
-        y: Math.round(y),
-        button: "left",
-        buttons: 1,
-        clickCount: 1,
-      });
-      await new Promise((r) => setTimeout(r, 100));
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: Math.round(x),
-        y: Math.round(y),
-        button: "left",
-        buttons: 0,
-        clickCount: 1,
-      });
+      // 1. Kích hoạt click trực tiếp trong DOM qua Runtime.evaluate (Angular Zone.js & touch target)
+      await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          const btns = [...document.querySelectorAll('button, [role="button"]')];
+          const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+          if (btn) {
+            btn.focus?.();
+            const touch = btn.querySelector('.mat-mdc-button-touch-target');
+            if (touch) touch.click();
+            btn.click();
+          }
+          const fi = document.querySelector('input[type="file"]');
+          if (fi) fi.click();
+        })()`,
+      }).catch(() => {});
+
+      // 2. Di chuột và bấm chuột trái vào nút Upload media bằng trusted mouse event
+      if (typeof x === "number" && typeof y === "number" && x > 0 && y > 0) {
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: Math.round(x),
+          y: Math.round(y),
+        }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 60));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x: Math.round(x),
+          y: Math.round(y),
+          button: "left",
+          buttons: 1,
+          clickCount: 1,
+        }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 100));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: Math.round(x),
+          y: Math.round(y),
+          button: "left",
+          buttons: 0,
+          clickCount: 1,
+        }).catch(() => {});
+      }
 
       // Chờ sự kiện mở file chooser từ trình duyệt
       await chooserPromise;
