@@ -95,7 +95,7 @@ def swap_face_video(source_img_path, video_path, output_path):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(tmp_out, fourcc, fps, (width, height))
 
-    print(f"[face_swap] Processing video {video_path} ({total_frames} frames @ {fps:.1f} fps)...")
+    print(f"[face_swap] Processing video {video_path} ({total_frames} frames @ {fps:.1f} fps)...", flush=True)
     frame_idx = 0
     while True:
         ret, frame = cap.read()
@@ -108,7 +108,7 @@ def swap_face_video(source_img_path, video_path, output_path):
         out.write(res_frame)
         frame_idx += 1
         if frame_idx % 25 == 0:
-            print(f"[face_swap] Progress: {frame_idx}/{total_frames} ({frame_idx/total_frames*100:.1f}%)")
+            print(f"[face_swap] Progress: {frame_idx}/{total_frames} ({frame_idx/total_frames*100:.1f}%)", flush=True)
 
     cap.release()
     out.release()
