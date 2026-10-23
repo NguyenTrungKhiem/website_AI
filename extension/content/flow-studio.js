@@ -305,7 +305,14 @@
 
   const tiles = () => [...new Set([...document.querySelectorAll('flow-grid-tile-container, main [role="group"]')])];
   const mediaId = (src) => (src || "").split("?")[0].split("/").pop();
-  const tileMedia = (t) => t.querySelector("video")?.getAttribute("src") || t.querySelector("img")?.getAttribute("src") || "";
+  const tileMedia = (t) => {
+    if (!t) return "";
+    const v = t.querySelector("video");
+    if (v) return v.currentSrc || v.src || v.getAttribute("src") || "";
+    const img = t.querySelector("img");
+    if (img) return img.currentSrc || img.src || img.getAttribute("src") || "";
+    return "";
+  };
   const isUploadTile = (t) => /^vs-/.test(nameOf(t));
   const FAILED_RE = /couldn.t generate|failed to generate|something went wrong|try again later|violat|unusual activity|^failed\b/im;
   const enabled = (b) => !b.disabled && b.getAttribute("aria-disabled") !== "true" && !b.classList.contains("mat-mdc-button-disabled");
@@ -606,11 +613,15 @@
       }
 
       // 4. Tìm thẻ kết quả mới sinh (thẻ đầu tiên trong grid hoặc thẻ có mediaId chưa có trong beforeIds)
+      const firstTile = allTiles[0];
+      const firstMedia = firstTile ? tileMedia(firstTile) : "";
+      const firstId = mediaId(firstMedia);
+
       const t = allTiles.find((x) => {
         const m = tileMedia(x);
         const id = mediaId(m);
         return id && !beforeIds.has(id);
-      }) || (sawGenerating ? allTiles[0] : null);
+      }) || (firstId && !beforeIds.has(firstId) ? firstTile : null) || (Date.now() - startTime > 12000 && firstMedia ? firstTile : null);
 
       if (!t) continue;
 
@@ -618,11 +629,11 @@
       const name = `flow-${kind}.${kind === "image" ? "png" : "mp4"}`;
 
       // 1. Link media (https) -> trình nền tải về (có cookie) và gửi lên web
-      let src = kind === "image" ? t.querySelector("img")?.getAttribute("src") : t.querySelector("video")?.getAttribute("src");
+      let src = tileMedia(t);
       if (kind === "video" && !/^https?:/.test(src || "")) {
         hover(t);
         await sleep(1200);
-        src = t.querySelector("video")?.getAttribute("src");
+        src = tileMedia(t);
       }
       if (/^https:/.test(src || "")) {
         await ctx.say("Tải kết quả về web…");
