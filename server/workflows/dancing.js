@@ -153,23 +153,16 @@ export default {
         const model = ctx.asset(ctx.inputs.model);
         if (!model) throw new Error('Ảnh model không còn trong thư viện');
 
-        // 1. Kiểm tra trong local: nếu đã có bảng mặt 360° hợp lệ và file còn trên đĩa thì dùng lại
-        if (!ctx.state.assetId) {
-          const have = ctx.identitySheetOf(model.id);
-          if (have && have.path && fs.existsSync(have.path)) {
-            ctx.state.assetId = have.id;
-            return 'done';
-          }
-        } else {
+        // Bảng mặt 360° chỉ dùng lại nếu chính lần chạy này đã tạo thành công và file còn trên đĩa
+        if (ctx.state.assetId) {
           const existing = ctx.asset(ctx.state.assetId);
           if (existing && existing.path && fs.existsSync(existing.path)) {
             return 'done';
           }
-          // File bảng mặt 360° không còn trong local -> xoá để tạo lại tự động
           ctx.state.assetId = null;
         }
 
-        // 2. Không có trong local (hoặc file bị xoá): tự động tạo bảng mặt 360° mới bằng Nano Banana
+        // Tạo bảng mặt 360° trực tiếp trên Flow bằng Nano Banana (0 credit, sinh ra trực tiếp trong dự án Flow)
         const job = ctx.ensureJob('identity:sheet', {
           type: 'image',
           imagePaths: [model.path],
@@ -194,21 +187,11 @@ export default {
       // Keyframe đổi sau khi đã duyệt -> runner.syncRun làm lại motion của đoạn đó và dừng duyệt lại.
       async run(ctx) {
         let sheet = ctx.asset(ctx.stages.identity?.assetId);
-        // Kiểm tra tính toàn vẹn của dữ liệu local:
+        // Kiểm tra tính toàn vẹn: nếu bảng mặt 360° chưa có hoặc bị mất, tự động quay lại bước identity để tạo lại trên Flow!
         if (!sheet || !sheet.path || !fs.existsSync(sheet.path)) {
-          // Bảng mặt 360° không tồn tại trong local!
-          // Thử tìm lại trong local bằng identitySheetOf
-          const model = ctx.asset(ctx.inputs.model);
-          const have = model ? ctx.identitySheetOf(model.id) : null;
-          if (have && have.path && fs.existsSync(have.path)) {
-            sheet = have;
-            if (ctx.stages.identity) ctx.stages.identity.assetId = have.id;
-          } else {
-            // Local hoàn toàn không có file -> Tự động quay lại bước identity để tạo lại!
-            if (ctx.stages.identity) delete ctx.stages.identity.assetId;
-            if (ctx.stages._jobs?.['identity:sheet']) delete ctx.stages._jobs['identity:sheet'];
-            return 'waiting';
-          }
+          if (ctx.stages.identity) delete ctx.stages.identity.assetId;
+          if (ctx.stages._jobs?.['identity:sheet']) delete ctx.stages._jobs['identity:sheet'];
+          return 'waiting';
         }
         const product = ctx.asset(ctx.inputs.product);
         const frames = (ctx.state.frames ||= {});
@@ -224,7 +207,21 @@ export default {
           }),
         );
         const r = ctx.waitAll(jobs);
-        if (r !== 'done') return r;
+        if (r !== 'done') {
+          // Tự phục hồi: nếu bất kỳ job keyframe nào báo lỗi do thiếu nguyên liệu trên Flow (chưa có / không nạp được):
+          // Chuyển sang luồng khác: tự động làm mới và chạy lại bước identity để Flow tạo bảng mặt 360° trực tiếp trong dự án!
+          const missingFlowAsset = jobs.find((j) => j.status === 'failed' && /Flow/i.test(j.error || ''));
+          if (missingFlowAsset) {
+            delete ctx.stages.identity?.assetId;
+            delete ctx.stages._jobs?.['identity:sheet'];
+            for (const j of jobs) {
+              j.status = 'queued';
+              j.error = null;
+            }
+            return 'waiting';
+          }
+          return r;
+        }
         const assets = (ctx.state.assets ||= {});
         for (const clip of ctx.clips) {
           const job = ctx.job(`keyframe:${clip.id}`);

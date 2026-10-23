@@ -146,37 +146,38 @@
   const flowKey = (title) => String(title).replace(/…\s*$/, "").trim();
 
   const clearSearch = async () => {
-    const s = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i]');
+    const s = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search" i], input[type="search"]');
     if (!s) return;
-    const cur = (s.value ?? s.textContent ?? "").trim();
-    if (!cur) return;
     s.focus();
     const clearBtn = s.parentElement?.querySelector('button, [role="button"], mat-icon, [aria-label*="clear" i]');
-    if (clearBtn) click(clearBtn);
-    setText(s, "");
-    s.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward" }));
-    s.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "deleteContentBackward" }));
-    s.dispatchEvent(new KeyboardEvent("keyup", { key: "Backspace", bubbles: true }));
-    await sleep(400);
+    if (clearBtn) { click(clearBtn); await sleep(100); }
+    try {
+      const proto = s instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(s, "");
+    } catch {
+      s.value = "";
+    }
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+    s.dispatchEvent(new Event("change", { bubbles: true }));
+    s.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", code: "Backspace", keyCode: 8, which: 8, bubbles: true }));
+    s.dispatchEvent(new KeyboardEvent("keyup", { key: "Backspace", code: "Backspace", keyCode: 8, which: 8, bubbles: true }));
+    await sleep(200);
   };
 
   const findAsset = async (key) => {
     await openAssetPanel();
     await clearSearch();
-    const search = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i]');
+    const search = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i], input[type="search"]');
     if (!search) return null;
     setText(search, key);
-    await sleep(900);
+    await sleep(800);
     const keyPrefix = key.slice(0, 12);
     const opt = assetOptions().find((o) => {
       const nm = nameOf(o);
       if (/uploading|đang tải/i.test(nm)) return false;
       return nm.startsWith(key) || nm.includes(key) || nm.includes(keyPrefix) || key.includes(nm.replace(/[.…\s]/g, ""));
     }) || null;
-    // Quan trọng: nếu không tìm thấy, PHẢI xoá ô tìm kiếm để Flow không kẹt ở "No assets found."
-    if (!opt) {
-      await clearSearch();
-    }
+    await clearSearch();
     return opt;
   };
 
@@ -193,7 +194,7 @@
         return nm.includes(key) || nm.includes(keyPrefix) || (item?.title && nm.includes(flowKey(item.title)));
       }) || null;
     }
-    if (!opt) throw new Error(`Không thấy nguyên liệu "${key}" trong dự án`);
+    if (!opt) throw new Error(`Không thấy nguyên liệu "${key}" trong dự án Flow`);
     const n = ingredientCount();
     click(opt);
     const add = await waitFor(() => one("button", "Add to prompt") || [...document.querySelectorAll('button')].find((b) => /add to prompt|thêm vào câu lệnh/i.test(b.innerText || b.getAttribute('aria-label') || '')), 5000);
@@ -208,7 +209,7 @@
   const uploadItem = async (ctx, item) => {
     await openAssetPanel();
     await clearSearch();
-    await sleep(400);
+    await sleep(300);
     await ctx.say(`Tải lên Flow: ${item.name}`);
 
     const upBtn = one("button", "Upload media") || [...document.querySelectorAll('button, [role="button"]')].find((b) => /upload media|tải lên/i.test(b.innerText || b.getAttribute('aria-label') || ''));
@@ -226,83 +227,54 @@
         await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
         uploaded = true;
       } catch (err) {
-        console.warn("uploadViaCDP lỗi, thử dự phòng:", err);
+        console.warn("uploadViaCDP lỗi:", err);
       }
     }
 
     if (!uploaded) {
-      // Dự phòng: thử qua input[type="file"] nếu có hoặc drag & drop
-      const data = await AA.send({ type: "getImageData", url: item.url });
-      if (data?.b64) {
-        const bytes = Uint8Array.from(atob(data.b64), (c) => c.charCodeAt(0));
-        const file = new File([bytes], item.name, { type: data.mime || (item.isVideo ? "video/mp4" : "image/png") });
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        let input = upBtn.parentElement?.querySelector('input[type="file"]') || [...document.querySelectorAll('input[type="file"]')].at(-1);
-        if (input) {
-          input.files = dt.files;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.dispatchEvent(new Event("change", { bubbles: true }));
-          uploaded = true;
-        } else {
-          const dropTarget = document.querySelector('[role="listbox"], [role="dialog"], aside') || document.body;
-          dropTarget.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt }));
-          dropTarget.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
-          dropTarget.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
-        }
-      }
+      // Nếu không nạp được tệp từ máy lên Flow, ném lỗi ngay để workflow tự chuyển sang luồng tạo lại
+      // thay vì bị kẹt trong vòng lặp gõ liên tục vào ô tìm kiếm
+      throw new Error(`Nguyên liệu "${item.title || item.name}" chưa có trong Flow (cần tạo lại trên Flow)`);
     }
 
     const key = item.name.replace(/\.[^.]+$/, "");
     const keyPrefix = key.slice(0, 12);
-    const deadline = Date.now() + 180_000;
-    let asked = false;
+    const deadline = Date.now() + 30_000;
     const startTime = Date.now();
     for (;;) {
       const dialog = all("dialog", /Rights to use/i)[0];
-      if (dialog) {
-        if (ctx.job.payload.autoAgree) {
-          const agree = one("button", "I agree", dialog);
-          if (agree) click(agree);
-        } else if (!asked) {
-          asked = true;
-          await ctx.needUser('Flow hỏi "Rights to use this video": bấm "I agree" trong hộp thoại đó (hoặc bật "Tự bấm I agree" trong Cài đặt của web).');
-        }
+      if (dialog && ctx.job.payload.autoAgree) {
+        const agree = one("button", "I agree", dialog);
+        if (agree) click(agree);
       }
       const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${keyPrefix}"]`)].some((t) => /upload failed/i.test(t.innerText));
       if (failed) throw new Error(`Flow báo "upload failed" cho ${item.name}`);
 
-      // 1. Kiểm tra trong danh sách hiện tại
+      // Kiểm tra trong danh sách hiện tại (KHÔNG gõ tìm kiếm liên tục trong vòng lặp)
       let opt = assetOptions().find((o) => {
         const nm = nameOf(o);
         if (/uploading|đang tải/i.test(nm)) return false;
         return nm.includes(key) || nm.includes(keyPrefix) || (item.title && nm.includes(flowKey(item.title))) || (item.name && nm.includes(item.name));
       });
 
-      // 2. Sau 4s, nếu danh sách dài thử tìm bằng ô search
-      if (!opt && Date.now() - startTime > 4000) {
-        opt = await findAsset(key);
-        if (!opt && keyPrefix.length >= 8) opt = await findAsset(keyPrefix);
-      }
-
-      // 3. Sau 8s, kiểm tra phần tử đầu tiên nếu đã xong tải lên
-      if (!opt && Date.now() - startTime > 8000) {
+      if (!opt && Date.now() - startTime > 5000) {
         const first = assetOptions()[0];
-        if (first && !/uploading|đang tải/i.test(nameOf(first))) {
-          if (/vs-/i.test(nameOf(first))) {
-            opt = first;
-          }
+        if (first && !/uploading|đang tải/i.test(nameOf(first)) && /vs-/i.test(nameOf(first))) {
+          opt = first;
         }
       }
 
       if (opt) break;
 
-      if (Date.now() > deadline) throw new Error(`Quá 3 phút chưa thấy ${item.name} trong thư viện Flow`);
-      await ctx.beat(`Đang tải ${item.name} lên Flow…`);
+      if (Date.now() > deadline) {
+        throw new Error(`Quá 30s chưa thấy ${item.name} trong Flow sau khi nạp (cần tạo lại trên Flow)`);
+      }
+      await ctx.beat(`Đang chờ Flow xử lý ${item.name}…`);
       await sleep(1500);
       if (!one("textbox", "Search assets")) await openAssetPanel().catch(() => {});
     }
     await clearSearch();
+  };
   };
 
   const configure = async (kind, ratio, resolution) => {
