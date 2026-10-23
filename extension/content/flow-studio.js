@@ -275,7 +275,6 @@
     }
     await clearSearch();
   };
-  };
 
   const configure = async (kind, ratio, resolution) => {
     const agent = document.querySelector("button.agent-mode-chip-checked");
