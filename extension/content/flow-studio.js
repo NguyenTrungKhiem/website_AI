@@ -239,9 +239,11 @@
     if (absPath) {
       try {
         await ctx.say(`Gửi tệp ${item.name} lên Flow…`);
-        await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
+        const res = await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
+        await ctx.say(`Nạp tệp thành công (${res?.method || "ok"})`);
         uploaded = true;
       } catch (err) {
+        await ctx.say(`Lỗi nạp tệp qua CDP: ${err?.message || err}`);
         console.warn("uploadViaCDP lỗi:", err);
       }
     }

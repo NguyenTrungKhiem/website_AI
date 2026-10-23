@@ -41,6 +41,9 @@ async function addLog(text, level = "info") {
     const nextLogs = [entry, ...logs].slice(0, 100);
     await chrome.storage.local.set({ logs: nextLogs });
   } catch {}
+  if (current?.job?.id) {
+    report(current.job.id, { message: `[${level}] ${text}` }).catch(() => {});
+  }
 }
 
 async function updatePending(count) {
@@ -958,9 +961,18 @@ const handlers = {
   },
   async uploadViaCDP({ filePath, x, y }, sender) {
     const tabId = sender?.tab?.id;
+    await addLog(`[uploadViaCDP] Bắt đầu cho tab ${tabId}`, "info");
     if (!tabId) throw new Error("Không có tabId để upload");
     const target = { tabId };
-    await chrome.debugger.attach(target, "1.3").catch(() => {});
+    await chrome.debugger.detach(target).catch(() => {});
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      await addLog(`[uploadViaCDP] Đã gắn debugger vào tab ${tabId}`, "info");
+    } catch (e) {
+      await addLog(`[uploadViaCDP] Lỗi gắn debugger: ${e?.message}`, "error");
+      throw new Error(`Lỗi gắn debugger: ${e?.message}`);
+    }
+
     const files = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
     if (!files.length) throw new Error("Không có đường dẫn tệp để nạp");
 
@@ -968,7 +980,7 @@ const handlers = {
       await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
       await chrome.debugger.sendCommand(target, "DOM.enable").catch(() => {});
 
-      // 1. Phương thức trực tiếp: Tìm thẻ input[type="file"] trong DOM và gán tệp bằng DOM.setFileInputFiles
+      // 1. Quét tìm thẻ input[type="file"] trong DOM
       const evalRes = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
         expression: `(() => {
           let fi = document.querySelector('input[type="file"]');
@@ -998,11 +1010,28 @@ const handlers = {
           }`,
           userGesture: true,
         }).catch(() => {});
-        await addLog(`📁 Đã nạp ${files.length} tệp qua DOM.setFileInputFiles`, "info");
+        await addLog(`📁 Đã nạp ${files.length} tệp qua DOM.setFileInputFiles (tìm thấy sẵn)`, "info");
         return { ok: true, method: "DOM.setFileInputFiles" };
       }
 
-      // 2. Chuẩn bị bắt chặn hộp thoại File Chooser trước khi bấm nút
+      // 2. Lấy vị trí nút Upload media trực tiếp từ viewport hiện tại
+      const btnInfo = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          const btns = [...document.querySelectorAll('button, [role="button"]')];
+          const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+          if (!btn) return null;
+          const r = btn.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: r.width, height: r.height };
+        })()`,
+        returnByValue: true,
+      }).catch(() => null);
+
+      const dynamicPos = btnInfo?.result?.value;
+      const clickX = dynamicPos?.x || x || 0;
+      const clickY = dynamicPos?.y || y || 0;
+      await addLog(`[uploadViaCDP] Tọa độ nút upload: (${Math.round(clickX)}, ${Math.round(clickY)})`, "info");
+
+      // Chuẩn bị bắt chặn hộp thoại File Chooser trước khi bấm nút
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: true });
 
       let chooserFired = false;
@@ -1023,47 +1052,21 @@ const handlers = {
         chrome.debugger.onEvent.addListener(onEvent);
       });
 
-      // Bấm nút Upload media với quyền trusted gesture
-      await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
-        expression: `(() => {
-          const btns = [...document.querySelectorAll('button, [role="button"]')];
-          const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
-          if (btn) {
-            btn.scrollIntoView?.({ block: 'center' });
-            btn.focus?.();
-            const touch = btn.querySelector('.mat-mdc-button-touch-target');
-            if (touch) touch.click();
-            btn.click();
-          }
-          const fi = document.querySelector('input[type="file"]');
-          if (fi) fi.click();
-        })()`,
-        userGesture: true,
-      }).catch(() => {});
-
-      if (typeof x === "number" && typeof y === "number" && x > 0 && y > 0) {
-        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: Math.round(x),
-          y: Math.round(y),
-        }).catch(() => {});
+      // Bấm nút Upload media bằng trusted mouse click
+      if (clickX > 0 && clickY > 0) {
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(clickX), y: Math.round(clickY) }).catch(() => {});
         await new Promise((r) => setTimeout(r, 60));
-        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          x: Math.round(x),
-          y: Math.round(y),
-          button: "left",
-          buttons: 1,
-          clickCount: 1,
-        }).catch(() => {});
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", x: Math.round(clickX), y: Math.round(clickY), button: "left", buttons: 1, clickCount: 1 }).catch(() => {});
         await new Promise((r) => setTimeout(r, 100));
-        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          x: Math.round(x),
-          y: Math.round(y),
-          button: "left",
-          buttons: 0,
-          clickCount: 1,
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", x: Math.round(clickX), y: Math.round(clickY), button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
+      } else {
+        await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+          expression: `(() => {
+            const btns = [...document.querySelectorAll('button, [role="button"]')];
+            const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+            if (btn) btn.click();
+          })()`,
+          userGesture: true,
         }).catch(() => {});
       }
 
@@ -1099,6 +1102,7 @@ const handlers = {
         return { ok: true, method: "DOM.setFileInputFiles_post_click" };
       }
 
+      await addLog("❌ Flow không mở file chooser và không có thẻ input[type='file']", "error");
       throw new Error("Không thể nạp tệp lên Flow (Flow không mở hộp thoại và không có thẻ input)");
     } finally {
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
