@@ -291,7 +291,7 @@
   const tileMedia = (t) => t.querySelector("video")?.getAttribute("src") || t.querySelector("img")?.getAttribute("src") || "";
   const isUploadTile = (t) => /^vs-/.test(nameOf(t));
   const FAILED_RE = /couldn.t generate|failed to generate|something went wrong|try again later|violat|unusual activity|^failed\b/im;
-  const enabled = (b) => !b.disabled && b.getAttribute("aria-disabled") !== "true";
+  const enabled = (b) => !b.disabled && b.getAttribute("aria-disabled") !== "true" && !b.classList.contains("mat-mdc-button-disabled");
   const promptBox = () => one("textbox", "What do you want to create?");
   const promptText = () => { const b = promptBox(); return b ? (b.value ?? b.textContent ?? "").trim() : ""; };
   const promptButtons = () => {
@@ -299,7 +299,13 @@
     for (let i = 0; i < 8 && c; i++) { c = c.parentElement; const btns = c ? all("button", null, c) : []; if (btns.length >= 2) return btns; }
     return [];
   };
-  const findStart = () => one("button", "Start generation") || one("button", /start generation|start creating|^generate$/i) || promptButtons().find((b) => /arrow_forward|send/.test(b.textContent)) || null;
+  const findStart = () =>
+    document.querySelector('button[aria-label^="Start generation"]') ||
+    document.querySelector('button.generate-icon-button') ||
+    document.querySelector('form button[type="submit"]') ||
+    one("button", /start generation|start creating|^generate$/i) ||
+    promptButtons().find((b) => /arrow_forward|send/.test(b.textContent)) ||
+    null;
 
   // Blob (ảnh/video) do trang tạo khi bấm Tải xuống — bắt bởi content/flow-main.js
   let capturedBlob = null;
@@ -426,30 +432,40 @@
       return false;
     };
 
-    // 1. Thử gửi phím Enter trong ô prompt
-    try {
+    const triggerStart = async () => {
+      // 1. Focus ô prompt
       box.focus();
-      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-      box.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    } catch {}
+      // 2. Kích hoạt qua world MAIN (nếu form có submit handler)
+      window.postMessage({ __aa: "flow-trigger-start" }, "*");
+      // 3. Kích hoạt qua CDP: gửi Ctrl+Enter và click chuột trusted
+      const b = findStart();
+      if (b) {
+        b.scrollIntoView?.({ block: "center", inline: "center" });
+        await sleep(150);
+        const r = b.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        try {
+          await AA.send({ type: "clickTrusted", x, y });
+        } catch (e) {
+          console.warn("clickTrusted không thành công, dùng click DOM:", e);
+          click(b);
+        }
+      } else {
+        await AA.send({ type: "clickTrusted" }).catch(() => {});
+      }
+    };
 
-    // 2. Kích hoạt qua world MAIN (gọi form.requestSubmit() & btn.click() gốc của trang)
-    window.postMessage({ __aa: "flow-trigger-start" }, "*");
+    // Kích hoạt lần 1
+    await triggerStart();
 
-    // 3. Bấm nút tạo bằng clickTrusted (trusted OS mouse event) qua debugger API
-    start.scrollIntoView?.({ block: "center", inline: "center" });
-    await sleep(200);
-    const r = start.getBoundingClientRect();
-    const x = r.left + r.width / 2;
-    const y = r.top + r.height / 2;
-    try {
-      await AA.send({ type: "clickTrusted", x, y });
-    } catch (e) {
-      console.warn("clickTrusted không thành công, dùng click DOM:", e);
-      click(start);
+    // Chờ 3.5s, nếu Flow chưa nhận thì thử kích hoạt lại lần 2
+    if (!(await waitFor(accepted, 3500, 300))) {
+      await triggerStart();
     }
-    // Chờ Flow tiếp nhận (server Flow phản hồi mất ~2-6s)
-    if (!(await waitFor(accepted, 10000, 400))) {
+
+    // Chờ Flow tiếp nhận (server Flow phản hồi mất ~2-8s)
+    if (!(await waitFor(accepted, 12000, 400))) {
       await ctx.needUser(`Bấm nút → (Start generation) cạnh ô prompt trên Flow để tạo (${credits}). Mọi thứ đã chuẩn bị sẵn.`);
       const ok = await waitFor(accepted, 15 * 60_000, 500);
       if (!ok) throw new Error("Không thấy bạn bấm nút tạo trong 15 phút");

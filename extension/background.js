@@ -836,39 +836,93 @@ const handlers = {
     } catch {}
     return { ok: true };
   },
-  async clickTrusted({ x, y }, sender) {
+  async triggerGenerate(data, sender) {
     const tabId = sender?.tab?.id;
     if (!tabId) throw new Error("Không có tabId để click");
     const target = { tabId };
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
     await chrome.debugger.attach(target, "1.3").catch(() => {});
     try {
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: Math.round(x),
-        y: Math.round(y),
-      });
-      await new Promise((r) => setTimeout(r, 60));
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: Math.round(x),
-        y: Math.round(y),
-        button: "left",
-        buttons: 1,
-        clickCount: 1,
-      });
-      await new Promise((r) => setTimeout(r, 100));
-      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: Math.round(x),
-        y: Math.round(y),
-        button: "left",
-        buttons: 0,
-        clickCount: 1,
-      });
+      await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+      await chrome.debugger.sendCommand(target, "Page.bringToFront").catch(() => {});
+      await new Promise((r) => setTimeout(r, 150));
+
+      // 1. Gửi tổ hợp phím Ctrl+Enter (phím tắt submit của Flow) bằng CDP
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 17,
+        nativeVirtualKeyCode: 17,
+        macCharCode: 0,
+        modifiers: 2, // Control
+        key: "Control",
+        code: "ControlLeft",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+        modifiers: 2,
+        key: "Enter",
+        code: "Enter",
+        text: "\r",
+        unmodifiedText: "\r",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 80));
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+        modifiers: 2,
+        key: "Enter",
+        code: "Enter",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 17,
+        nativeVirtualKeyCode: 17,
+        modifiers: 0,
+        key: "Control",
+        code: "ControlLeft",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 120));
+
+      // 2. Bấm chuột trái vào nút tạo (nếu có toạ độ x, y)
+      if (data?.x != null && data?.y != null) {
+        const x = Math.round(data.x);
+        const y = Math.round(data.y);
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x,
+          y,
+        });
+        await new Promise((r) => setTimeout(r, 60));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x,
+          y,
+          button: "left",
+          buttons: 1,
+          clickCount: 1,
+        });
+        await new Promise((r) => setTimeout(r, 100));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x,
+          y,
+          button: "left",
+          buttons: 0,
+          clickCount: 1,
+        });
+      }
     } finally {
       await chrome.debugger.detach(target).catch(() => {});
     }
     return { ok: true };
+  },
+  async clickTrusted(data, sender) {
+    return await this.triggerGenerate(data, sender);
   },
   async uploadViaCDP({ filePath, x, y }, sender) {
     const tabId = sender?.tab?.id;

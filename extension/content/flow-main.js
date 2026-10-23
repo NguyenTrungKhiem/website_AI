@@ -25,7 +25,7 @@
   window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.__aa !== "flow-trigger-start") return;
     try {
-      const btn = document.querySelector('button[aria-label="Start generation"]') ||
+      const btn = document.querySelector('button[aria-label^="Start generation"]') ||
                   document.querySelector('button.generate-icon-button') ||
                   document.querySelector('form button[type="submit"]');
       if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
