@@ -216,14 +216,14 @@ async function runInTab(tabId) {
   const current = await getCurrent();
   if (!current || current.tabId !== tabId) return;
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 45; i++) {
     try {
       const ack = await chrome.tabs.sendMessage(tabId, { type: "run", job: current.job });
       if (ack?.ok) return;
     } catch {
       /* script trong tab chưa sẵn sàng */
     }
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
   // Có thể đang ở trang đăng nhập Google (không có script):
