@@ -216,18 +216,17 @@ async function runInTab(tabId) {
   const current = await getCurrent();
   if (!current || current.tabId !== tabId) return;
 
-  for (let i = 0; i < 30; i++) {
+  let tabReloaded = false;
+  for (let i = 0; i < 35; i++) {
     try {
       const ack = await chrome.tabs.sendMessage(tabId, { type: "run", job: current.job });
       if (ack?.ok) return;
     } catch {}
-    if (i === 2 || i === 6 || i === 12) {
-      if (chrome.scripting) {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ["content/common.js", "content/flow.js", "content/flow-studio.js"],
-        }).catch(() => {});
-      }
+    // Nếu tab cũ bị đứt kết nối (extension reload làm invalidate content script cũ):
+    // Tự động tải lại tab (F5) để gắn script mới mà người dùng không cần chạm tay
+    if (i === 2 && !tabReloaded) {
+      tabReloaded = true;
+      await chrome.tabs.reload(tabId).catch(() => {});
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
