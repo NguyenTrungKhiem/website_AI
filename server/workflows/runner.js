@@ -310,10 +310,13 @@ function makeCtx(run, wf) {
       await frameAt(source.path, file, at);
       return file;
     },
-    // Khung hình đầu của 1 đoạn đã cắt (nguyên liệu scene/pose cho keyframe)
-    async clipFrame(clip, at = 0.1) {
-      const file = path.join(DIRS.assets, `frame-${run.id}-${clip.id}.jpg`);
-      await frameAt(clip.path, file, at);
+    // Khung hình của 1 đoạn đã cắt (nguyên liệu scene/pose cho keyframe)
+    async clipFrame(clip, at = 0.1, suffix = '') {
+      const name = suffix ? `frame-${run.id}-${clip.id}-${suffix}.jpg` : `frame-${run.id}-${clip.id}.jpg`;
+      const file = path.join(DIRS.assets, name);
+      if (!fs.existsSync(file)) {
+        await frameAt(clip.path, file, at);
+      }
       return file;
     },
     asset: (id) => (id ? db.assets.find((a) => a.id === id) : null) || null,
@@ -392,6 +395,7 @@ export function viewRun(run) {
   const jobs = db.jobs.filter((j) => j.runId === run.id);
   const merge = run.stages.merge?.mergeId && db.merges.find((m) => m.id === run.stages.merge.mergeId);
   const bgAsset = run.stages.background?.assetId && db.assets.find((a) => a.id === run.stages.background.assetId);
+  const model = run.inputs?.model && db.assets.find((a) => a.id === run.inputs.model);
   const sheet = run.stages.identity?.assetId && db.assets.find((a) => a.id === run.stages.identity.assetId);
   const brief = (j) => j && { id: j.id, type: j.type, status: j.status, thumbUrl: mediaUrl(j.thumbPath), outputUrl: mediaUrl(j.outputPath), label: j.videoLabel, imported: j.type === 'import' };
   return {
@@ -417,7 +421,7 @@ export function viewRun(run) {
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)
-    identityUrl: sheet ? mediaUrl(sheet.path) : null, // bảng mặt 360° đang dùng (có thể là bảng có sẵn, không có job trong run)
+    identityUrl: sheet ? mediaUrl(sheet.path) : (model ? mediaUrl(model.path) : null), // bảng mặt 360° hoặc ảnh model đang dùng
     identity: brief(byKey('identity:sheet')) || null, // job tạo bảng mặt 360° của lần chạy này (nếu phải tạo)
     jobIds: jobs.map((j) => j.id),
     merge: merge ? { id: merge.id, status: merge.status, url: mediaUrl(merge.outputPath), thumbUrl: mediaUrl(merge.thumbPath), error: merge.error } : null,

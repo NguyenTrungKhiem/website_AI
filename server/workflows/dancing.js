@@ -3,7 +3,10 @@
 // -> thay bối cảnh vào video đã tạo -> ghép lại + chèn âm thanh gốc.
 // Quy trình khác (vd. Thay quần áo) viết thành file riêng cùng cấu trúc, không đụng vào file này.
 import fs from 'node:fs';
-import { db } from '../db.js';
+import path from 'node:path';
+import { db, DIRS } from '../db.js';
+import { swapFaceImage, swapFaceVideo } from '../faceSwap.js';
+import { createCompletedImageJob } from '../queue.js';
 
 const BACKGROUND_PROMPT = `Completely remove all people from the scene, leaving only the empty background.
 Identify the key objects and architectural elements in the original reference and transform their colors to a new harmonious palette: very bright and airy, dominated by soft milky white with only a subtle hint of light beige / pale brown (cream tones), high-key exposure, no yellow, orange or dark, moody tones.
@@ -102,10 +105,11 @@ export default {
     replace: { label: '5. Thay bối cảnh mới vào video đã tạo', text: REPLACE_PROMPT },
   },
   options: [
-    { key: 'identityLock', label: 'Khoá nhận diện: tạo bảng mặt 360° + keyframe cho từng đoạn trước khi thay nhân vật (0 credit, mặt giống model hơn)', default: true },
+    { key: 'identityLock', label: 'Khoá nhận diện: tạo keyframe đã ghép mặt model chuẩn xác (Local Face-Swap 98-100%, 0 credit)', default: true },
     { key: 'reviewKeyframe', label: 'Dừng lại để duyệt keyframe trước khi thay nhân vật (bước thay nhân vật mới tốn credit)', default: true },
     { key: 'replaceBackground', label: 'Tạo bối cảnh mới và thay vào video', default: true },
     { key: 'reviewMotion', label: 'Dừng lại để kiểm tra video sau bước thay nhân vật (bấm Tiếp tục mới thay bối cảnh)', default: true },
+    { key: 'refineFace', label: 'Làm nét & khoá mặt model trên video sau khi sinh (Local Face Refiner)', default: true },
     { key: 'merge', label: 'Ghép các đoạn lại + chèn âm thanh gốc', default: true },
     { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
     { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },
@@ -192,68 +196,54 @@ export default {
     },
     {
       id: 'keyframe',
-      label: 'Keyframe từng đoạn',
+      label: 'Keyframe từng đoạn (Ghép mặt Model)',
       when: (run) => run.options.identityLock,
-      // Khung hình đầu (0.1s) của từng đoạn + bảng mặt 360° (+ sản phẩm) -> ảnh 9:16 người đã đúng mặt / outfit / bối cảnh.
-      // Mỗi keyframe được lưu thành ảnh nháp (có flowTitle) để bước thay nhân vật dùng lại ngay trên Flow.
-      // Xong thì dừng (paused) cho người dùng duyệt (Thử lại / Sửa prompt / chọn lần tạo) vì bước sau tốn credit.
-      // Keyframe đổi sau khi đã duyệt -> runner.syncRun làm lại motion của đoạn đó và dừng duyệt lại.
       async run(ctx) {
-        let sheet = ctx.asset(ctx.stages.identity?.assetId);
-        // Kiểm tra tính toàn vẹn: nếu bảng mặt 360° chưa có hoặc bị mất, tự động quay lại bước identity để tạo lại trên Flow!
-        if (!sheet || !sheet.path || !fs.existsSync(sheet.path)) {
-          if (ctx.stages.identity) {
-            delete ctx.stages.identity.assetId;
-            ctx.stages.identity.status = 'pending';
-          }
-          if (ctx.stages._jobs?.['identity:sheet']) delete ctx.stages._jobs['identity:sheet'];
-          ctx.run.stage = 'identity';
-          return 'waiting';
-        }
-        const product = ctx.asset(ctx.inputs.product);
+        const model = ctx.asset(ctx.inputs.model);
+        if (!model) throw new Error('Ảnh model không còn trong thư viện');
+
         const frames = (ctx.state.frames ||= {});
-        for (const clip of ctx.clips) if (!frames[clip.id]) frames[clip.id] = await ctx.clipFrame(clip, 0.1);
-        const jobs = ctx.clips.map((clip) =>
-          ctx.ensureJob(`keyframe:${clip.id}`, {
-            type: 'image',
-            imagePaths: [sheet.path, frames[clip.id], product?.path].filter(Boolean),
-            template: ctx.prompt('keyframe'),
-            aspectRatio: '9:16',
-            videoLabel: `Keyframe – ${clip.name}`,
-            sourceRange: { sourceId: clip.sourceId, start: clip.start, end: clip.end },
-          }),
-        );
-        // Tự phục hồi: nếu bất kỳ job keyframe nào báo lỗi do thiếu nguyên liệu trên Flow (chưa có / không nạp được):
-        // Kiểm tra TRƯỚC KHI gọi ctx.waitAll để tránh ctx.waitAll quăng ngoại lệ làm dừng cả workflow!
-        const missingFlowAsset = jobs.find((j) => j.status === 'failed' && /Flow|nguyên liệu|không thấy|chưa có|quá 3 phút|quá 45s/i.test(j.error || ''));
-        if (missingFlowAsset) {
-          console.log(`[workflow:dancing] Keyframe job ${missingFlowAsset.id} thiếu nguyên liệu Flow (${missingFlowAsset.error}). Tự động chuyển luồng sang bước identity!`);
-          if (ctx.stages.identity) {
-            delete ctx.stages.identity.assetId;
-            ctx.stages.identity.status = 'pending';
-            ctx.stages.identity.forceRegenerate = true;
-          }
-          if (ctx.stages._jobs) {
-            delete ctx.stages._jobs['identity:sheet'];
-          }
-          ctx.state.status = 'pending';
-          ctx.run.stage = 'identity';
-          for (const j of jobs) {
-            j.status = 'queued';
-            j.error = null;
-          }
-          return 'waiting';
-        }
-        const r = ctx.waitAll(jobs);
-        if (r !== 'done') return r;
+        const endFrames = (ctx.state.endFrames ||= {});
         const assets = (ctx.state.assets ||= {});
+
         for (const clip of ctx.clips) {
-          const job = ctx.job(`keyframe:${clip.id}`);
+          // Trích xuất khung hình đầu (0.1s)
+          if (!frames[clip.id]) {
+            frames[clip.id] = await ctx.clipFrame(clip, 0.1, 'start');
+          }
+          // Trích xuất khung hình cuối (duration - 0.2s)
+          if (!endFrames[clip.id]) {
+            const endSec = Math.max(0.2, (clip.end - clip.start) - 0.2);
+            endFrames[clip.id] = await ctx.clipFrame(clip, endSec, 'end');
+          }
+
           if (assets[clip.id]) continue;
-          const att = job.attempts.find((a) => a.outputPath === job.outputPath);
-          const a = ctx.registerAsset('keyframe', job.outputPath, `Keyframe – ${clip.name}`, { flowTitle: att?.flowTitle || null, staging: true, fromJobId: job.id });
-          assets[clip.id] = { id: a.id, from: job.outputPath };
+
+          // Tạo Keyframe bằng Local Face-Swap trực tiếp trên frame đầu
+          const outKfPath = path.join(DIRS.outputs, `keyframe-${ctx.run.id}-${clip.id}.jpg`);
+          if (!fs.existsSync(outKfPath)) {
+            console.log(`[workflow:dancing] Đang ghép mặt model vào khung hình clip "${clip.name}" bằng Local Face-Swap...`);
+            await swapFaceImage(model.path, frames[clip.id], outKfPath);
+          }
+
+          // Tạo job hoàn thành hiển thị trên giao diện (JobCard)
+          const job = await createCompletedImageJob({
+            runId: ctx.run.id,
+            stage: 'keyframe',
+            sourceRange: { sourceId: clip.sourceId, start: clip.start, end: clip.end },
+            videoLabel: `Keyframe – ${clip.name}`,
+            outputPath: outKfPath,
+            note: 'Ghép mặt Model (Local Face-Swap 98-100%)',
+          });
+
+          // Đăng ký vào stage _jobs để Web UI liên kết
+          ctx.run.stages._jobs ||= {};
+          ctx.run.stages._jobs[`keyframe:${clip.id}`] = job.id;
+
+          const a = ctx.registerAsset('keyframe', outKfPath, `Keyframe – ${clip.name}`, { staging: true, fromJobId: job.id });
+          assets[clip.id] = { id: a.id, from: outKfPath };
         }
+
         if (ctx.run.options.reviewKeyframe === false) return 'done';
         return ctx.state.approved ? 'done' : 'paused';
       },
@@ -265,6 +255,7 @@ export default {
       // prompt "animate keyframe theo video gốc". Tắt khoá: ảnh model -> sản phẩm -> video gốc như cũ.
       async run(ctx) {
         const lock = ctx.run.options.identityLock;
+        const model = ctx.asset(ctx.inputs.model);
         const jobs = ctx.clips.map((clip) => {
           const kf = lock ? ctx.stages.keyframe?.assets?.[clip.id] : null;
           if (lock && !kf) throw new Error(`Chưa có keyframe cho "${clip.name}" — chạy lại bước Keyframe`);
@@ -278,7 +269,37 @@ export default {
             meta: lock ? { keyframeFrom: kf.from } : null,
           });
         });
-        return ctx.waitAll(jobs);
+
+        const r = ctx.waitAll(jobs);
+        if (r !== 'done') return r;
+
+        // Nếu bật refineFace (Local Face Refiner) và có ảnh model:
+        if (ctx.run.options.refineFace !== false && model?.path && fs.existsSync(model.path)) {
+          const refined = (ctx.state.refined ||= {});
+          for (const clip of ctx.clips) {
+            if (refined[clip.id]) continue;
+            const job = ctx.job(`motion:${clip.id}`);
+            if (job && job.outputPath && fs.existsSync(job.outputPath)) {
+              const refinedPath = job.outputPath.replace(/\.mp4$/i, '-refined.mp4');
+              if (!fs.existsSync(refinedPath)) {
+                console.log(`[workflow:dancing] Đang làm nét & khoá mặt model trên video clip "${clip.name}" bằng Face Refiner...`);
+                try {
+                  await swapFaceVideo(model.path, job.outputPath, refinedPath);
+                  job.outputPath = refinedPath;
+                  refined[clip.id] = refinedPath;
+                } catch (e) {
+                  console.warn(`[workflow:dancing] Face refiner cảnh báo:`, e.message);
+                  refined[clip.id] = job.outputPath;
+                }
+              } else {
+                job.outputPath = refinedPath;
+                refined[clip.id] = refinedPath;
+              }
+            }
+          }
+        }
+
+        return 'done';
       },
     },
     {

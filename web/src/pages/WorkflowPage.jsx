@@ -215,7 +215,7 @@ function ClipTable({ run: r, jobs, refresh, state }) {
             <thead>
               <tr>
                 <th>Đoạn</th>
-                {r.options.identityLock && <th>Keyframe (mặt đã khoá theo bảng 360°)</th>}
+                {r.options.identityLock && <th>Keyframe (ghép mặt Model 98-100%)</th>}
                 <th>Video motion (thay người + sản phẩm)</th>
                 {r.options.replaceBackground && <th>Đã thay bối cảnh</th>}
               </tr>

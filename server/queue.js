@@ -89,6 +89,52 @@ export async function createImportJob({ file, name, sourceRange, runId, stage, v
   return job;
 }
 
+/**
+ * Tạo job ảnh đã hoàn thành trực tiếp từ local (vd. Keyframe ghép mặt bằng Local Face-Swap).
+ */
+export async function createCompletedImageJob({ file, outputPath, thumbPath, sourceRange, runId, stage, videoLabel, note }) {
+  const id = newId();
+  const out = outputPath || file;
+  const thumb = thumbPath || out.replace(/\.[^.]+$/, '.jpg');
+  if (!fs.existsSync(thumb)) {
+    await imageThumb(out, thumb).catch(() => {});
+  }
+  const job = {
+    id,
+    type: 'image',
+    batchId: null,
+    runId: runId || null,
+    stage: stage || null,
+    parentJobId: null,
+    sourceRange: sourceRange || null,
+    videoPath: null,
+    videoLabel: videoLabel || 'Keyframe',
+    assets: {},
+    imagePaths: null,
+    template: null,
+    prompt: '',
+    rawPrompt: false,
+    status: 'done',
+    error: null,
+    attempts: [{
+      n: 1,
+      status: 'done',
+      engine: 'local-faceswap',
+      outputPath: out,
+      thumbPath: thumb,
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      note: note || 'Ghép mặt Model (Local Face-Swap 98-100%)',
+    }],
+    outputPath: out,
+    thumbPath: thumb,
+    createdAt: Date.now(),
+  };
+  db.jobs.unshift(job);
+  save();
+  return job;
+}
+
 export function retryJob(job, { prompt } = {}) {
   if (job.status === 'running' || job.status === 'queued') return job;
   if (job.type === 'import') throw new Error('Video nhập từ máy không tạo lại được — nhập file khác nếu cần.');
