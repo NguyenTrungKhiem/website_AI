@@ -437,6 +437,11 @@ async function pollOnce() {
         return;
       }
       await showNotifications(syncRes?.notifications);
+      if (syncRes?.inspect) {
+        handlers.inspectFlowTab().then((res) => {
+          api("/api/agent/inspect-result", { body: res }).catch(() => {});
+        }).catch(() => {});
+      }
       if (syncRes?.requestLogs) {
         try {
           const allTabs = await chrome.tabs.query({}).catch(() => []);
@@ -945,66 +950,55 @@ const handlers = {
     return { ok: true };
   },
   async triggerGenerate(data, sender) {
-    const tabId = sender?.tab?.id;
+    const tabId = sender?.tab?.id || (await chrome.tabs.query({})).find((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")))?.id;
+    await addLog(`[triggerGenerate] Bắt đầu cho tab ${tabId}, toạ độ=(${data?.x}, ${data?.y})`, "info");
     if (!tabId) throw new Error("Không có tabId để click");
     const target = { tabId };
     await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    await chrome.debugger.attach(target, "1.3").catch(() => {});
+    await chrome.debugger.detach(target).catch(() => {});
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      await addLog(`[triggerGenerate] Đã attach debugger vào tab ${tabId}`, "info");
+    } catch (e) {
+      await addLog(`[triggerGenerate] Lỗi attach debugger: ${e?.message}`, "error");
+    }
     try {
       await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
       await chrome.debugger.sendCommand(target, "Page.bringToFront").catch(() => {});
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 120));
 
-      // 1. Gửi tổ hợp phím Ctrl+Enter (phím tắt submit của Flow) bằng CDP
-      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-        type: "rawKeyDown",
-        windowsVirtualKeyCode: 17,
-        nativeVirtualKeyCode: 17,
-        macCharCode: 0,
-        modifiers: 2, // Control
-        key: "Control",
-        code: "ControlLeft",
-      }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 50));
+      // 1. Gửi phím Enter (không modifiers - phím submit mặc định của Flow) bằng CDP
       await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
         type: "rawKeyDown",
         windowsVirtualKeyCode: 13,
         nativeVirtualKeyCode: 13,
-        modifiers: 2,
+        macCharCode: 13,
         key: "Enter",
         code: "Enter",
         text: "\r",
         unmodifiedText: "\r",
-      }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 80));
+      }).catch((e) => addLog(`[triggerGenerate] Lỗi Enter key: ${e?.message}`, "warn"));
+      await new Promise((r) => setTimeout(r, 60));
       await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
         type: "keyUp",
         windowsVirtualKeyCode: 13,
         nativeVirtualKeyCode: 13,
-        modifiers: 2,
+        macCharCode: 13,
         key: "Enter",
         code: "Enter",
       }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 50));
-      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-        type: "keyUp",
-        windowsVirtualKeyCode: 17,
-        nativeVirtualKeyCode: 17,
-        modifiers: 0,
-        key: "Control",
-        code: "ControlLeft",
-      }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 120));
+      await new Promise((r) => setTimeout(r, 100));
 
-      // 2. Bấm chuột trái vào nút tạo (nếu có toạ độ x, y)
+      // 2. Bấm chuột trái vào nút tạo bằng toạ độ x, y thật
       if (data?.x != null && data?.y != null) {
         const x = Math.round(data.x);
         const y = Math.round(data.y);
+        await addLog(`[triggerGenerate] Gửi CDP click tại (${x}, ${y})`, "info");
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mouseMoved",
           x,
           y,
-        }).catch(() => {});
+        }).catch((e) => addLog(`[triggerGenerate] Lỗi mouseMoved: ${e?.message}`, "warn"));
         await new Promise((r) => setTimeout(r, 60));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mousePressed",
@@ -1013,7 +1007,7 @@ const handlers = {
           button: "left",
           buttons: 1,
           clickCount: 1,
-        }).catch(() => {});
+        }).catch((e) => addLog(`[triggerGenerate] Lỗi mousePressed: ${e?.message}`, "warn"));
         await new Promise((r) => setTimeout(r, 100));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mouseReleased",
@@ -1022,7 +1016,8 @@ const handlers = {
           button: "left",
           buttons: 0,
           clickCount: 1,
-        }).catch(() => {});
+        }).catch((e) => addLog(`[triggerGenerate] Lỗi mouseReleased: ${e?.message}`, "warn"));
+        await addLog(`[triggerGenerate] Hoàn tất CDP click tại (${x}, ${y})`, "info");
       }
     } finally {
       await chrome.debugger.detach(target).catch(() => {});
@@ -1031,6 +1026,157 @@ const handlers = {
   },
   async clickTrusted(data, sender) {
     return await handlers.triggerGenerate(data, sender);
+  },
+  async typeAndStart({ text, x, y }, sender) {
+    const tabId = sender?.tab?.id || (await chrome.tabs.query({})).find((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")))?.id;
+    if (!tabId) throw new Error("Không có tabId để nhập prompt");
+    const target = { tabId };
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    await chrome.debugger.detach(target).catch(() => {});
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      await addLog(`[typeAndStart] Debugger attached to tab ${tabId}`, "info");
+    } catch (e) {
+      await addLog(`[typeAndStart] Attach debugger: ${e?.message}`, "error");
+    }
+
+    try {
+      await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+      await chrome.debugger.sendCommand(target, "Page.bringToFront").catch(() => {});
+      await new Promise((r) => setTimeout(r, 120));
+
+      // 1. Focus ô prompt ProseMirror
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const inp = document.querySelector('div.ProseMirror, textarea, [contenteditable="true"]');
+          if (inp) {
+            inp.focus();
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(inp);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+        },
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 2. Xoá nội dung cũ (Ctrl+A -> Backspace) bằng CDP
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 17,
+        nativeVirtualKeyCode: 17,
+        modifiers: 2,
+        key: "Control",
+        code: "ControlLeft",
+      }).catch(() => {});
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 65,
+        nativeVirtualKeyCode: 65,
+        modifiers: 2,
+        key: "a",
+        code: "KeyA",
+      }).catch(() => {});
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 65,
+        modifiers: 2,
+        key: "a",
+        code: "KeyA",
+      }).catch(() => {});
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 17,
+        modifiers: 0,
+        key: "Control",
+        code: "ControlLeft",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8,
+        key: "Backspace",
+        code: "Backspace",
+      }).catch(() => {});
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 8,
+        nativeVirtualKeyCode: 8,
+        key: "Backspace",
+        code: "Backspace",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 3. Gõ văn bản prompt vào ProseMirror bằng Input.insertText (CDP native typing)
+      await addLog(`[typeAndStart] Gõ ${text?.length || 0} ký tự prompt qua CDP Input.insertText`, "info");
+      if (text) {
+        await chrome.debugger.sendCommand(target, "Input.insertText", { text }).catch((e) => {
+          addLog(`[typeAndStart] Lỗi Input.insertText: ${e?.message}`, "warn");
+        });
+      }
+      await new Promise((r) => setTimeout(r, 400));
+
+      // 4. Lấy toạ độ MỚI NHẤT của nút Start generation sau khi prompt đã được gõ (vì ô prompt giãn nở làm nút dịch chuyển)
+      let clickX = x != null ? Math.round(x) : null;
+      let clickY = y != null ? Math.round(y) : null;
+      try {
+        const freshCoords = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            const btn = document.querySelector('button[aria-label="Start generation"]') ||
+              [...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Start generation' || (b.innerText || '').includes('arrow_forward'));
+            if (!btn) return null;
+            const r = btn.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+            return null;
+          },
+        }).then((res) => res?.[0]?.result);
+        if (freshCoords?.x && freshCoords?.y) {
+          clickX = freshCoords.x;
+          clickY = freshCoords.y;
+        }
+      } catch (e) {
+        console.warn("Không lấy được toạ độ mới của nút tạo:", e);
+      }
+
+      // 5. Bấm chuột trái vào nút Start generation
+      if (clickX != null && clickY != null) {
+        await addLog(`[typeAndStart] Click nút tạo tại (${clickX}, ${clickY})`, "info");
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: clickX,
+          y: clickY,
+        }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 80));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x: clickX,
+          y: clickY,
+          button: "left",
+          buttons: 1,
+          clickCount: 1,
+        }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 120));
+        await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: clickX,
+          y: clickY,
+          button: "left",
+          buttons: 0,
+          clickCount: 1,
+        }).catch(() => {});
+        await addLog(`[typeAndStart] Hoàn tất click nút tạo`, "info");
+      }
+    } finally {
+      await chrome.debugger.detach(target).catch(() => {});
+    }
+    return { ok: true };
   },
   async uploadViaCDP({ filePath, x, y }, sender) {
     const tabId = sender?.tab?.id;
@@ -1231,6 +1377,99 @@ const handlers = {
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
       await chrome.debugger.detach(target).catch(() => {});
     }
+  },
+  async clickStartNow() {
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    const flowTab = allTabs.find((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")));
+    if (!flowTab?.id) return { error: "No flow tab" };
+    const res = await chrome.scripting.executeScript({
+      target: { tabId: flowTab.id },
+      func: () => {
+        const btn = [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Start generation");
+        if (!btn) return { error: "No button" };
+        btn.focus();
+        btn.click();
+        const touch = btn.querySelector(".mat-mdc-button-touch-target");
+        if (touch) touch.click();
+        return { clicked: true, text: btn.innerText, aria: btn.getAttribute("aria-label") };
+      },
+    });
+    return res?.[0]?.result || res;
+  },
+  async inspectFlowTab() {
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    const flowTab = allTabs.find((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")));
+    if (!flowTab?.id) return { error: "Không tìm thấy tab Flow", allTabs: allTabs.map((t) => ({ id: t.id, url: t.url, title: t.title })) };
+    const res = await chrome.scripting.executeScript({
+      target: { tabId: flowTab.id },
+      func: () => {
+        const tiles = [...document.querySelectorAll('flow-grid-tile-container, main [role="group"], [role="article"], .flow-tile, flow-tile')].map((t, idx) => {
+          const v = t.querySelector('video');
+          const im = t.querySelector('img');
+          return {
+            idx,
+            tag: t.tagName,
+            role: t.getAttribute('role'),
+            className: t.className,
+            text: (t.innerText || '').slice(0, 150),
+            aria: t.getAttribute('aria-label') || '',
+            vSrc: v?.src || v?.currentSrc || '',
+            iSrc: im?.src || '',
+          };
+        });
+        const promptInput = document.querySelector('textarea, [contenteditable="true"]');
+        const startBtn = [...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Start generation');
+        let clickTest = null;
+        if (startBtn) {
+          const beforeVal = promptInput ? (promptInput.value || promptInput.innerText || '') : '';
+          startBtn.focus();
+          startBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }));
+          startBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          startBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, cancelable: true }));
+          startBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+          startBtn.click();
+          const touch = startBtn.querySelector('.mat-mdc-button-touch-target');
+          if (touch) touch.click();
+
+          clickTest = {
+            found: true,
+            disabled: startBtn.disabled,
+            ariaDisabled: startBtn.getAttribute('aria-disabled'),
+            rect: startBtn.getBoundingClientRect(),
+            beforeValLen: beforeVal.length, inputTag: promptInput?.tagName, inputCls: promptInput?.className, inputAttrs: promptInput ? promptInput.getAttributeNames() : [],
+          };
+        }
+
+        const atPoint = document.elementFromPoint(1067, 716);
+        const pointInfo = atPoint ? {
+          tag: atPoint.tagName,
+          cls: atPoint.className,
+          aria: atPoint.getAttribute('aria-label'),
+          txt: (atPoint.innerText || atPoint.textContent || '').slice(0, 50),
+          btn: !!atPoint.closest('button'),
+          btnAria: atPoint.closest('button')?.getAttribute('aria-label'),
+        } : null;
+
+        const startBtnInfo = (() => {
+          const btn = document.querySelector('button[aria-label="Start generation"]');
+          if (!btn) return 'no btn';
+          return {
+            outerHTML: btn.outerHTML.slice(0, 300),
+            parentHTML: btn.parentElement?.outerHTML?.slice(0, 400),
+          };
+        })();
+
+        return {
+          url: location.href,
+          tilesCount: tiles.length,
+          tiles: tiles.slice(0, 5),
+          promptText: promptInput?.value || promptInput?.textContent || '',
+          startBtnInfo,
+          clickTest,
+        };
+      },
+    }).catch(e => ({ error: e.message }));
+    return res?.[0]?.result || res;
   },
   async cancelCurrent() {
     const current = await getCurrent();

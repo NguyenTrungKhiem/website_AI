@@ -95,15 +95,30 @@
     // Trợ giúp bấm nút tạo từ chính world MAIN (nơi Angular Zone.js bắt sự kiện gốc)
     if (e.data?.__aa === "flow-trigger-start") {
       try {
+        // 1. Gửi phím Enter trực tiếp vào ô prompt từ MAIN world
+        const inp = document.querySelector('textarea, [contenteditable="true"]');
+        if (inp) {
+          inp.focus();
+          inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+          inp.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+          inp.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        }
+
+        // 2. Tìm và click nút Start / Arrow submit button
         const candidates = [...document.querySelectorAll('button, [role="button"]')].filter((b) => {
           const r = b.getBoundingClientRect();
           return r.width > 0 && r.height > 0 && !b.disabled && b.getAttribute("aria-disabled") !== "true";
         });
-        const btn = candidates.find((b) =>
-          !b.closest('flow-grid-tile-container, [role="group"], header, nav, [role="dialog"]') &&
-          (/arrow_forward|^→$/i.test((b.innerText || b.textContent || "").trim()) ||
-           /start creating|start generation|^generate$|^create$|bắt đầu tạo/i.test(b.getAttribute("aria-label") || ""))
-        );
+        const btn = candidates.find((b) => {
+          if (b.closest('flow-grid-tile-container, header, nav, [role="dialog"]')) return false;
+          const aria = (b.getAttribute("aria-label") || b.title || "").trim();
+          const txt = (b.innerText || b.textContent || "").trim();
+          if (/^(start creating|start generation|generate|create|bắt đầu tạo|tạo)$/i.test(aria)) return true;
+          if (/^(arrow_forward|send|^→$)$/i.test(txt)) return true;
+          const svg = b.querySelector("svg");
+          if (svg && /arrow|forward|send|m12|m5|polygon/i.test(svg.innerHTML || "")) return true;
+          return false;
+        });
         if (btn) {
           btn.focus?.();
           btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, cancelable: true }));

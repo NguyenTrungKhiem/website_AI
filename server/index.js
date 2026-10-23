@@ -83,11 +83,15 @@ app.post('/api/flow/launch', wrap(async (req, res) => res.json(await flow.launch
 // Cho giao diện (không cần token): trạng thái + token để chép vào extension
 app.get('/api/agent-status', (req, res) => res.json({ ...agent.status(), token: agent.token() }));
 app.get('/api/agent-logs', (req, res) => res.json({ logs: agent.getLogs() }));
+app.get('/api/agent-inspect', (req, res) => { agent.setInspect(); res.json({ requested: true }); });
+app.get('/api/agent-inspect-result', (req, res) => res.json(agent.getInspectResult() || { status: 'waiting' }));
+app.get('/api/agent-reload', (req, res) => { agent.triggerReload(); res.json({ requested: true }); });
 app.post('/api/agent-token/regenerate', (req, res) => res.json({ token: agent.regenerateToken() }));
 // Cho extension (Bearer token). Hợp đồng theo extension/background.js
 app.use('/api/agent', agent.auth);
 app.get('/api/agent/ping', (req, res) => res.json({ name: 'Video Studio' }));
 app.post('/api/agent/claim', (req, res) => res.json(agent.claim(req.body || {})));
+app.post('/api/agent/inspect-result', (req, res) => { agent.storeInspectResult(req.body); res.json({ ok: true }); });
 app.post('/api/agent/logs', (req, res) => { agent.receiveLogs(req.body?.logs); res.json({ ok: true }); });
 app.post('/api/agent/jobs/:id/file', express.raw({ type: () => true, limit: '2gb' }), wrap(async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error('Thiếu nội dung file');

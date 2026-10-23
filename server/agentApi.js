@@ -124,6 +124,13 @@ export function status() {
 }
 
 let reloadNeeded = true;
+let shouldInspect = true;
+let lastInspectResult = null;
+
+export function triggerReload() { reloadNeeded = true; }
+export function setInspect() { shouldInspect = true; }
+export function storeInspectResult(res) { lastInspectResult = res; }
+export function getInspectResult() { return lastInspectResult; }
 
 // POST /api/agent/claim {kinds, syncOnly, version, buildId, currentJobId}
 export function claim({ kinds = [], syncOnly = false, version, currentJobId } = {}) {
@@ -134,7 +141,11 @@ export function claim({ kinds = [], syncOnly = false, version, currentJobId } = 
   }
   const pending = [...tasks.values()].filter((t) => t.status === 'pending' && kinds.includes(t.kind));
   const activeTaskIds = [...tasks.keys()];
-  if (syncOnly) return { job: null, pendingCount: pending.length, activeTaskIds, requestLogs: true };
+  if (syncOnly) {
+    const doInspect = shouldInspect;
+    shouldInspect = false;
+    return { job: null, pendingCount: pending.length, activeTaskIds, requestLogs: true, inspect: doInspect };
+  }
 
   // 1. Tìm việc đang chờ (pending)
   let task = pending[0];
