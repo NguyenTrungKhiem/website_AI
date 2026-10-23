@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoAffiliate Trợ lý",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "icons": { "128": "icons/icon-128.png" },
   "description": "Nhận việc từ web AutoAffiliate và làm trong chính Chrome của bạn: tạo nhạc trên Suno, tạo ảnh bìa và video clip trên Gemini / Google Flow bằng tài khoản bạn đã đăng nhập.",
   "permissions": ["storage", "alarms", "tabs", "downloads", "webRequest", "notifications", "cookies", "declarativeNetRequest", "debugger"],

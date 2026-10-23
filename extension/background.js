@@ -896,7 +896,7 @@ const handlers = {
           type: "mouseMoved",
           x,
           y,
-        });
+        }).catch(() => {});
         await new Promise((r) => setTimeout(r, 60));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mousePressed",
@@ -905,7 +905,7 @@ const handlers = {
           button: "left",
           buttons: 1,
           clickCount: 1,
-        });
+        }).catch(() => {});
         await new Promise((r) => setTimeout(r, 100));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mouseReleased",
@@ -914,15 +914,32 @@ const handlers = {
           button: "left",
           buttons: 0,
           clickCount: 1,
-        });
+        }).catch(() => {});
       }
+
+      // 3. Gửi phím Enter / Space (kích hoạt nút tạo nếu đang có focus)
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+        key: "Enter",
+        code: "Enter",
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 50));
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+        key: "Enter",
+        code: "Enter",
+      }).catch(() => {});
     } finally {
       await chrome.debugger.detach(target).catch(() => {});
     }
     return { ok: true };
   },
   async clickTrusted(data, sender) {
-    return await this.triggerGenerate(data, sender);
+    return await handlers.triggerGenerate(data, sender);
   },
   async uploadViaCDP({ filePath, x, y }, sender) {
     const tabId = sender?.tab?.id;
@@ -1007,6 +1024,6 @@ const handlers = {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const fn = handlers[msg?.type];
   if (!fn) return false;
-  fn(msg, sender).then(sendResponse, (e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+  fn.call(handlers, msg, sender).then(sendResponse, (e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
   return true;
 });
