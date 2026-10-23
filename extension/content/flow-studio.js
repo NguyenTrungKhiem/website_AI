@@ -667,10 +667,12 @@
     throw new Error("Quá thời gian chờ, chưa thấy ô kết quả trên Flow");
   };
 
+  let activeRunningJobId = null;
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type !== "run" || !/^flow_studio_(image|video)$/.test(msg.job?.kind || "")) return false;
     sendResponse({ ok: true });
-    if (window.__vsJob === msg.job.id) return false;
+    if (activeRunningJobId === msg.job.id) return false;
+    activeRunningJobId = msg.job.id;
     window.__vsJob = msg.job.id;
     const ctx = AA.context(msg.job);
     (async () => {
@@ -680,6 +682,8 @@
       } catch (e) {
         if (e instanceof AA.Cancelled) return AA.send({ type: "fail", jobId: msg.job.id, error: "Đã hủy" }).catch(() => {});
         await AA.send({ type: "fail", jobId: msg.job.id, error: e.message }).catch(() => {});
+      } finally {
+        activeRunningJobId = null;
       }
     })();
     return false;

@@ -40,10 +40,11 @@ async function addLog(text, level = "info") {
     const { logs = [] } = await chrome.storage.local.get({ logs: [] });
     const nextLogs = [entry, ...logs].slice(0, 100);
     await chrome.storage.local.set({ logs: nextLogs });
+    const cur = await getCurrent();
+    if (cur?.job?.id) {
+      report(cur.job.id, { message: `[${level}] ${text}` }).catch(() => {});
+    }
   } catch {}
-  if (current?.job?.id) {
-    report(current.job.id, { message: `[${level}] ${text}` }).catch(() => {});
-  }
 }
 
 async function updatePending(count) {
