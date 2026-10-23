@@ -380,7 +380,13 @@ async function pollOnce() {
 
     // 1. Luôn đồng bộ số lượng hàng đợi mới nhất từ server (kể cả khi đang bận chạy việc)
     try {
-      const syncRes = await api("/api/agent/claim", { body: { kinds: KINDS, syncOnly: true } });
+      const extVersion = chrome.runtime.getManifest()?.version || "";
+      const syncRes = await api("/api/agent/claim", { body: { kinds: KINDS, syncOnly: true, version: extVersion } });
+      if (syncRes?.reload) {
+        await addLog(`🔄 Cập nhật tiện ích mới (v${syncRes.targetVersion || "mới"}), tự khởi động lại…`, "info");
+        setTimeout(() => chrome.runtime.reload(), 300);
+        return;
+      }
       await showNotifications(syncRes?.notifications);
       if (syncRes && typeof syncRes.pendingCount === "number") {
         await updatePending(syncRes.pendingCount);
@@ -432,7 +438,13 @@ async function pollOnce() {
     }
 
     // 3. Nếu đang rảnh: Nhận việc mới
-    const r = await api("/api/agent/claim", { body: { kinds: KINDS } });
+    const extVer = chrome.runtime.getManifest()?.version || "";
+    const r = await api("/api/agent/claim", { body: { kinds: KINDS, version: extVer } });
+    if (r?.reload) {
+      await addLog(`🔄 Cập nhật tiện ích mới (v${r.targetVersion || "mới"}), tự khởi động lại…`, "info");
+      setTimeout(() => chrome.runtime.reload(), 300);
+      return;
+    }
     await showNotifications(r.notifications);
     const pendingCount = r.pendingCount ?? 0;
     await updatePending(pendingCount);

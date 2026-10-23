@@ -122,8 +122,14 @@ export function status() {
   };
 }
 
-// POST /api/agent/claim {kinds, syncOnly}
-export function claim({ kinds = [], syncOnly = false } = {}) {
+// POST /api/agent/claim {kinds, syncOnly, version}
+export function claim({ kinds = [], syncOnly = false, version } = {}) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve('extension/manifest.json'), 'utf8'));
+    if (version && pkg?.version && version !== pkg.version) {
+      return { reload: true, targetVersion: pkg.version, job: null, pendingCount: 0 };
+    }
+  } catch {}
   const pending = [...tasks.values()].filter((t) => t.status === 'pending' && kinds.includes(t.kind));
   if (syncOnly) return { job: null, pendingCount: pending.length };
   // Extension đã nhận mà hỏi lại (vd. service worker khởi động lại) -> không giao lại việc đang chạy
