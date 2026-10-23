@@ -131,7 +131,8 @@ export function claim({ kinds = [], syncOnly = false, version } = {}) {
     }
   } catch {}
   const pending = [...tasks.values()].filter((t) => t.status === 'pending' && kinds.includes(t.kind));
-  if (syncOnly) return { job: null, pendingCount: pending.length };
+  const activeTaskIds = [...tasks.keys()];
+  if (syncOnly) return { job: null, pendingCount: pending.length, activeTaskIds };
   // Extension đã nhận mà hỏi lại (vd. service worker khởi động lại) -> không giao lại việc đang chạy
   const task = pending[0];
   if (!task) return { job: null, pendingCount: 0 };

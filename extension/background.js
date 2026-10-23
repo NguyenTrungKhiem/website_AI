@@ -415,6 +415,11 @@ async function pollOnce() {
       if (syncRes && typeof syncRes.pendingCount === "number") {
         await updatePending(syncRes.pendingCount);
       }
+      if (syncRes?.activeTaskIds && current && !syncRes.activeTaskIds.includes(current.job.id)) {
+        await addLog("🧹 Công việc cũ không còn trên máy chủ, tự động giải phóng", "info");
+        await finish(current.job.id, { error: "Công việc đã kết thúc trên máy chủ" });
+        active = null;
+      }
     } catch {}
 
     // 2. Tự phục hồi (Self-healing): Kiểm tra việc đang chạy xem tab còn sống hay việc đã bị hủy trên web
