@@ -303,9 +303,19 @@ async function startJob(job) {
   const targetAcc = job.kind === "google_flow_video" ? flowAcc : (job.kind === "gemini_video" || job.kind === "gemini_image") ? geminiAcc : "";
   const targetHost = getTargetUrl(job.kind, flowAccount, geminiAccount, job.payload);
 
-  // Theo yêu cầu người dùng: LUÔN mở tab mới tinh, tuyệt đối không dùng lại tab có sẵn để tránh lỗi dữ liệu cũ
-  const isActive = (job.kind === "flow_studio_image" || job.kind === "flow_studio_video") ? true : !keepActiveTab;
-  const tab = await chrome.tabs.create({ url: targetHost, active: isActive });
+  // Tái sử dụng tab Flow đang mở (nếu có) để không phải tải lại toàn bộ app và không tốn RAM
+  let tab = null;
+  const existingTabs = await chrome.tabs.query({ url: ["https://flow.google.com/*", "https://*.flow.google.com/*", "https://labs.google/*"] }).catch(() => []);
+  if (existingTabs.length > 0) {
+    const match = existingTabs.find(t => t.url && (t.url.includes(targetHost) || targetHost.includes(t.url))) || existingTabs[0];
+    if (match?.id) {
+      tab = match;
+      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    }
+  }
+  if (!tab) {
+    tab = await chrome.tabs.create({ url: targetHost, active: true });
+  }
 
   const kindNames = {
     suno_create: "Tạo nhạc Suno",
