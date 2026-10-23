@@ -216,12 +216,18 @@ async function runInTab(tabId) {
   const current = await getCurrent();
   if (!current || current.tabId !== tabId) return;
 
-  for (let i = 0; i < 45; i++) {
+  for (let i = 0; i < 30; i++) {
     try {
       const ack = await chrome.tabs.sendMessage(tabId, { type: "run", job: current.job });
       if (ack?.ok) return;
-    } catch {
-      /* script trong tab chưa sẵn sàng */
+    } catch {}
+    if (i === 2 || i === 6 || i === 12) {
+      if (chrome.scripting) {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["content/common.js", "content/flow.js", "content/flow-studio.js"],
+        }).catch(() => {});
+      }
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -298,7 +304,8 @@ async function startJob(job) {
   const targetHost = getTargetUrl(job.kind, flowAccount, geminiAccount, job.payload);
 
   // Theo yêu cầu người dùng: LUÔN mở tab mới tinh, tuyệt đối không dùng lại tab có sẵn để tránh lỗi dữ liệu cũ
-  const tab = await chrome.tabs.create({ url: targetHost, active: !keepActiveTab });
+  const isActive = (job.kind === "flow_studio_image" || job.kind === "flow_studio_video") ? true : !keepActiveTab;
+  const tab = await chrome.tabs.create({ url: targetHost, active: isActive });
 
   const kindNames = {
     suno_create: "Tạo nhạc Suno",
