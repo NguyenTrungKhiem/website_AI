@@ -11,6 +11,7 @@ import { db, save, DIRS, newId } from './db.js';
 
 const tasks = new Map(); // id -> task
 let lastSeen = 0;
+let extensionLogs = [];
 const CLAIM_TIMEOUT = 20 * 60_000; // chờ extension nhận việc
 const RUN_TIMEOUT = 45 * 60_000; // từ lúc nhận tới khi có kết quả (gồm cả chờ người dùng bấm tạo)
 
@@ -122,21 +123,36 @@ export function status() {
   };
 }
 
-// POST /api/agent/claim {kinds, syncOnly, version}
-export function claim({ kinds = [], syncOnly = false, version } = {}) {
-  console.log(`[claim] version=${version}, syncOnly=${syncOnly}, kinds=${kinds.length}`);
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve('extension/manifest.json'), 'utf8'));
-    if (version && pkg?.version && version !== pkg.version) {
-      return { reload: true, targetVersion: pkg.version, job: null, pendingCount: 0 };
-    }
-  } catch {}
+let reloadNeeded = true;
+
+// POST /api/agent/claim {kinds, syncOnly, version, buildId, currentJobId}
+export function claim({ kinds = [], syncOnly = false, version, currentJobId } = {}) {
+  if (reloadNeeded) {
+    reloadNeeded = false;
+    console.log(`[claim] ONE-TIME STARTUP EXTENSION RELOAD TRIGGERED for client version=${version}`);
+    return { reload: true, targetVersion: 'latest', job: null, pendingCount: 0 };
+  }
   const pending = [...tasks.values()].filter((t) => t.status === 'pending' && kinds.includes(t.kind));
   const activeTaskIds = [...tasks.keys()];
-  if (syncOnly) return { job: null, pendingCount: pending.length, activeTaskIds };
-  // Extension đã nhận mà hỏi lại (vd. service worker khởi động lại) -> không giao lại việc đang chạy
-  const task = pending[0];
+  if (syncOnly) return { job: null, pendingCount: pending.length, activeTaskIds, requestLogs: true };
+
+  // 1. Tìm việc đang chờ (pending)
+  let task = pending[0];
+
+  // 2. Tự phục hồi: nếu không có việc pending, nhưng có việc đã claimed mà extension báo đang rảnh (!currentJobId hoặc khác currentJobId) và không có báo cáo quá 15s:
+  // Tái phân bổ việc đó lại cho extension để tránh treo 45 phút!
+  if (!task) {
+    const orphaned = [...tasks.values()].find(
+      (t) => t.status === 'claimed' && kinds.includes(t.kind) && (!currentJobId || currentJobId !== t.id) && Date.now() - t.claimedAt > 15_000
+    );
+    if (orphaned) {
+      console.log(`[claim] RE-ASSIGNING ORPHANED JOB id=${orphaned.id} (${orphaned.payload?.label}) to idle extension`);
+      task = orphaned;
+    }
+  }
+
   if (!task) return { job: null, pendingCount: 0 };
+  console.log(`[claim] GIVING JOB id=${task.id}, kind=${task.kind}, label=${task.payload?.label}`);
   task.status = 'claimed';
   task.claimedAt = Date.now();
   task.message = 'Extension đã nhận việc';
@@ -146,6 +162,7 @@ export function claim({ kinds = [], syncOnly = false, version } = {}) {
 
 // POST /api/agent/jobs/:id {status, message, result, error}
 export function report(id, { status: st, message, result, error } = {}) {
+  console.log(`[report] id=${id}, status=${st}, message=${message}, error=${error}`);
   const task = tasks.get(id);
   if (!task) return { cancelled: true };
   const pendingCount = [...tasks.values()].filter((t) => t.status === 'pending').length;
@@ -180,3 +197,10 @@ export function storeFile(id, { name, mime, buffer }) {
 }
 
 export const assetPath = (id, i) => tasks.get(id)?.files[Number(i)]?.path || null;
+
+export function receiveLogs(logs) {
+  if (Array.isArray(logs)) extensionLogs = logs.slice(0, 50);
+}
+export function getLogs() {
+  return extensionLogs;
+}

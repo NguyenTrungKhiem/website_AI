@@ -3,6 +3,7 @@
 // -> thay bối cảnh vào video đã tạo -> ghép lại + chèn âm thanh gốc.
 // Quy trình khác (vd. Thay quần áo) viết thành file riêng cùng cấu trúc, không đụng vào file này.
 import fs from 'node:fs';
+import { db } from '../db.js';
 
 const BACKGROUND_PROMPT = `Completely remove all people from the scene, leaving only the empty background.
 Identify the key objects and architectural elements in the original reference and transform their colors to a new harmonious palette: very bright and airy, dominated by soft milky white with only a subtle hint of light beige / pale brown (cream tones), high-key exposure, no yellow, orange or dark, moody tones.
@@ -153,7 +154,7 @@ export default {
         const model = ctx.asset(ctx.inputs.model);
         if (!model) throw new Error('Ảnh model không còn trong thư viện');
 
-        // Bảng mặt 360° chỉ dùng lại nếu chính lần chạy này đã tạo thành công và file còn trên đĩa
+        // 1. Bảng mặt 360° đã gắn với lần chạy này và file còn trên đĩa
         if (ctx.state.assetId) {
           const existing = ctx.asset(ctx.state.assetId);
           if (existing && existing.path && fs.existsSync(existing.path)) {
@@ -162,7 +163,18 @@ export default {
           ctx.state.assetId = null;
         }
 
-        // Tạo bảng mặt 360° trực tiếp trên Flow bằng Nano Banana (0 credit, sinh ra trực tiếp trong dự án Flow)
+        // 2. Kiểm tra trong thư viện local xem đã có bảng mặt 360° của model này chưa (nếu chưa bị đánh dấu bắt buộc tạo lại trên Flow)
+        if (!ctx.state.forceRegenerate) {
+          const localSheet = db.assets.find(
+            (a) => a.kind === 'model' && a.identitySheet && a.fromAssetId === model.id && a.path && fs.existsSync(a.path)
+          );
+          if (localSheet) {
+            ctx.state.assetId = localSheet.id;
+            return 'done';
+          }
+        }
+
+        // 3. Tạo bảng mặt 360° trực tiếp trên Flow bằng Nano Banana (0 credit, sinh ra trực tiếp trong dự án Flow)
         const job = ctx.ensureJob('identity:sheet', {
           type: 'image',
           imagePaths: [model.path],
@@ -174,6 +186,7 @@ export default {
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
         ctx.state.assetId = ctx.registerIdentitySheet(job).id;
+        ctx.state.forceRegenerate = false;
         return 'done';
       },
     },
@@ -210,29 +223,29 @@ export default {
             sourceRange: { sourceId: clip.sourceId, start: clip.start, end: clip.end },
           }),
         );
-        const r = ctx.waitAll(jobs);
-        if (r !== 'done') {
-          // Tự phục hồi: nếu bất kỳ job keyframe nào báo lỗi do thiếu nguyên liệu trên Flow (chưa có / không nạp được):
-          // Chuyển sang luồng khác: tự động làm mới và chạy lại bước identity để Flow tạo bảng mặt 360° trực tiếp trong dự án!
-          const missingFlowAsset = jobs.find((j) => j.status === 'failed' && /Flow/i.test(j.error || ''));
-          if (missingFlowAsset) {
-            if (ctx.stages.identity) {
-              delete ctx.stages.identity.assetId;
-              ctx.stages.identity.status = 'pending';
-            }
-            if (ctx.stages._jobs) {
-              delete ctx.stages._jobs['identity:sheet'];
-            }
-            ctx.state.status = 'pending';
-            ctx.run.stage = 'identity';
-            for (const j of jobs) {
-              j.status = 'queued';
-              j.error = null;
-            }
-            return 'waiting';
+        // Tự phục hồi: nếu bất kỳ job keyframe nào báo lỗi do thiếu nguyên liệu trên Flow (chưa có / không nạp được):
+        // Kiểm tra TRƯỚC KHI gọi ctx.waitAll để tránh ctx.waitAll quăng ngoại lệ làm dừng cả workflow!
+        const missingFlowAsset = jobs.find((j) => j.status === 'failed' && /Flow|nguyên liệu|không thấy|chưa có|quá 3 phút|quá 45s/i.test(j.error || ''));
+        if (missingFlowAsset) {
+          console.log(`[workflow:dancing] Keyframe job ${missingFlowAsset.id} thiếu nguyên liệu Flow (${missingFlowAsset.error}). Tự động chuyển luồng sang bước identity!`);
+          if (ctx.stages.identity) {
+            delete ctx.stages.identity.assetId;
+            ctx.stages.identity.status = 'pending';
+            ctx.stages.identity.forceRegenerate = true;
           }
-          return r;
+          if (ctx.stages._jobs) {
+            delete ctx.stages._jobs['identity:sheet'];
+          }
+          ctx.state.status = 'pending';
+          ctx.run.stage = 'identity';
+          for (const j of jobs) {
+            j.status = 'queued';
+            j.error = null;
+          }
+          return 'waiting';
         }
+        const r = ctx.waitAll(jobs);
+        if (r !== 'done') return r;
         const assets = (ctx.state.assets ||= {});
         for (const clip of ctx.clips) {
           const job = ctx.job(`keyframe:${clip.id}`);

@@ -219,8 +219,8 @@
     await clearSearch();
   };
 
-  // Tải 1 file lên Flow: nạp file qua CDP trực tiếp hoặc Page.handleFileChooser khi bấm "Upload media",
-  // tự động hoàn toàn mà không mở hộp thoại của hệ điều hành và không cần người dùng can thiệp.
+  // Tải 1 file lên Flow: nạp file trực tiếp qua MAIN world hooks (showOpenFilePicker/input.click),
+  // DOM DataTransfer Drag & Drop, và CDP fallback, tự động 100% không cần người dùng can thiệp.
   const uploadItem = async (ctx, item) => {
     await openAssetPanel();
     await clearSearch();
@@ -236,15 +236,78 @@
     const absPath = item.path || null;
     let uploaded = false;
 
+    // 1. Lấy dữ liệu file nhị phân qua background service worker
+    let imgData = null;
+    if (item.url) {
+      try {
+        imgData = await AA.send({ type: "getImageData", url: item.url });
+      } catch (e) {
+        console.warn("[uploadItem] Lỗi getImageData:", e);
+      }
+    }
+
+    // 2. Nạp file trực tiếp in-page qua MAIN world hooks và DataTransfer
+    if (imgData?.b64) {
+      try {
+        await ctx.say(`Nạp tệp ${item.name} qua trình duyệt…`);
+        // A. Gửi dữ liệu sang MAIN world để chuẩn bị cho hook showOpenFilePicker / input.click
+        window.postMessage({
+          __aa: "flow-stage-upload",
+          files: [{ name: item.name, mime: imgData.mime, b64: imgData.b64 }],
+        }, "*");
+        await sleep(100);
+
+        // B. Tạo File và DataTransfer trong content script
+        const bin = atob(imgData.b64);
+        const len = bin.length;
+        const u8 = new Uint8Array(len);
+        for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+        const file = new File([u8], item.name, { type: imgData.mime || "image/png" });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+
+        // C. Gán vào bất kỳ input[type="file"] nào đang có trên trang (kể cả shadow DOM)
+        const inputs = [...document.querySelectorAll('input[type="file"]')];
+        for (const fi of inputs) {
+          try {
+            fi.files = dt.files;
+            fi.dispatchEvent(new Event("input", { bubbles: true }));
+            fi.dispatchEvent(new Event("change", { bubbles: true }));
+            uploaded = true;
+          } catch {}
+        }
+
+        // D. Bấm nút Upload media (kích hoạt hook showOpenFilePicker hoặc input.click đã stage ở MAIN world)
+        fullClick(upBtn);
+        uploaded = true;
+
+        // E. Kéo thả trực tiếp DataTransfer vào vùng nguyên liệu Flow
+        const dropTargets = [
+          document.querySelector("flow-asset-list"),
+          document.querySelector('[role="listbox"]'),
+          document.querySelector("aside"),
+          document.querySelector("main"),
+          document.body,
+        ].filter(Boolean);
+        for (const dtEl of dropTargets) {
+          try {
+            dtEl.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt }));
+            dtEl.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+            dtEl.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+          } catch {}
+        }
+      } catch (err) {
+        console.warn("[uploadItem] In-page upload warning:", err);
+      }
+    }
+
+    // 3. Fallback: CDP upload nếu đường dẫn file trên đĩa tồn tại
     if (absPath) {
       try {
-        await ctx.say(`Gửi tệp ${item.name} lên Flow…`);
         const res = await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
-        await ctx.say(`Nạp tệp thành công (${res?.method || "ok"})`);
-        uploaded = true;
+        if (res?.ok) uploaded = true;
       } catch (err) {
-        await ctx.say(`Lỗi nạp tệp qua CDP: ${err?.message || err}`);
-        console.warn("uploadViaCDP lỗi:", err);
+        console.warn("[uploadItem] uploadViaCDP fallback warning:", err);
       }
     }
 
@@ -255,25 +318,21 @@
     const key = item.name.replace(/\.[^.]+$/, "");
     const keyPrefix = key.slice(0, 12);
     const deadline = Date.now() + 45_000;
-    const startTime = Date.now();
     let opt = null;
     for (;;) {
-      const dialog = all("dialog", /Rights to use/i)[0];
-      if (dialog && ctx.job.payload.autoAgree) {
-        const agree = one("button", "I agree", dialog);
-        if (agree) click(agree);
+      // Tự động đồng ý mọi hộp thoại bản quyền / điều khoản Flow (Rights to use / Terms)
+      const dialog = all("dialog", /Rights to use|content rights|terms/i)[0] || document.querySelector('[role="dialog"][aria-label*="rights" i], [role="dialog"][aria-label*="use" i]');
+      if (dialog) {
+        const agree = one("button", "I agree", dialog) || [...dialog.querySelectorAll('button, [role="button"]')].find((b) => /agree|đồng ý|continue|chấp nhận/i.test(textOf(b) || b.getAttribute("aria-label") || ""));
+        if (agree) {
+          fullClick(agree);
+          await sleep(300);
+        }
       }
       const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${keyPrefix}"]`)].some((t) => /upload failed/i.test(t.innerText));
       if (failed) throw new Error(`Flow báo "upload failed" cho ${item.name}`);
 
       opt = matchAssetOption(key, item);
-      if (!opt && Date.now() - startTime > 5000) {
-        const first = assetOptions()[0];
-        if (first && !/uploading|đang tải/i.test(nameOf(first)) && /vs-/i.test(nameOf(first))) {
-          opt = first;
-        }
-      }
-
       if (opt) break;
 
       if (Date.now() > deadline) {

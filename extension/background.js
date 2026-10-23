@@ -403,7 +403,10 @@ function poll() {
   return p;
 }
 
+let isReloading = false;
+
 async function pollOnce() {
+  if (isReloading) return;
   const { server, token } = await cfg();
   if (!server || !token) {
     badge("!");
@@ -415,13 +418,55 @@ async function pollOnce() {
     // 1. Luôn đồng bộ số lượng hàng đợi mới nhất từ server (kể cả khi đang bận chạy việc)
     try {
       const extVersion = chrome.runtime.getManifest()?.version || "";
-      const syncRes = await api("/api/agent/claim", { body: { kinds: KINDS, syncOnly: true, version: extVersion } });
+      const { buildId: currentBuild = "" } = await chrome.storage.local.get({ buildId: "" });
+      const syncRes = await api("/api/agent/claim", {
+        body: { kinds: KINDS, syncOnly: true, version: extVersion, buildId: currentBuild, currentJobId: current?.job?.id || null },
+      });
       if (syncRes?.reload) {
-        await addLog(`🔄 Cập nhật tiện ích mới (v${syncRes.targetVersion || "mới"}), tự khởi động lại…`, "info");
-        setTimeout(() => chrome.runtime.reload(), 300);
+        if (!isReloading) {
+          isReloading = true;
+          await addLog(`🔄 Cập nhật tiện ích mới (v${syncRes.targetVersion || "mới"}), tự khởi động lại…`, "info");
+          const allTabs = await chrome.tabs.query({}).catch(() => []);
+          for (const t of allTabs) {
+            if (t.url && (t.url.includes("flow.google") || t.url.includes("labs.google"))) {
+              chrome.tabs.reload(t.id).catch(() => {});
+            }
+          }
+          setTimeout(() => chrome.runtime.reload(), 300);
+        }
         return;
       }
       await showNotifications(syncRes?.notifications);
+      if (syncRes?.requestLogs) {
+        try {
+          const allTabs = await chrome.tabs.query({}).catch(() => []);
+          const flowTab = allTabs.find((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")));
+          if (flowTab?.id) {
+            const probeRes = await chrome.scripting.executeScript({
+              target: { tabId: flowTab.id },
+              func: () => {
+                const inputs = [...document.querySelectorAll('input')].map(i => ({ type: i.type, name: i.name, id: i.id, accept: i.accept, className: i.className, visible: !!(i.offsetWidth || i.offsetHeight) }));
+                const btns = [...document.querySelectorAll('button, [role="button"]')].map(b => ({
+                  text: (b.innerText || '').trim(),
+                  aria: b.getAttribute('aria-label') || '',
+                  tag: b.tagName,
+                  classes: b.className,
+                  visible: !!(b.offsetWidth || b.offsetHeight),
+                })).filter(b => /upload|media|tải/i.test(b.text + ' ' + b.aria));
+                return { inputs, btns, url: location.href };
+              },
+            }).catch(e => ({ error: e.message }));
+            if (probeRes?.[0]?.result) {
+              await api("/api/agent/logs", { body: { logs: [{ text: "[DOM_PROBE] " + JSON.stringify(probeRes[0].result) }] } }).catch(() => {});
+            }
+          }
+        } catch (pe) {
+          console.warn("[probe error]", pe);
+        }
+        chrome.storage.local.get({ logs: [] }).then(({ logs }) => {
+          if (logs?.length) api("/api/agent/logs", { body: { logs: logs.slice(0, 40) } }).catch(() => {});
+        }).catch(() => {});
+      }
       if (syncRes && typeof syncRes.pendingCount === "number") {
         await updatePending(syncRes.pendingCount);
       }
@@ -478,10 +523,22 @@ async function pollOnce() {
 
     // 3. Nếu đang rảnh: Nhận việc mới
     const extVer = chrome.runtime.getManifest()?.version || "";
-    const r = await api("/api/agent/claim", { body: { kinds: KINDS, version: extVer } });
+    const { buildId: currentBuild2 = "" } = await chrome.storage.local.get({ buildId: "" });
+    const r = await api("/api/agent/claim", {
+      body: { kinds: KINDS, version: extVer, buildId: currentBuild2, currentJobId: null },
+    });
     if (r?.reload) {
-      await addLog(`🔄 Cập nhật tiện ích mới (v${r.targetVersion || "mới"}), tự khởi động lại…`, "info");
-      setTimeout(() => chrome.runtime.reload(), 300);
+      if (!isReloading) {
+        isReloading = true;
+        await addLog(`🔄 Cập nhật tiện ích mới (v${r.targetVersion || "mới"}), tự khởi động lại…`, "info");
+        const allTabs = await chrome.tabs.query({}).catch(() => []);
+        for (const t of allTabs) {
+          if (t.url && (t.url.includes("flow.google") || t.url.includes("labs.google"))) {
+            chrome.tabs.reload(t.id).catch(() => {});
+          }
+        }
+        setTimeout(() => chrome.runtime.reload(), 300);
+      }
       return;
     }
     await showNotifications(r.notifications);
@@ -1034,8 +1091,12 @@ const handlers = {
       const btnInfo = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
         expression: `(() => {
           const btns = [...document.querySelectorAll('button, [role="button"]')];
-          const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
+          const btn = btns.find(b => {
+            const txt = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+            return txt.includes('upload media') || txt.includes('tải lên') || txt === 'upload';
+          });
           if (!btn) return null;
+          btn.scrollIntoView({ block: 'center', inline: 'center' });
           const r = btn.getBoundingClientRect();
           return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: r.width, height: r.height };
         })()`,
@@ -1055,7 +1116,7 @@ const handlers = {
         const timeout = setTimeout(() => {
           chrome.debugger.onEvent.removeListener(onEvent);
           resolve(null);
-        }, 5000);
+        }, 6000);
 
         function onEvent(source, method, params) {
           if (method === "Page.fileChooserOpened") {
@@ -1068,23 +1129,31 @@ const handlers = {
         chrome.debugger.onEvent.addListener(onEvent);
       });
 
-      // Bấm nút Upload media bằng trusted mouse click
+      // Bấm nút Upload media bằng trusted mouse click và kích hoạt user activation
       if (clickX > 0 && clickY > 0) {
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(clickX), y: Math.round(clickY) }).catch(() => {});
         await new Promise((r) => setTimeout(r, 60));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", x: Math.round(clickX), y: Math.round(clickY), button: "left", buttons: 1, clickCount: 1 }).catch(() => {});
         await new Promise((r) => setTimeout(r, 100));
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", x: Math.round(clickX), y: Math.round(clickY), button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
-      } else {
-        await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
-          expression: `(() => {
-            const btns = [...document.querySelectorAll('button, [role="button"]')];
-            const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
-            if (btn) btn.click();
-          })()`,
-          userGesture: true,
-        }).catch(() => {});
       }
+
+      await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          const btns = [...document.querySelectorAll('button, [role="button"]')];
+          const btn = btns.find(b => {
+            const txt = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+            return txt.includes('upload media') || txt.includes('tải lên') || txt === 'upload';
+          });
+          if (btn) {
+            btn.focus();
+            btn.click();
+            const touch = btn.querySelector('.mat-mdc-button-touch-target');
+            if (touch) touch.click();
+          }
+        })()`,
+        userGesture: true,
+      }).catch(() => {});
 
       const chooserParams = await chooserPromise;
       if (chooserParams) {
@@ -1117,6 +1186,44 @@ const handlers = {
         await addLog(`📁 Đã nạp ${files.length} tệp qua DOM.setFileInputFiles (sau click)`, "info");
         return { ok: true, method: "DOM.setFileInputFiles_post_click" };
       }
+
+      // 4. Kích hoạt kéo thả tệp trực tiếp bằng CDP Drag & Drop Event
+      await addLog("[uploadViaCDP] Thử nạp qua CDP Drag & Drop…", "info");
+      const dropTarget = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          const el = document.querySelector('flow-asset-list, flow-drop-target, aside, main, [role="listbox"]') || document.body;
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        })()`,
+        returnByValue: true,
+      }).catch(() => null);
+
+      const dropX = Math.round(dropTarget?.result?.value?.x || clickX || 400);
+      const dropY = Math.round(dropTarget?.result?.value?.y || clickY || 400);
+
+      await chrome.debugger.sendCommand(target, "Input.dispatchDragEvent", {
+        type: "dragEnter",
+        x: dropX,
+        y: dropY,
+        data: { files, dragOperationsMask: 1 },
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 120));
+      await chrome.debugger.sendCommand(target, "Input.dispatchDragEvent", {
+        type: "dragOver",
+        x: dropX,
+        y: dropY,
+        data: { files, dragOperationsMask: 1 },
+      }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 120));
+      await chrome.debugger.sendCommand(target, "Input.dispatchDragEvent", {
+        type: "drop",
+        x: dropX,
+        y: dropY,
+        data: { files, dragOperationsMask: 1 },
+      }).catch(() => {});
+
+      await addLog(`📁 Đã nạp ${files.length} tệp qua CDP Drag & Drop`, "info");
+      return { ok: true, method: "Input.dispatchDragEvent" };
 
       await addLog("❌ Flow không mở file chooser và không có thẻ input[type='file']", "error");
       throw new Error("Không thể nạp tệp lên Flow (Flow không mở hộp thoại và không có thẻ input)");
