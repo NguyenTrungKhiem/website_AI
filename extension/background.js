@@ -217,13 +217,16 @@ async function runInTab(tabId) {
   if (!current || current.tabId !== tabId) return;
 
   let tabReloaded = false;
+  let runningInTab = false;
   for (let i = 0; i < 35; i++) {
     try {
       const ack = await chrome.tabs.sendMessage(tabId, { type: "run", job: current.job });
       if (ack?.ok) return;
-    } catch {}
-    // Nếu tab cũ bị đứt kết nối (extension reload làm invalidate content script cũ):
-    // Tự động tải lại tab (F5) để gắn script mới mà người dùng không cần chạm tay
+    } catch (e) {
+      if (i === 0 || i === 5 || i === 15 || i === 30) {
+        await addLog(`[runInTab] i=${i} tabId=${tabId}: ${e?.message}`, "warn");
+      }
+    }
     if (i === 2 && !tabReloaded) {
       tabReloaded = true;
       await chrome.tabs.reload(tabId).catch(() => {});
@@ -241,8 +244,9 @@ async function runInTab(tabId) {
   }
 
   // Nếu vẫn không kết nối được: BÁO LỖI VÀ HOÀN TẤT VIỆC NGAY, TUYỆT ĐỐI KHÔNG TREO!
-  await addLog("❌ Không thể kết nối với tab (script không phản hồi)", "error");
-  await finish(current.job.id, { error: "Không thể kết nối với tab (hãy tải lại trang và thử lại)" });
+  const curTab = await chrome.tabs.get(tabId).catch(() => null);
+  await addLog(`❌ Không thể kết nối với tab ${tabId} (${curTab?.url}): ${curTab?.status}`, "error");
+  await finish(current.job.id, { error: `Không thể kết nối với tab (${curTab?.url || "tab đóng"}): hãy tải lại trang và thử lại` });
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, info) => {
@@ -957,19 +961,59 @@ const handlers = {
     if (!tabId) throw new Error("Không có tabId để upload");
     const target = { tabId };
     await chrome.debugger.attach(target, "1.3").catch(() => {});
+    const files = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
+    if (!files.length) throw new Error("Không có đường dẫn tệp để nạp");
+
     try {
-      await chrome.debugger.sendCommand(target, "Page.enable");
+      await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+      await chrome.debugger.sendCommand(target, "DOM.enable").catch(() => {});
+
+      // 1. Phương thức trực tiếp: Tìm thẻ input[type="file"] trong DOM và gán tệp bằng DOM.setFileInputFiles
+      const evalRes = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          let fi = document.querySelector('input[type="file"]');
+          if (!fi) {
+            const allEls = [...document.querySelectorAll('*')];
+            for (const el of allEls) {
+              if (el.shadowRoot) {
+                const sfi = el.shadowRoot.querySelector('input[type="file"]');
+                if (sfi) { fi = sfi; break; }
+              }
+            }
+          }
+          return fi;
+        })()`,
+      }).catch(() => null);
+
+      if (evalRes?.result?.objectId) {
+        await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {
+          objectId: evalRes.result.objectId,
+          files,
+        });
+        await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+          objectId: evalRes.result.objectId,
+          expression: `function() {
+            this.dispatchEvent(new Event('change', { bubbles: true }));
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+          }`,
+          userGesture: true,
+        }).catch(() => {});
+        await addLog(`📁 Đã nạp ${files.length} tệp qua DOM.setFileInputFiles`, "info");
+        return { ok: true, method: "DOM.setFileInputFiles" };
+      }
+
+      // 2. Chuẩn bị bắt chặn hộp thoại File Chooser trước khi bấm nút
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: true });
 
       let chooserFired = false;
-      const chooserPromise = new Promise((resolve, reject) => {
+      const chooserPromise = new Promise((resolve) => {
         const timeout = setTimeout(() => {
           chrome.debugger.onEvent.removeListener(onEvent);
-          if (!chooserFired) reject(new Error("Không thấy Flow mở hộp thoại chọn file sau 10s"));
-        }, 10000);
+          resolve(null);
+        }, 5000);
 
         function onEvent(source, method, params) {
-          if (source.tabId === tabId && method === "Page.fileChooserOpened") {
+          if (method === "Page.fileChooserOpened") {
             chooserFired = true;
             clearTimeout(timeout);
             chrome.debugger.onEvent.removeListener(onEvent);
@@ -979,12 +1023,13 @@ const handlers = {
         chrome.debugger.onEvent.addListener(onEvent);
       });
 
-      // 1. Kích hoạt click trực tiếp trong DOM qua Runtime.evaluate (Angular Zone.js & touch target)
+      // Bấm nút Upload media với quyền trusted gesture
       await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
         expression: `(() => {
           const btns = [...document.querySelectorAll('button, [role="button"]')];
           const btn = btns.find(b => /upload media|tải lên|upload/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()));
           if (btn) {
+            btn.scrollIntoView?.({ block: 'center' });
             btn.focus?.();
             const touch = btn.querySelector('.mat-mdc-button-touch-target');
             if (touch) touch.click();
@@ -993,9 +1038,9 @@ const handlers = {
           const fi = document.querySelector('input[type="file"]');
           if (fi) fi.click();
         })()`,
+        userGesture: true,
       }).catch(() => {});
 
-      // 2. Di chuột và bấm chuột trái vào nút Upload media bằng trusted mouse event
       if (typeof x === "number" && typeof y === "number" && x > 0 && y > 0) {
         await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
           type: "mouseMoved",
@@ -1022,16 +1067,39 @@ const handlers = {
         }).catch(() => {});
       }
 
-      // Chờ sự kiện mở file chooser từ trình duyệt
-      await chooserPromise;
+      const chooserParams = await chooserPromise;
+      if (chooserParams) {
+        await chrome.debugger.sendCommand(target, "Page.handleFileChooser", {
+          action: "accept",
+          files,
+        });
+        await addLog(`📁 Đã nạp ${files.length} tệp qua Page.handleFileChooser`, "info");
+        return { ok: true, method: "Page.handleFileChooser" };
+      }
 
-      // Giao danh sách đường dẫn file vào file chooser
-      const files = Array.isArray(filePath) ? filePath : [filePath];
-      await chrome.debugger.sendCommand(target, "Page.handleFileChooser", {
-        action: "accept",
-        files,
-      });
-      return { ok: true };
+      // 3. Sau khi bấm, kiểm tra lại xem có thẻ input[type="file"] mới xuất hiện không
+      const evalRes2 = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `document.querySelector('input[type="file"]')`,
+      }).catch(() => null);
+
+      if (evalRes2?.result?.objectId) {
+        await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", {
+          objectId: evalRes2.result.objectId,
+          files,
+        });
+        await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+          objectId: evalRes2.result.objectId,
+          expression: `function() {
+            this.dispatchEvent(new Event('change', { bubbles: true }));
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+          }`,
+          userGesture: true,
+        }).catch(() => {});
+        await addLog(`📁 Đã nạp ${files.length} tệp qua DOM.setFileInputFiles (sau click)`, "info");
+        return { ok: true, method: "DOM.setFileInputFiles_post_click" };
+      }
+
+      throw new Error("Không thể nạp tệp lên Flow (Flow không mở hộp thoại và không có thẻ input)");
     } finally {
       await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
       await chrome.debugger.detach(target).catch(() => {});

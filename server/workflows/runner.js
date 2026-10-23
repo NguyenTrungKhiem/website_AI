@@ -244,7 +244,7 @@ export function touchJob(jobId) {
   // Đang dừng chờ duyệt mà chính bước đang dừng (hoặc bước trước nó) phải làm lại -> chạy tiếp để làm lại
   // rồi dừng đúng chỗ (vd. dừng ở Kiểm tra video, keyframe đổi -> làm lại motion rồi dừng duyệt keyframe)
   const pausedStageReset = run.status === 'paused' && run.stages[run.stage]?.status !== 'paused';
-  if (stale && (run.status === 'done' || run.status === 'failed' || pausedStageReset)) {
+  if ((stale || run.status === 'failed') && (run.status === 'done' || run.status === 'failed' || pausedStageReset)) {
     run.status = 'running';
     run.error = null;
     run.finishedAt = null;

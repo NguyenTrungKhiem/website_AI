@@ -189,8 +189,12 @@ export default {
         let sheet = ctx.asset(ctx.stages.identity?.assetId);
         // Kiểm tra tính toàn vẹn: nếu bảng mặt 360° chưa có hoặc bị mất, tự động quay lại bước identity để tạo lại trên Flow!
         if (!sheet || !sheet.path || !fs.existsSync(sheet.path)) {
-          if (ctx.stages.identity) delete ctx.stages.identity.assetId;
+          if (ctx.stages.identity) {
+            delete ctx.stages.identity.assetId;
+            ctx.stages.identity.status = 'pending';
+          }
           if (ctx.stages._jobs?.['identity:sheet']) delete ctx.stages._jobs['identity:sheet'];
+          ctx.run.stage = 'identity';
           return 'waiting';
         }
         const product = ctx.asset(ctx.inputs.product);
@@ -212,8 +216,15 @@ export default {
           // Chuyển sang luồng khác: tự động làm mới và chạy lại bước identity để Flow tạo bảng mặt 360° trực tiếp trong dự án!
           const missingFlowAsset = jobs.find((j) => j.status === 'failed' && /Flow/i.test(j.error || ''));
           if (missingFlowAsset) {
-            delete ctx.stages.identity?.assetId;
-            delete ctx.stages._jobs?.['identity:sheet'];
+            if (ctx.stages.identity) {
+              delete ctx.stages.identity.assetId;
+              ctx.stages.identity.status = 'pending';
+            }
+            if (ctx.stages._jobs) {
+              delete ctx.stages._jobs['identity:sheet'];
+            }
+            ctx.state.status = 'pending';
+            ctx.run.stage = 'identity';
             for (const j of jobs) {
               j.status = 'queued';
               j.error = null;

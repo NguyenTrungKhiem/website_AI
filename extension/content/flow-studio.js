@@ -164,35 +164,50 @@
     await sleep(200);
   };
 
-  const findAsset = async (key) => {
+  const matchAssetOption = (key, item = null) => {
+    const opts = assetOptions();
+    if (!opts.length) return null;
+    const cleanKey = (key || "").replace(/\.[^.]+$/, "").trim().toLowerCase();
+    const prefix = cleanKey.slice(0, 12);
+    const title = item?.title ? flowKey(item.title).toLowerCase() : "";
+    const name = item?.name ? item.name.replace(/\.[^.]+$/, "").trim().toLowerCase() : "";
+
+    return opts.find((o) => {
+      const nm = (nameOf(o) || "").toLowerCase();
+      if (/uploading|đang tải/i.test(nm)) return false;
+      if (cleanKey && (nm.startsWith(cleanKey) || nm.includes(cleanKey) || (prefix.length >= 8 && nm.includes(prefix)))) return true;
+      if (title && (nm.startsWith(title) || nm.includes(title) || title.includes(nm.replace(/[.…\s]/g, "")))) return true;
+      if (name && (nm.startsWith(name) || nm.includes(name))) return true;
+      return false;
+    }) || null;
+  };
+
+  const findAsset = async (key, item = null) => {
     await openAssetPanel();
-    await clearSearch();
+    // 1. Quét danh sách hiện tại trước, không gõ gì vào ô tìm kiếm nếu đã thấy
+    let opt = matchAssetOption(key, item);
+    if (opt) return opt;
+
+    // 2. Nếu chưa thấy, gõ tìm kiếm đúng 1 lần
     const search = one("textbox", "Search assets") || document.querySelector('input[placeholder*="Search" i], [aria-label*="Search assets" i], input[type="search"]');
     if (!search) return null;
-    setText(search, key);
-    await sleep(800);
-    const keyPrefix = key.slice(0, 12);
-    const opt = assetOptions().find((o) => {
-      const nm = nameOf(o);
-      if (/uploading|đang tải/i.test(nm)) return false;
-      return nm.startsWith(key) || nm.includes(key) || nm.includes(keyPrefix) || key.includes(nm.replace(/[.…\s]/g, ""));
-    }) || null;
+    const query = (item?.title ? flowKey(item.title) : "") || (key ? key.replace(/\.[^.]+$/, "").slice(0, 16) : "");
+    if (!query) return null;
+
+    await clearSearch();
+    setText(search, query);
+    await sleep(700);
+
+    opt = matchAssetOption(key, item);
     await clearSearch();
     return opt;
   };
 
   const ingredientCount = () => all("button", "Ingredient").length;
-  const addIngredient = async (key, item = null) => {
-    let opt = await findAsset(key);
-    if (!opt && item?.title) opt = await findAsset(flowKey(item.title));
-    if (!opt && key.length > 12) opt = await findAsset(key.slice(0, 12));
+  const addIngredient = async (key, item = null, preFoundOpt = null) => {
+    let opt = preFoundOpt || (await findAsset(key, item));
     if (!opt) {
-      const keyPrefix = key.slice(0, 12);
-      opt = assetOptions().find((o) => {
-        const nm = nameOf(o);
-        if (/uploading|đang tải/i.test(nm)) return false;
-        return nm.includes(key) || nm.includes(keyPrefix) || (item?.title && nm.includes(flowKey(item.title)));
-      }) || null;
+      opt = matchAssetOption(key, item);
     }
     if (!opt) throw new Error(`Không thấy nguyên liệu "${key}" trong dự án Flow`);
     const n = ingredientCount();
@@ -204,13 +219,13 @@
     await clearSearch();
   };
 
-  // Tải 1 file lên Flow: nạp file qua CDP (Page.handleFileChooser) khi bấm nút "Upload media",
+  // Tải 1 file lên Flow: nạp file qua CDP trực tiếp hoặc Page.handleFileChooser khi bấm "Upload media",
   // tự động hoàn toàn mà không mở hộp thoại của hệ điều hành và không cần người dùng can thiệp.
   const uploadItem = async (ctx, item) => {
     await openAssetPanel();
     await clearSearch();
-    await sleep(300);
-    await ctx.say(`Tải lên Flow: ${item.name}`);
+    await sleep(500); // Chờ bảng nguyên liệu mở ổn định
+    await ctx.say(`Nạp nguyên liệu từ máy: ${item.name}`);
 
     const upBtn = one("button", "Upload media") || [...document.querySelectorAll('button, [role="button"]')].find((b) => /upload media|tải lên/i.test(b.innerText || b.getAttribute('aria-label') || ''));
     if (!upBtn) throw new Error('Không thấy nút "Upload media" trong bảng nguyên liệu Flow');
@@ -223,7 +238,7 @@
 
     if (absPath) {
       try {
-        await ctx.say(`Nạp file ${item.name} vào Flow…`);
+        await ctx.say(`Gửi tệp ${item.name} lên Flow…`);
         await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
         uploaded = true;
       } catch (err) {
@@ -232,15 +247,14 @@
     }
 
     if (!uploaded) {
-      // Nếu không nạp được tệp từ máy lên Flow, ném lỗi ngay để workflow tự chuyển sang luồng tạo lại
-      // thay vì bị kẹt trong vòng lặp gõ liên tục vào ô tìm kiếm
       throw new Error(`Nguyên liệu "${item.title || item.name}" chưa có trong Flow (cần tạo lại trên Flow)`);
     }
 
     const key = item.name.replace(/\.[^.]+$/, "");
     const keyPrefix = key.slice(0, 12);
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 45_000;
     const startTime = Date.now();
+    let opt = null;
     for (;;) {
       const dialog = all("dialog", /Rights to use/i)[0];
       if (dialog && ctx.job.payload.autoAgree) {
@@ -250,13 +264,7 @@
       const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${keyPrefix}"]`)].some((t) => /upload failed/i.test(t.innerText));
       if (failed) throw new Error(`Flow báo "upload failed" cho ${item.name}`);
 
-      // Kiểm tra trong danh sách hiện tại (KHÔNG gõ tìm kiếm liên tục trong vòng lặp)
-      let opt = assetOptions().find((o) => {
-        const nm = nameOf(o);
-        if (/uploading|đang tải/i.test(nm)) return false;
-        return nm.includes(key) || nm.includes(keyPrefix) || (item.title && nm.includes(flowKey(item.title))) || (item.name && nm.includes(item.name));
-      });
-
+      opt = matchAssetOption(key, item);
       if (!opt && Date.now() - startTime > 5000) {
         const first = assetOptions()[0];
         if (first && !/uploading|đang tải/i.test(nameOf(first)) && /vs-/i.test(nameOf(first))) {
@@ -267,13 +275,14 @@
       if (opt) break;
 
       if (Date.now() > deadline) {
-        throw new Error(`Quá 30s chưa thấy ${item.name} trong Flow sau khi nạp (cần tạo lại trên Flow)`);
+        throw new Error(`Quá 45s chưa thấy ${item.name} trong Flow sau khi nạp (cần tạo lại trên Flow)`);
       }
       await ctx.beat(`Đang chờ Flow xử lý ${item.name}…`);
       await sleep(1500);
       if (!one("textbox", "Search assets")) await openAssetPanel().catch(() => {});
     }
     await clearSearch();
+    return opt;
   };
 
   const configure = async (kind, ratio, resolution) => {
@@ -466,29 +475,16 @@
     const clear = one("button", "Clear prompt");
     if (clear) { click(clear); await sleep(400); }
     for (const item of p.items || []) {
-      let key = null;
-      // 1. Thử tìm bằng flowTitle nếu có (ảnh do Flow tạo trước đó)
-      if (item.title) {
-        const found = await findAsset(flowKey(item.title));
-        if (found) {
-          key = flowKey(item.title);
-          await ctx.say(`Dùng ảnh có sẵn trên Flow: ${key}`);
-        }
+      const base = item.name.replace(/\.[^.]+$/, "");
+      let opt = await findAsset(base, item);
+      if (opt) {
+        await ctx.say(`Dùng nguyên liệu có sẵn trên Flow: ${item.title || item.name}`);
+      } else {
+        await ctx.say(`Nạp nguyên liệu từ máy: ${item.name}`);
+        opt = await uploadItem(ctx, item);
       }
-      // 2. Nếu không có hoặc không tìm thấy trên Flow, tìm bằng mã hash vs-...
-      if (!key) {
-        const base = item.name.replace(/\.[^.]+$/, "");
-        const found = await findAsset(base) || (base.length > 12 ? await findAsset(base.slice(0, 12)) : null);
-        if (found) {
-          key = base;
-          await ctx.say(`Đã có trên Flow: ${item.name}`);
-        } else {
-          await uploadItem(ctx, item);
-          key = base;
-        }
-      }
-      await addIngredient(key, item);
-      await ctx.say(`+ nguyên liệu: ${key.slice(0, 50)}`);
+      await addIngredient(base, item, opt);
+      await ctx.say(`+ nguyên liệu: ${(item.title || base).slice(0, 50)}`);
     }
     await dismissOverlays();
     const credits = await configure(kind, p.aspect === "16:9" ? "16:9" : "9:16", p.resolution === "360p" ? "360p" : "720p");
