@@ -221,18 +221,22 @@ async function runInTab(tabId) {
   if (!current || current.tabId !== tabId) return;
 
   let tabReloaded = false;
-  let runningInTab = false;
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < 45; i++) {
     try {
       const ack = await chrome.tabs.sendMessage(tabId, { type: "run", job: current.job });
-      if (ack?.ok) return;
+      if (ack?.ok) {
+        await addLog(`[runInTab] Đã kết nối với tab ${tabId} ở lần thử ${i}`, "info");
+        return;
+      }
     } catch (e) {
       if (i === 0 || i === 5 || i === 15 || i === 30) {
         await addLog(`[runInTab] i=${i} tabId=${tabId}: ${e?.message}`, "warn");
       }
     }
-    if (i === 2 && !tabReloaded) {
+    // Chỉ tải lại nếu sau 15 giây vẫn chưa kết nối được
+    if (i === 15 && !tabReloaded) {
       tabReloaded = true;
+      await addLog(`[runInTab] Tải lại tab ${tabId} sau 15s để gắn lại script…`, "warn");
       await chrome.tabs.reload(tabId).catch(() => {});
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -312,16 +316,22 @@ async function startJob(job) {
 
   // Tái sử dụng tab Flow đang mở (nếu có) để không phải tải lại toàn bộ app và không tốn RAM
   let tab = null;
-  const existingTabs = await chrome.tabs.query({ url: ["https://flow.google.com/*", "https://*.flow.google.com/*", "https://labs.google/*"] }).catch(() => []);
-  if (existingTabs.length > 0) {
-    const match = existingTabs.find(t => t.url && (t.url.includes(targetHost) || targetHost.includes(t.url))) || existingTabs[0];
-    if (match?.id) {
-      tab = match;
-      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  const isFlow = job.kind.includes("flow");
+  if (isFlow) {
+    const flowTabs = allTabs.filter((t) => t.url && (t.url.includes("flow.google") || t.url.includes("labs.google")));
+    if (flowTabs.length > 0) {
+      const match = flowTabs.find((t) => t.url.includes("/project/")) || flowTabs[0];
+      if (match?.id) {
+        tab = match;
+        await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+        await addLog(`[startJob] Dùng lại tab Flow có sẵn: id=${tab.id}`, "info");
+      }
     }
   }
   if (!tab) {
     tab = await chrome.tabs.create({ url: targetHost, active: true });
+    await addLog(`[startJob] Mở tab Flow mới: id=${tab.id}`, "info");
   }
 
   const kindNames = {

@@ -124,6 +124,7 @@ export function status() {
 
 // POST /api/agent/claim {kinds, syncOnly, version}
 export function claim({ kinds = [], syncOnly = false, version } = {}) {
+  console.log(`[claim] version=${version}, syncOnly=${syncOnly}, kinds=${kinds.length}`);
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve('extension/manifest.json'), 'utf8'));
     if (version && pkg?.version && version !== pkg.version) {
