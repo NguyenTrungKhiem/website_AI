@@ -916,23 +916,6 @@ const handlers = {
           clickCount: 1,
         }).catch(() => {});
       }
-
-      // 3. Gửi phím Enter / Space (kích hoạt nút tạo nếu đang có focus)
-      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-        type: "rawKeyDown",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-        key: "Enter",
-        code: "Enter",
-      }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 50));
-      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
-        type: "keyUp",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-        key: "Enter",
-        code: "Enter",
-      }).catch(() => {});
     } finally {
       await chrome.debugger.detach(target).catch(() => {});
     }

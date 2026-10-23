@@ -21,22 +21,28 @@
     return original.apply(this, arguments);
   };
 
-  // Trợ giúp bấm nút tạo từ chính world MAIN
+  // Trợ giúp bấm nút tạo từ chính world MAIN (nơi Angular Zone.js bắt sự kiện gốc)
   window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.__aa !== "flow-trigger-start") return;
     try {
-      const btn = document.querySelector('button[aria-label^="Start generation"]') ||
-                  document.querySelector('button.generate-icon-button') ||
-                  document.querySelector('form button[type="submit"]');
-      if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+      const candidates = [...document.querySelectorAll('button, [role="button"]')].filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && !b.disabled && b.getAttribute("aria-disabled") !== "true";
+      });
+      const btn = candidates.find((b) =>
+        !b.closest('flow-grid-tile-container, [role="group"], header, nav, [role="dialog"]') &&
+        (/arrow_forward|^→$/i.test((b.innerText || b.textContent || "").trim()) ||
+         /start creating|start generation|^generate$|^create$|bắt đầu tạo/i.test(b.getAttribute("aria-label") || ""))
+      );
+      if (btn) {
+        btn.focus?.();
+        btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, cancelable: true }));
+        btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        btn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, composed: true, cancelable: true }));
+        btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
         btn.click();
-        const touch = btn.querySelector('.mat-mdc-button-touch-target');
+        const touch = btn.querySelector(".mat-mdc-button-touch-target");
         if (touch) touch.click();
-      }
-      const form = btn?.closest('form') || document.querySelector('form');
-      if (form) {
-        if (typeof form.requestSubmit === 'function') form.requestSubmit();
-        else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       }
     } catch {}
   });

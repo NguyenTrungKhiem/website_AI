@@ -93,19 +93,36 @@
   const click = (el) => {
     let target = el;
     if (el.tagName === "INPUT" && (el.type === "radio" || el.type === "checkbox")) target = el.labels?.[0] || el.closest("label") || el;
-    target.scrollIntoView?.({ block: "center", inline: "center" });
+    target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     mouseEvents(target, ["pointerover", "mouseover", "pointerdown", "mousedown"]);
     target.focus?.();
     mouseEvents(target, ["pointerup", "mouseup", "click"]);
+  };
+  const fullClick = (el) => {
+    if (!el) return;
+    try {
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, cancelable: true }));
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, composed: true, cancelable: true }));
+      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      el.click();
+      const touch = el.querySelector(".mat-mdc-button-touch-target");
+      if (touch) touch.click();
+    } catch {}
   };
 
   // ---- Flow ----
   const enUrl = () => { const u = new URL(location.href); u.searchParams.set("hl", "en"); return u.href; };
   const dismissOverlays = async () => {
-    for (let i = 0; i < 4 && document.querySelector(".cdk-overlay-backdrop-showing"); i++) {
+    const closeBtn = [...document.querySelectorAll('button[aria-label*="close" i], button[aria-label*="dismiss" i]')].find(visible);
+    if (closeBtn) {
+      try { closeBtn.click(); } catch {}
+    }
+    press("Escape", 27);
+    for (let i = 0; i < 4 && document.querySelector(".cdk-overlay-backdrop-showing, .cdk-overlay-backdrop"); i++) {
       const bd = [...document.querySelectorAll(".cdk-overlay-backdrop")].at(-1);
       if (bd) bd.click(); else press("Escape", 27);
-      await sleep(300);
+      await sleep(200);
     }
   };
   const openAssetPanel = async () => {
@@ -299,13 +316,38 @@
     for (let i = 0; i < 8 && c; i++) { c = c.parentElement; const btns = c ? all("button", null, c) : []; if (btns.length >= 2) return btns; }
     return [];
   };
-  const findStart = () =>
-    document.querySelector('button[aria-label^="Start generation"]') ||
-    document.querySelector('button.generate-icon-button') ||
-    document.querySelector('form button[type="submit"]') ||
-    one("button", /start generation|start creating|^generate$/i) ||
-    promptButtons().find((b) => /arrow_forward|send/.test(b.textContent)) ||
-    null;
+  const findStart = () => {
+    const box = promptBox();
+    let bar = box?.parentElement;
+    for (let i = 0; i < 7 && bar; i++) {
+      if (!bar.closest('[role="dialog"], flow-grid-tile-container')) {
+        const btns = [...bar.querySelectorAll("button, [role='button']")].filter(visible);
+        if (btns.length >= 2) {
+          const x1 = btns.find((b) => /^(x\d+|\d+x)$/i.test((b.innerText || b.textContent || "").trim()));
+          if (x1 && x1.parentElement) {
+            const subBtns = [...x1.parentElement.querySelectorAll("button, [role='button']")].filter(visible);
+            const idx = subBtns.indexOf(x1);
+            if (idx >= 0 && idx < subBtns.length - 1) return subBtns[idx + 1];
+          }
+          const arrow = btns.find((b) =>
+            /arrow_forward|send|^→$/i.test((b.innerText || b.textContent || "").trim()) ||
+            /start creating|start generation|^generate$|^create$|bắt đầu tạo/i.test(b.getAttribute("aria-label") || "")
+          );
+          if (arrow) return arrow;
+          const lastBtn = btns[btns.length - 1];
+          if (lastBtn && !/add ingredients|settings trigger|x\d+/i.test(nameOf(lastBtn))) return lastBtn;
+        }
+      }
+      bar = bar.parentElement;
+    }
+    return [...document.querySelectorAll('button, [role="button"]')]
+      .filter(visible)
+      .find((b) =>
+        !b.closest('flow-grid-tile-container, [role="group"], header, nav, [role="dialog"]') &&
+        (/arrow_forward|^→$/i.test((b.innerText || b.textContent || "").trim()) ||
+         /start creating|start generation|^generate$|^create$|bắt đầu tạo/i.test(b.getAttribute("aria-label") || ""))
+      ) || null;
+  };
 
   // Blob (ảnh/video) do trang tạo khi bấm Tải xuống — bắt bởi content/flow-main.js
   let capturedBlob = null;
@@ -319,20 +361,20 @@
   // Dự phòng khi không đọc được link media: menu của ô -> Download -> 720p / Original size (không bao giờ chọn bản nâng cấp)
   const downloadViaMenu = async (tile) => {
     await dismissOverlays();
-    hover(tile);
-    await sleep(300);
+    mouseEvents(tile, ["pointerover", "mouseover", "pointerenter", "mouseenter", "pointermove", "mousemove"]);
+    await sleep(400);
     const more = [...tile.querySelectorAll("button, [role='button']")].find((el) => !el.disabled && /more options/i.test(el.getAttribute("aria-label") || ""));
     if (!more) return false;
-    click(more);
+    fullClick(more);
     await sleep(900);
     const dl = overlayItems().find((el) => /^download/i.test(textOf(el)));
     if (!dl) { await dismissOverlays(); return false; }
-    hover(dl);
+    mouseEvents(dl, ["pointerover", "mouseover"]);
     await sleep(700);
     const pick = () => overlayItems().find((el) => !el.disabled && (/^720p\b|^1080p\b|original size/i.test(textOf(el)) && !/upscal|upgrade/i.test(textOf(el))));
     let q = pick();
-    if (!q) { click(dl); await sleep(900); q = pick(); }
-    if (q) click(q);
+    if (!q) { fullClick(dl); await sleep(900); q = pick(); }
+    if (q) fullClick(q);
     await sleep(600);
     await dismissOverlays();
     return true;
@@ -423,33 +465,43 @@
 
     const beforeIds = new Set(tiles().map((t) => mediaId(tileMedia(t))).filter(Boolean));
     const beforeCount = tiles().length;
+    const initialPrompt = p.prompt.trim();
+
     const accepted = () => {
-      if (tiles().length > beforeCount) return true;
-      if (promptText() === "") return true;
+      // 1. Ô prompt đã được dọn sạch (Flow xoá text khi bắt đầu tạo)
+      const currentText = promptText();
+      if (initialPrompt.length > 0 && currentText !== initialPrompt && currentText.length < initialPrompt.length / 2) return true;
+      // 2. Nút tạo hiện spinner xoay
       const btn = findStart();
-      if (!btn || !enabled(btn) || btn.querySelector('mat-progress-spinner, mat-spinner, [role="progressbar"]')) return true;
-      if (tiles().some((t) => /\d+\s*%|generating/i.test(t.innerText))) return true;
+      if (btn && btn.querySelector('mat-progress-spinner, mat-spinner, [role="progressbar"], .mat-mdc-progress-spinner')) return true;
+      // 3. Có ô trong canvas đang hiển thị phần trăm tạo hoặc trạng thái generating
+      const currentTiles = tiles();
+      if (currentTiles.some((t) => !isUploadTile(t) && /\d+\s*%|generating|creating|queued/i.test(t.innerText))) return true;
+      // 4. Số thẻ tăng lên VÀ có thẻ mới ở vị trí đầu tiên
+      if (currentTiles.length > beforeCount && currentTiles[0] && !beforeIds.has(mediaId(tileMedia(currentTiles[0])))) return true;
       return false;
     };
 
     const triggerStart = async () => {
-      // 1. Focus ô prompt
+      // 1. Dọn dẹp dialog thừa nếu có
+      await dismissOverlays();
+      // 2. Focus ô prompt
       box.focus();
-      // 2. Kích hoạt qua world MAIN (nếu form có submit handler)
+      // 3. Kích hoạt qua world MAIN (Angular Zone.js nhận diện trực tiếp)
       window.postMessage({ __aa: "flow-trigger-start" }, "*");
-      // 3. Kích hoạt qua CDP: gửi Ctrl+Enter và click chuột trusted
+      // 4. Kích hoạt qua DOM click trong content script và CDP
       const b = findStart();
       if (b) {
-        b.scrollIntoView?.({ block: "center", inline: "center" });
-        await sleep(150);
+        fullClick(b);
         const r = b.getBoundingClientRect();
-        const x = r.left + r.width / 2;
-        const y = r.top + r.height / 2;
-        try {
-          await AA.send({ type: "clickTrusted", x, y });
-        } catch (e) {
-          console.warn("clickTrusted không thành công, dùng click DOM:", e);
-          click(b);
+        if (r.width > 0 && r.height > 0) {
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          try {
+            await AA.send({ type: "clickTrusted", x, y });
+          } catch (e) {
+            console.warn("clickTrusted CDP cảnh báo:", e);
+          }
         }
       } else {
         await AA.send({ type: "clickTrusted" }).catch(() => {});
@@ -481,24 +533,60 @@
     let last = "";
     let menuTries = 0;
     let lastMenu = 0;
+    const startTime = Date.now();
+    let sawGenerating = false;
+
     while (Date.now() < deadline) {
-      await sleep(4000);
-      window.scrollTo(0, 0);
+      await sleep(3500);
       await ctx.beat("Đang chờ Flow…");
-      const t = tiles().find((x) => !isUploadTile(x) && (/\d+\s*%/.test(x.innerText) || FAILED_RE.test(x.innerText) || (tileMedia(x) && !beforeIds.has(mediaId(tileMedia(x))))));
-      if (!t) continue;
-      const text = t.innerText.trim();
-      if (FAILED_RE.test(text)) {
+
+      const allTiles = tiles().filter((x) => !isUploadTile(x));
+
+      // 1. Kiểm tra nếu có ô đang generating hoặc chạy %
+      const generatingTile = allTiles.find((t) => /\d+\s*%|generating|creating|queued/i.test(t.innerText));
+      if (generatingTile) {
+        sawGenerating = true;
+        const text = generatingTile.innerText.trim();
+        const pct = text.match(/\d+\s*%/)?.[0];
+        if (pct && pct !== last) {
+          last = pct;
+          await ctx.say("Đang tạo… " + pct);
+        }
+        continue;
+      }
+
+      // 2. Kiểm tra nếu có ô báo lỗi từ Flow
+      const failedTile = allTiles.find((t) => FAILED_RE.test(t.innerText));
+      if (failedTile) {
+        const text = failedTile.innerText.trim();
         const head = text.split("\n").map((l) => l.trim()).filter((l) => l && !/^(warning|error)$/i.test(l)).slice(0, 2).join(" ");
         throw new Error("Flow báo lỗi: " + head + (/will be refunded/i.test(text) ? " (Flow sẽ hoàn credit)" : ""));
       }
-      const pct = text.match(/\d+\s*%/)?.[0];
-      if (pct) { if (pct !== last) { last = pct; await ctx.say("Đang tạo… " + pct); } continue; }
+
+      // 3. Trong 8 giây đầu tiên (nếu chưa từng thấy generating), không vội vàng nhận thẻ cũ
+      if (Date.now() - startTime < 8000 && !sawGenerating) {
+        continue;
+      }
+
+      // 4. Tìm thẻ kết quả mới sinh (thẻ đầu tiên trong grid hoặc thẻ có mediaId chưa có trong beforeIds)
+      const t = allTiles.find((x) => {
+        const m = tileMedia(x);
+        const id = mediaId(m);
+        return id && !beforeIds.has(id);
+      }) || (sawGenerating ? allTiles[0] : null);
+
+      if (!t) continue;
+
       const title = nameOf(t);
       const name = `flow-${kind}.${kind === "image" ? "png" : "mp4"}`;
+
       // 1. Link media (https) -> trình nền tải về (có cookie) và gửi lên web
       let src = kind === "image" ? t.querySelector("img")?.getAttribute("src") : t.querySelector("video")?.getAttribute("src");
-      if (kind === "video" && !/^https?:/.test(src || "")) { hover(t); await sleep(1200); src = t.querySelector("video")?.getAttribute("src"); }
+      if (kind === "video" && !/^https?:/.test(src || "")) {
+        hover(t);
+        await sleep(1200);
+        src = t.querySelector("video")?.getAttribute("src");
+      }
       if (/^https:/.test(src || "")) {
         await ctx.say("Tải kết quả về web…");
         try {
@@ -508,6 +596,7 @@
           await ctx.say("Tải thẳng từ link lỗi (" + e.message + "), thử qua menu Download…");
         }
       }
+
       // 2. Menu Download của ô -> trang tạo Blob -> gửi lên web
       if (capturedBlob && Date.now() - capturedAt < 60_000) {
         const b64 = await blobToB64(capturedBlob);
