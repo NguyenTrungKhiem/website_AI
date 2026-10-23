@@ -165,42 +165,58 @@
     await clearSearch();
   };
 
-  // Tải 1 file lên Flow: lấy file từ web (qua trình nền, có token), đưa vào <input type=file> của bảng nguyên liệu
-  // (không mở hộp chọn file), dự phòng thả file vào bảng; xử lý hộp thoại "Rights to use"; chờ file hiện trong thư viện.
+  // Tải 1 file lên Flow: nạp file qua CDP (Page.handleFileChooser) khi bấm nút "Upload media",
+  // tự động hoàn toàn mà không mở hộp thoại của hệ điều hành và không cần người dùng can thiệp.
   const uploadItem = async (ctx, item) => {
     await openAssetPanel();
     await clearSearch();
     await sleep(400);
     await ctx.say(`Tải lên Flow: ${item.name}`);
-    const data = await AA.send({ type: "getImageData", url: item.url });
-    if (!data?.b64) throw new Error(`Không lấy được file ${item.name} từ web (${data?.error || "không rõ"})`);
-    const bytes = Uint8Array.from(atob(data.b64), (c) => c.charCodeAt(0));
-    const file = new File([bytes], item.name, { type: data.mime || (item.isVideo ? "video/mp4" : "image/png") });
-    const dt = new DataTransfer();
-    dt.items.add(file);
 
-    let input = [...document.querySelectorAll('input[type="file"]')].at(-1);
     const upBtn = one("button", "Upload media");
-    if (!input && upBtn) {
-      hover(upBtn);
-      await sleep(200);
-      input = upBtn.parentElement?.querySelector('input[type="file"]') || [...document.querySelectorAll('input[type="file"]')].at(-1);
+    if (!upBtn) throw new Error('Không thấy nút "Upload media" trong bảng nguyên liệu Flow');
+    upBtn.scrollIntoView?.({ block: "center", inline: "center" });
+    await sleep(300);
+    const r = upBtn.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+
+    const absPath = item.path || null;
+    let uploaded = false;
+
+    if (absPath) {
+      try {
+        await ctx.say(`Nạp file ${item.name} vào Flow…`);
+        await AA.send({ type: "uploadViaCDP", filePath: absPath, x, y });
+        uploaded = true;
+      } catch (err) {
+        console.warn("uploadViaCDP lỗi, thử dự phòng:", err);
+      }
     }
 
-    if (input) {
-      input.files = dt.files;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    } else {
-      const zone = upBtn?.closest('[role="dialog"], aside, section, div') || document.querySelector("main") || document.body;
-      for (const type of ["dragenter", "dragover", "drop"]) {
-        zone.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+    if (!uploaded) {
+      // Dự phòng: thử qua input[type="file"] nếu có, hoặc click Upload media
+      const data = await AA.send({ type: "getImageData", url: item.url });
+      if (data?.b64) {
+        const bytes = Uint8Array.from(atob(data.b64), (c) => c.charCodeAt(0));
+        const file = new File([bytes], item.name, { type: data.mime || (item.isVideo ? "video/mp4" : "image/png") });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        let input = upBtn.parentElement?.querySelector('input[type="file"]') || [...document.querySelectorAll('input[type="file"]')].at(-1);
+        if (input) {
+          input.files = dt.files;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        } else {
+          click(upBtn);
+        }
       }
     }
 
     const key = item.name.replace(/\.[^.]+$/, "");
     const deadline = Date.now() + 180_000;
     let asked = false;
+    const startTime = Date.now();
     for (;;) {
       const dialog = all("dialog", /Rights to use/i)[0];
       if (dialog) {
@@ -215,10 +231,17 @@
       const failed = [...document.querySelectorAll(`main [role="group"][aria-label*="${key}"]`)].some((t) => /upload failed/i.test(t.innerText));
       if (failed) throw new Error(`Flow báo "upload failed" cho ${item.name}`);
 
-      const opt = assetOptions().find((o) => {
+      // 1. Kiểm tra trong danh sách hiện tại
+      let opt = assetOptions().find((o) => {
         const nm = nameOf(o);
         return (nm.includes(key) || (item.title && nm.includes(item.title))) && !/uploading/i.test(nm);
       });
+
+      // 2. Sau 6s, nếu danh sách dài thử tìm bằng ô search
+      if (!opt && Date.now() - startTime > 6000) {
+        opt = await findAsset(key);
+      }
+
       if (opt) break;
 
       if (Date.now() > deadline) throw new Error(`Quá 3 phút chưa thấy ${item.name} trong thư viện Flow`);
@@ -394,7 +417,14 @@
 
     const beforeIds = new Set(tiles().map((t) => mediaId(tileMedia(t))).filter(Boolean));
     const beforeCount = tiles().length;
-    const accepted = () => tiles().length > beforeCount || promptText() === "";
+    const accepted = () => {
+      if (tiles().length > beforeCount) return true;
+      if (promptText() === "") return true;
+      const btn = findStart();
+      if (!btn || !enabled(btn) || btn.querySelector('mat-progress-spinner, mat-spinner, [role="progressbar"]')) return true;
+      if (tiles().some((t) => /\d+\s*%|generating/i.test(t.innerText))) return true;
+      return false;
+    };
 
     // 1. Thử gửi phím Enter trong ô prompt
     try {

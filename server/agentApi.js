@@ -44,14 +44,27 @@ export function generate({ settings, aspectRatio, prompt, video, images = [], fl
   const id = newId();
   // Nguyên liệu theo đúng thứ tự gửi lên Flow. Tên file = vs-<mã băm> như flow.js để Flow nhận ra file đã có;
   // ảnh Flow tạo (có flowTitle) thì extension tìm theo tên trên Flow, không tải lên lại.
-  const items = [...images, video].filter(Boolean).map((file, i) => ({
-    i,
-    name: `vs-${hashFile(file)}${path.extname(file).toLowerCase()}`,
-    title: flowRefs[file] || null,
-    isVideo: file === video,
-    url: `/api/agent/assets/${id}/${i}`,
-    path: file,
-  }));
+  const toUpload = (file) => {
+    const ext = path.extname(file).toLowerCase();
+    const name = `vs-${hashFile(file)}${ext}`;
+    const dest = path.join(DIRS.tmp, name);
+    try {
+      if (!fs.existsSync(dest)) fs.copyFileSync(file, dest);
+    } catch {}
+    return { name, path: path.resolve(dest) };
+  };
+
+  const items = [...images, video].filter(Boolean).map((file, i) => {
+    const up = toUpload(file);
+    return {
+      i,
+      name: up.name,
+      title: flowRefs[file] || null,
+      isVideo: file === video,
+      url: `/api/agent/assets/${id}/${i}`,
+      path: up.path,
+    };
+  });
   const task = {
     id,
     kind: `flow_studio_${kind}`,
@@ -63,7 +76,7 @@ export function generate({ settings, aspectRatio, prompt, video, images = [], fl
       resolution: settings.flowResolution === '360p' ? '360p' : '720p',
       autoAgree: !!settings.flowAutoAgree,
       projectUrl: settings.flowProjectUrl ? withEn(settings.flowProjectUrl) : null,
-      items: items.map(({ i, name, title, isVideo, url }) => ({ i, name, title, isVideo, url })),
+      items: items.map(({ i, name, title, isVideo, url, path: itemPath }) => ({ i, name, title, isVideo, url, path: itemPath })),
     },
     files: items,
     uploads: [], // file kết quả extension đã gửi: { assetId, path, name, mime }

@@ -840,7 +840,7 @@ const handlers = {
     const tabId = sender?.tab?.id;
     if (!tabId) throw new Error("Không có tabId để click");
     const target = { tabId };
-    await chrome.debugger.attach(target, "1.3");
+    await chrome.debugger.attach(target, "1.3").catch(() => {});
     try {
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -869,6 +869,73 @@ const handlers = {
       await chrome.debugger.detach(target).catch(() => {});
     }
     return { ok: true };
+  },
+  async uploadViaCDP({ filePath, x, y }, sender) {
+    const tabId = sender?.tab?.id;
+    if (!tabId) throw new Error("Không có tabId để upload");
+    const target = { tabId };
+    await chrome.debugger.attach(target, "1.3").catch(() => {});
+    try {
+      await chrome.debugger.sendCommand(target, "Page.enable");
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: true });
+
+      let chooserFired = false;
+      const chooserPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          chrome.debugger.onEvent.removeListener(onEvent);
+          if (!chooserFired) reject(new Error("Không thấy Flow mở hộp thoại chọn file sau 12s"));
+        }, 12000);
+
+        function onEvent(source, method, params) {
+          if (source.tabId === tabId && method === "Page.fileChooserOpened") {
+            chooserFired = true;
+            clearTimeout(timeout);
+            chrome.debugger.onEvent.removeListener(onEvent);
+            resolve(params);
+          }
+        }
+        chrome.debugger.onEvent.addListener(onEvent);
+      });
+
+      // Di chuột và bấm chuột trái vào nút Upload media bằng trusted mouse event
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: Math.round(x),
+        y: Math.round(y),
+      });
+      await new Promise((r) => setTimeout(r, 60));
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+      });
+
+      // Chờ sự kiện mở file chooser từ trình duyệt
+      await chooserPromise;
+
+      // Giao danh sách đường dẫn file vào file chooser
+      const files = Array.isArray(filePath) ? filePath : [filePath];
+      await chrome.debugger.sendCommand(target, "Page.handleFileChooser", {
+        action: "accept",
+        files,
+      });
+      return { ok: true };
+    } finally {
+      await chrome.debugger.sendCommand(target, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+      await chrome.debugger.detach(target).catch(() => {});
+    }
   },
   async cancelCurrent() {
     const current = await getCurrent();
