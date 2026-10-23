@@ -390,8 +390,29 @@
     let switchedLang = false;
     let openedProject = 0;
     let askedLogin = false;
+    let returnedFromEdit = 0;
     await ctx.say("Chờ trang Flow tải xong…");
     while (Date.now() - start < 120_000) {
+      // 0. Nếu đang ở trong trình chỉnh sửa video (/edit/), tự động thoát ra canvas dự án
+      if (/\/edit\//i.test(location.pathname)) {
+        if (Date.now() - returnedFromEdit > 3000) {
+          returnedFromEdit = Date.now();
+          await ctx.say("Đang trong trình chỉnh sửa video, bấm Done để quay lại canvas…");
+          const doneBtn = [...document.querySelectorAll("button, [role='button']")].find((b) =>
+            visible(b) && /^(done|xong|back|quay lại)$/i.test((textOf(b) || b.getAttribute("aria-label") || "").trim())
+          ) || document.querySelector("header button:first-child, button[aria-label*='back' i]");
+          if (doneBtn) {
+            fullClick(doneBtn);
+            await sleep(1500);
+          } else {
+            location.href = location.href.replace(/\/edit\/[^?#]+/, "");
+            await sleep(3500);
+          }
+        }
+        await sleep(1000);
+        continue;
+      }
+
       if (ready()) { await sleep(800); return; }
       const lang = document.documentElement.lang || "";
       if (lang && !/^en/i.test(lang) && !switchedLang) {
@@ -421,8 +442,9 @@
     const kind = p.kind === "image" ? "image" : "video";
     await ensureReady(ctx);
     const st = (await ctx.getState()) || {};
-    if (st.phase === "submitted") {
-      await ctx.say("Trang tải lại sau khi đã bấm tạo: chỉ chờ kết quả, không tạo lại");
+    const curAttempt = ctx.job.attempts?.length || 1;
+    if (st.phase === "submitted" && st.attempt === curAttempt && Date.now() - (st.submitTime || 0) < 15 * 60_000) {
+      await ctx.say("Trang tải lại sau khi đã bấm tạo: tiếp tục theo dõi ô kết quả…");
       return await collect(ctx, kind, new Set(st.beforeIds || []), st.credits || "");
     }
 
@@ -522,7 +544,7 @@
       const ok = await waitFor(accepted, 15 * 60_000, 500);
       if (!ok) throw new Error("Không thấy bạn bấm nút tạo trong 15 phút");
     }
-    await ctx.setState({ phase: "submitted", beforeIds: [...beforeIds], credits });
+    await ctx.setState({ phase: "submitted", beforeIds: [...beforeIds], credits, attempt: curAttempt, submitTime: Date.now() });
     await ctx.say("Flow đã nhận lệnh tạo, đang theo dõi ô kết quả…");
     return await collect(ctx, kind, beforeIds, credits);
   };
@@ -539,6 +561,21 @@
     while (Date.now() < deadline) {
       await sleep(3500);
       await ctx.beat("Đang chờ Flow…");
+
+      // Nếu lọt vào trình chỉnh sửa video (/edit/): tự động bấm Done quay lại canvas
+      if (/\/edit\//i.test(location.pathname)) {
+        const doneBtn = [...document.querySelectorAll("button, [role='button']")].find((b) =>
+          visible(b) && /^(done|xong|back|quay lại)$/i.test((textOf(b) || b.getAttribute("aria-label") || "").trim())
+        ) || document.querySelector("header button:first-child, button[aria-label*='back' i]");
+        if (doneBtn) {
+          fullClick(doneBtn);
+          await sleep(2000);
+        } else {
+          location.href = location.href.replace(/\/edit\/[^?#]+/, "");
+          await sleep(3500);
+        }
+        continue;
+      }
 
       const allTiles = tiles().filter((x) => !isUploadTile(x));
 
