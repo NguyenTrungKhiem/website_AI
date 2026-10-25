@@ -2,3 +2,6 @@ node_modules/
 web/dist/
 # Chứa video, ảnh và db.json (có API key, token) — không commit
 data/
+
+# Cấu hình cục bộ của Claude Code (quyền đã cấp trên từng máy) — không đồng bộ, tránh conflict giữa các máy
+.claude/settings.local.json
