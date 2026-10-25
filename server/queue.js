@@ -172,7 +172,9 @@ async function run(job) {
   // Flow: nhớ đường dẫn file kết quả ngay khi thấy, để nếu tải về lỗi thì lần Thử lại chỉ tải lại chứ không tạo mới
   // flowTitle = tên kết quả trên Flow: ảnh tạo ra có thể dùng lại làm nguyên liệu mà không tải lên lại
   const onResult = (src, info = {}) => { attempt.flowSrc = src; if (info.title) attempt.flowTitle = info.title; save(); };
-  const input = { settings: db.settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
+  // meta.aspectRatio: job ép tỉ lệ riêng (vd. quy trình Ảnh model luôn 9:16) thay vì tỉ lệ trong Cài đặt
+  const settings = job.meta?.aspectRatio ? { ...db.settings, aspectRatio: job.meta.aspectRatio } : db.settings;
+  const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
   try {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);

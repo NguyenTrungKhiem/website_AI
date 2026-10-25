@@ -8,13 +8,21 @@ Keep everything else exactly as it is: the same place, walls, floor, furniture, 
 Fill the areas behind the removed people seamlessly and realistically, continuing the surfaces and objects that were hidden.
 Output a clean, empty background photo with the same framing, ready for a person to be placed in later.`;
 
-const RENDER_PROMPT = `Photorealistic full-body fashion photo. Inputs, in order: image 1 = the model (her exact face, hair, skin tone and body proportions), image 2 = the outfit to wear, image 3 = the background scene.
+// Ảnh model thường là bảng nhiều góc (16:9, các góc 360°) -> nói rõ: chỉ dùng để học nhận dạng + vóc dáng,
+// xuất ra MỘT ảnh dọc 9:16; giữ nguyên vóc dáng là yêu cầu quan trọng nhất.
+const RENDER_PROMPT = `Photorealistic full-body fashion photo, vertical 9:16 portrait format. Inputs, in order: image 1 = the model reference sheet: the same woman photographed from several angles (front, sides, back, 360° turnaround) — use it ONLY to learn her identity and her exact body; image 2 = the outfit she must wear; image 3 = the background scene.
 
-Show the model from image 1 standing in the scene from image 3, wearing exactly the outfit from image 2.
-- Identity: her face must match image 1 exactly (face shape, eyes, eyebrows, nose, lips, skin tone, hairstyle). Same body proportions as in image 1.
-- Outfit: reproduce the garment in image 2 faithfully: same color, pattern, print, fabric and sheen, neckline, straps, sleeves, length, fit and details. She wears only this outfit; keep shoes and accessories simple and neutral unless they are part of image 2. Do not add other garments.
-- Scene: use the background from image 3 as it is. Do not change the room, objects or colors. Place her naturally on the floor of the scene with correct scale, perspective and contact shadows; match the scene's lighting direction, softness and color temperature so she looks genuinely photographed there.
-- Pose and framing: natural, relaxed standing pose facing the camera like a lookbook photo, full body visible from head to shoes, centered, vertical 9:16 framing, sharp focus, no motion blur.
+Output ONE single photo of this woman (not a collage, not a sheet, not multiple views, not multiple people): she stands in the scene from image 3 wearing exactly the outfit from image 2.
+
+BODY — the most important rule: keep her exact body shape and proportions as seen in image 1: height, overall build, shoulder width, bust, waist, hips, belly, arm and leg length and thickness, hand and foot size, posture. Do NOT slim, elongate, enlarge, idealize, reshape or restyle her figure in any way; do not change her head-to-body ratio. The outfit must fit THIS body, not an idealized one.
+
+IDENTITY: her face must match image 1 exactly (face shape, eyes, eyebrows, nose, lips, skin tone, hairstyle and hair color). Same person, recognizable at a glance.
+
+OUTFIT: reproduce the garment in image 2 faithfully: same color, pattern, print, fabric and sheen, neckline, straps, sleeves, length, fit and details, draped naturally on her body. She wears only this outfit; keep shoes and accessories simple and neutral unless they are part of image 2. Do not add other garments.
+
+SCENE: use the background from image 3 as it is — do not change the place, objects or colors. Place her naturally on the floor with correct scale, perspective and contact shadows; match the scene's lighting direction, softness and color temperature so she looks genuinely photographed there. If image 3 is not 9:16, extend it naturally to fill the vertical frame.
+
+POSE AND FRAMING: natural, relaxed standing pose facing the camera, like the front view of image 1 and like a lookbook photo; full body visible from the top of the head to the shoes, centered, a little space above the head and below the feet; eye-level camera, sharp focus, no motion blur.
 
 Do not add text, logos, watermarks, captions, extra people, mannequins or props that are not in the inputs. Hands and fingers must look natural.
 {prompt}`;
@@ -53,6 +61,7 @@ export default {
           imagePaths: [bg],
           template: ctx.prompt('background'),
           videoLabel: `Bối cảnh sạch – ${ctx.assetName(ctx.inputs.background)}`,
+          meta: { aspectRatio: '9:16' }, // ảnh của quy trình này luôn dọc 9:16, không phụ thuộc cài đặt video
         });
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
@@ -83,7 +92,7 @@ export default {
             imagePaths: [model, outfit, bg],
             template: ctx.prompt('render'),
             videoLabel: `${ctx.assetName(outfitId)} – ${ctx.assetName(ctx.inputs.model)}`,
-            meta: { outfitId, kind: 'lookbook' },
+            meta: { outfitId, kind: 'lookbook', aspectRatio: '9:16' },
           });
         });
         // Lưu ảnh kết quả vào thư viện ngay khi từng job xong (kể cả khi job khác còn chạy / lỗi)
