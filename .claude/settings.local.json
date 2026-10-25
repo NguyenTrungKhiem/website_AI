@@ -8,7 +8,8 @@
       "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('engine:',j.settings.engine,'| project:',j.settings.flowProjectUrl,'| workflows:',j.workflows.map\\(w=>w.id\\).join\\(','\\)\\)}\\)\")",
       "Bash(node --check server/queue.js)",
       "Bash(node --check server/workflows/anh-model.js)",
-      "Bash(node -e \"const s=require\\('./data/db.json'\\).settings; console.log\\('prompt render đã lưu đè?', !!\\(s.workflows?.['anh-model']?.prompts?.render\\)\\); console.log\\('runs anh-model:', require\\('./data/db.json'\\).runs.filter\\(r=>r.workflow==='anh-model'\\).map\\(r=>r.status\\).join\\(','\\)||'chưa có'\\)\")"
+      "Bash(node -e \"const s=require\\('./data/db.json'\\).settings; console.log\\('prompt render đã lưu đè?', !!\\(s.workflows?.['anh-model']?.prompts?.render\\)\\); console.log\\('runs anh-model:', require\\('./data/db.json'\\).runs.filter\\(r=>r.workflow==='anh-model'\\).map\\(r=>r.status\\).join\\(','\\)||'chưa có'\\)\")",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);const r=j.jobs.filter\\(x=>x.status==='running'||x.status==='queued'\\);console.log\\('job đang chạy/chờ:',r.length,r.map\\(x=>x.videoLabel.slice\\(0,30\\)+':'+\\(x.attempts.at\\(-1\\)?.progress||''\\)\\).join\\(' ; '\\)\\)}\\)\")"
     ]
   }
 }

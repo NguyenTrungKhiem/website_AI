@@ -18,13 +18,20 @@ BODY — the most important rule: keep her exact body shape and proportions as s
 
 IDENTITY: her face must match image 1 exactly (face shape, eyes, eyebrows, nose, lips, skin tone, hairstyle and hair color). Same person, recognizable at a glance.
 
-OUTFIT: reproduce the garment in image 2 faithfully: same color, pattern, print, fabric and sheen, neckline, straps, sleeves, length, fit and details, draped naturally on her body. She wears only this outfit; keep shoes and accessories simple and neutral unless they are part of image 2. Do not add other garments.
+OUTFIT: reproduce the garment in image 2 faithfully: same color, pattern, print, fabric and sheen, neckline, straps, sleeves, length, fit and details, draped naturally on her body. She wears only this outfit as clothing; do not add other garments. Shoes: elegant and matching the outfit.
+
+HANDBAG: she carries one stylish handbag that matches the outfit (in her hand, over the forearm or on the shoulder) — unless image 2 already includes a bag, then use that one. The bag must be realistic, fit the style and color palette of the outfit, and must not hide the outfit's key details (neckline, waist, print).
+
+POSE — frontal, attractive, chosen to flatter THIS outfit (no fixed pose; vary it between images, never a stiff catalogue stance):
+- Dress or skirt: a confident, sensual, feminine pose seen from the front: weight on one leg, hip gently pushed to one side for a soft S-curve, one hand on the hip or lightly touching the hair or the bag, maybe one leg slightly crossed in front, chin a little down with a direct, alluring look at the camera — the pose must show off the waist, the hips and the silhouette of the dress.
+- Full outfit (top with trousers/pants, two-piece set, suit, shirt and skirt set): an elegant, refined, graceful "young lady" pose: upright poised posture, one foot slightly forward, shoulders relaxed, soft hand gestures (holding the bag in front, one hand lightly on the strap or at the waist), head slightly tilted, calm confident smile — polished and classy, like a luxury brand lookbook.
+The body may turn slightly (up to about 30°) but the face and body stay facing the camera; the pose must look natural, balanced and anatomically correct, and must NOT change her body proportions.
 
 SCENE: use the background from image 3 as it is — do not change the place, objects or colors. Place her naturally on the floor with correct scale, perspective and contact shadows; match the scene's lighting direction, softness and color temperature so she looks genuinely photographed there. If image 3 is not 9:16, extend it naturally to fill the vertical frame.
 
-POSE AND FRAMING: natural, relaxed standing pose facing the camera, like the front view of image 1 and like a lookbook photo; full body visible from the top of the head to the shoes, centered, a little space above the head and below the feet; eye-level camera, sharp focus, no motion blur.
+FRAMING: full body visible from the top of the head to the shoes, centered, a little space above the head and below the feet; eye-level camera, sharp focus, no motion blur.
 
-Do not add text, logos, watermarks, captions, extra people, mannequins or props that are not in the inputs. Hands and fingers must look natural.
+Do not add text, logos, watermarks, captions, extra people, mannequins or props other than the handbag. Hands and fingers must look natural.
 {prompt}`;
 
 export default {
