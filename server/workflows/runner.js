@@ -11,12 +11,27 @@ import fs from 'node:fs';
 export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, clipInputs = {}, options = {}, prompts = {} }) {
   const wf = WORKFLOWS[workflowId];
   if (!wf) throw new Error('Không có quy trình ' + workflowId);
-  const source = db.sources.find((s) => s.id === sourceId);
-  if (!source) throw new Error('Không tìm thấy video gốc');
-  const clips = clipIds.map((id) => db.clips.find((c) => c.id === id && c.sourceId === sourceId));
-  if (!clips.length || clips.includes(undefined)) throw new Error('Chọn ít nhất 1 đoạn đã cắt của video gốc này');
+  // Quy trình chỉ làm ảnh (noVideo) không cần video gốc / đoạn cắt
+  let source = null;
+  let clips = [];
+  if (!wf.noVideo) {
+    source = db.sources.find((s) => s.id === sourceId);
+    if (!source) throw new Error('Không tìm thấy video gốc');
+    clips = clipIds.map((id) => db.clips.find((c) => c.id === id && c.sourceId === sourceId));
+    if (!clips.length || clips.includes(undefined)) throw new Error('Chọn ít nhất 1 đoạn đã cắt của video gốc này');
+  }
+  const cleanInputs = {};
   for (const inp of wf.inputs) {
-    if (inp.required && !inputs[inp.key]) throw new Error(`Thiếu ${inp.label}`);
+    const v = inputs[inp.key];
+    if (inp.multiple) {
+      const ids = (Array.isArray(v) ? v : v ? [v] : []).filter((id) => db.assets.find((a) => a.id === id));
+      if (inp.required && !ids.length) throw new Error(`Thiếu ${inp.label}`);
+      cleanInputs[inp.key] = ids;
+    } else {
+      if (inp.required && !v) throw new Error(`Thiếu ${inp.label}`);
+      if (v && !db.assets.find((a) => a.id === v)) throw new Error(`${inp.label}: ảnh không còn trong thư viện`);
+      cleanInputs[inp.key] = v || null;
+    }
   }
   // Ảnh riêng cho từng đoạn (vd. Thay trang phục: mỗi đoạn một bộ trang phục): { [clipId]: { [key]: assetId } }
   const perClip = {};
@@ -38,9 +53,9 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, cli
   const run = {
     id: newId(),
     workflow: workflowId,
-    sourceId,
+    sourceId: source?.id || null,
     clipIds: clips.map((c) => c.id),
-    inputs,
+    inputs: cleanInputs,
     clipInputs: perClip,
     options: opts,
     prompts: frozen,
@@ -261,10 +276,13 @@ function makeCtx(run, wf) {
 
     // Lấy 1 khung hình của video gốc
     async frame(at) {
+      if (!source) throw new Error('Quy trình này không có video gốc');
       const file = path.join(DIRS.assets, `frame-${run.id}.jpg`);
       await frameAt(source.path, file, at);
       return file;
     },
+    // Tên ảnh trong thư viện (để đặt tên kết quả)
+    assetName: (id) => (id ? db.assets.find((a) => a.id === id)?.name || '' : ''),
     // Lấy 1 khung hình của video bất kỳ (vd. video đã render) -> file ảnh đặt tên theo `name`
     async frameOf(videoPath, at, name) {
       const file = path.join(DIRS.assets, `frame-${run.id}-${name}.jpg`);
@@ -364,6 +382,13 @@ export function viewRun(run) {
       return { clipId: cid, name: clip?.name || cid, inputs, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
     }),
     anchorUrl: mediaUrl(run.stages.motion?.anchorPath), // khung mặt đã render của đoạn 1 (Thay trang phục)
+    // Ảnh kết quả của quy trình chỉ làm ảnh (key "render:…"): job + ảnh đã lưu vào thư viện (nếu có)
+    outputs: Object.entries(active)
+      .filter(([k]) => k.startsWith('render:'))
+      .map(([k, j]) => {
+        const a = j.meta?.assetId && db.assets.find((x) => x.id === j.meta.assetId);
+        return { key: k, ...brief(j), label: j.videoLabel, assetId: a?.id || null, assetUrl: a ? mediaUrl(a.path) : null };
+      }),
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)

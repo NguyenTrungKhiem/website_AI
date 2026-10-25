@@ -1,8 +1,9 @@
 // Danh sách quy trình tự động. Thêm quy trình mới: tạo file cùng cấu trúc với dancing.js rồi đăng ký ở đây.
 import dancing from './dancing.js';
 import thayTrangPhuc from './thay-trang-phuc.js';
+import anhModel from './anh-model.js';
 
-export const WORKFLOWS = { [dancing.id]: dancing, [thayTrangPhuc.id]: thayTrangPhuc };
+export const WORKFLOWS = { [dancing.id]: dancing, [thayTrangPhuc.id]: thayTrangPhuc, [anhModel.id]: anhModel };
 
 // Mô tả gửi cho giao diện (không gồm hàm run)
 export const listWorkflows = () =>
@@ -11,7 +12,8 @@ export const listWorkflows = () =>
     name: w.name,
     icon: w.icon,
     description: w.description,
-    inputs: w.inputs,
+    noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
+    inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id)
     perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
     prompts: w.prompts,
     options: w.options,

@@ -260,6 +260,21 @@ app.post('/api/assets/:id/use', wrap(async (req, res) => {
   res.json({ ...a, url: mediaUrl(a.path) });
 }));
 
+// Sao chép 1 ảnh sang loại khác (vd. ảnh kết quả "lookbook" -> ảnh model để dùng cho quy trình video)
+app.post('/api/assets/:id/copy', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  const kind = req.body?.kind;
+  if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
+  const id = newId();
+  const dest = path.join(DIRS.assets, id + path.extname(a.path));
+  fs.copyFileSync(a.path, dest);
+  const copy = { id, kind, name: a.name, path: dest, createdAt: Date.now(), fromAssetId: a.id, flowTitle: a.flowTitle || null };
+  db.assets.unshift(copy);
+  save();
+  res.json({ ...copy, url: mediaUrl(dest) });
+}));
+
 app.delete('/api/assets/:id', (req, res) => {
   const a = db.assets.find((x) => x.id === req.params.id);
   if (a) {

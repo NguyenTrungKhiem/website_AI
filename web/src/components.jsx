@@ -85,7 +85,8 @@ export function FileDrop({ accept, multiple, onFiles, children }) {
 
 // Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới.
 // state (tuỳ chọn) = state toàn app, để popup xem ảnh to biết job/cài đặt/prompt mặc định.
-export function AssetPicker({ kind, label, assets, value, onChange, refresh, state }) {
+// multiple = chọn nhiều ảnh: value là mảng id (theo thứ tự chọn), bấm ảnh để thêm/bỏ, có số thứ tự trên ảnh.
+export function AssetPicker({ kind, label, assets, value, onChange, refresh, state, multiple = false }) {
   // Ảnh nháp (bóc tách / kết quả làm sạch chưa bấm Dùng) không hiện trong thư viện
   const list = assets.filter((a) => a.kind === kind && !a.staging);
   const { busy, error, run } = useAction();
@@ -93,12 +94,23 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
   const [found, setFound] = useState(null); // kết quả bóc tách gần nhất (giữ nguyên sau khi chọn ảnh)
   const [slider, setSlider] = useState(null); // { images, startIdx } popup trượt + làm sạch
   const viewingAsset = list.find((a) => a.id === viewing);
+  const selectedIds = multiple ? (Array.isArray(value) ? value : []) : value ? [value] : [];
+  const isSelected = (id) => selectedIds.includes(id);
+  // Chọn 1 ảnh: đơn -> đặt/bỏ; nhiều -> thêm vào cuối / bỏ khỏi danh sách
+  const pick = (id) => {
+    if (!multiple) return onChange(value === id ? null : id);
+    onChange(isSelected(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
+  };
+  const addSelected = (id) => (multiple ? onChange(isSelected(id) ? selectedIds : [...selectedIds, id]) : onChange(id));
+  const removeSelected = (id) => (multiple ? onChange(selectedIds.filter((x) => x !== id)) : value === id && onChange(null));
   const upload = (files) =>
     run(async () => {
-      let last;
-      for (const f of files) last = await api.uploadAsset(kind, f);
+      const added = [];
+      for (const f of files) added.push(await api.uploadAsset(kind, f));
       await refresh();
-      if (last) onChange(last.id);
+      if (!added.length) return;
+      if (multiple) onChange([...selectedIds, ...added.map((a) => a.id)]);
+      else onChange(added.at(-1).id);
     });
   // Mở popup trượt: ưu tiên các ảnh vừa bóc tách; chưa bóc tách thì trượt qua ảnh sản phẩm trong thư viện
   const openSlider = (startId) => {
@@ -113,14 +125,17 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
     run(async () => {
       await api.useAsset(id);
       await refresh();
-      onChange(id);
+      addSelected(id);
       setSlider(null);
     });
   return (
     <div className="picker">
       <div className="picker-head">
-        <b>{label}</b>
-        {value && <a onClick={() => onChange(null)}>Bỏ chọn</a>}
+        <b>{label}{multiple && selectedIds.length > 0 ? ` (${selectedIds.length} đã chọn)` : ''}</b>
+        <span className="row gap-xs">
+          {multiple && list.length > selectedIds.length && <a onClick={() => onChange(list.map((a) => a.id))}>Chọn tất cả</a>}
+          {selectedIds.length > 0 && <a onClick={() => onChange(multiple ? [] : null)}>Bỏ chọn</a>}
+        </span>
       </div>
       <div className="thumbs">
         <FileDrop accept="image/*" multiple onFiles={upload}>
@@ -129,18 +144,19 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
         {list.map((a) => (
           <div
             key={a.id}
-            className={'thumb' + (value === a.id ? ' selected' : '')}
-            onClick={() => onChange(value === a.id ? null : a.id)}
+            className={'thumb' + (isSelected(a.id) ? ' selected' : '')}
+            onClick={() => pick(a.id)}
             title={a.name}
           >
             <img src={a.url} alt={a.name} />
+            {multiple && isSelected(a.id) && <span className="order-badge">{selectedIds.indexOf(a.id) + 1}</span>}
             {a.fromJobId && <span className="flow-mark" title="Ảnh do Flow tạo lại">✨</span>}
             <button className="zoom-btn" title="Xem ảnh to" onClick={(e) => { e.stopPropagation(); setViewing(a.id); }}>🔍</button>
             <ConfirmButton
               className="x"
               armedText="Xoá?"
               title="Xoá ảnh"
-              onConfirm={() => run(async () => { await api.deleteAsset(a.id); if (value === a.id) onChange(null); await refresh(); })}
+              onConfirm={() => run(async () => { await api.deleteAsset(a.id); removeSelected(a.id); await refresh(); })}
             >
               ×
             </ConfirmButton>
@@ -151,8 +167,8 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
       {viewingAsset && (
         <Lightbox
           asset={viewingAsset}
-          selected={value === viewingAsset.id}
-          onSelect={(id) => onChange(id)}
+          selected={isSelected(viewingAsset.id)}
+          onSelect={(id) => addSelected(id)}
           onClose={() => setViewing(null)}
           onTryOther={kind === 'product' ? () => openSlider(viewingAsset.id) : null}
         />

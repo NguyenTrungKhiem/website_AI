@@ -37,6 +37,10 @@ Menu **👗 Thay trang phục** (`server/workflows/thay-trang-phuc.js`): dùng k
 - **Khoá khuôn mặt** (tuỳ chọn, mặc định bật): đoạn 1 render trước; web cắt 1 khung mặt đã render của đoạn 1 và đưa thêm vào các đoạn sau như ảnh tham chiếu thứ 2, để mọi đoạn bám theo đúng khuôn mặt đã render. Thứ tự ảnh gửi Flow: model → (mặt khoá) → trang phục trước → (mặt sau) → video. Thử lại đoạn 1 sau khi các đoạn sau đã tạo thì mặt khoá được cắt lại nhưng các đoạn sau không tự tạo lại (tránh tốn credit) — Thử lại tay nếu cần.
 - Prompt bước 2 có chỗ điền tự động `{inputs}`, `{identity_rule}`, `{outfit_rule}` theo số ảnh của từng đoạn.
 
+## Quy trình Ảnh model mặc đồ (chỉ ảnh, 0 credit)
+
+Menu **📸 Ảnh model mặc đồ** (`server/workflows/anh-model.js`, quy trình `noVideo`): 1 ảnh model toàn thân + **nhiều** ảnh trang phục (chọn nhiều trong thư viện, có số thứ tự) + 1 ảnh bối cảnh. Bước 1 làm sạch bối cảnh (bỏ người, giữ nguyên khung cảnh; tắt được nếu ảnh đã sạch), bước 2 render mỗi trang phục thành 1 ảnh model mặc bộ đó trong bối cảnh (ảnh 1 = model, 2 = trang phục, 3 = bối cảnh; Nano Banana). Ảnh kết quả hiện ở thẻ lần chạy (Thử lại / chọn lần tạo / tải về) và tự lưu vào thư viện loại `lookbook`; nút **Lưu làm ảnh model** (hoặc bật tuỳ chọn "Lưu luôn thành ảnh model") sao chép sang thư viện ảnh model để dùng cho AI Dancing / Thay trang phục.
+
 Thêm quy trình mới (vd. Thay quần áo): tạo `server/workflows/<ten>.js` cùng cấu trúc với `dancing.js` (inputs, prompts, options, stages) và đăng ký trong `server/workflows/index.js`. Giao diện tự sinh trang riêng, không ảnh hưởng tới Dancing. Các bước dùng chung (Cắt, Ghép, Đăng) giữ nguyên. Các job lẻ (motion / background / image) vẫn có API (`/api/jobs/...`) nhưng không còn trang riêng.
 
 Thử quy trình không tốn tiền: đặt `"engine": "mock"` trong `data/db.json` (engine giả chép đầu vào thành đầu ra sau 2 giây).

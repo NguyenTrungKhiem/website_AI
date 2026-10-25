@@ -29,6 +29,7 @@ export const api = {
   },
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`),
   cleanAsset: (id, prompt) => req('POST', `/api/assets/${id}/clean`, { prompt }),
+  copyAsset: (id, kind) => req('POST', `/api/assets/${id}/copy`, { kind }),
   fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
   importProduct: (kind, images, staging = false) => req('POST', '/api/product/import', { kind, images, staging }),
   useAsset: (id) => req('POST', `/api/assets/${id}/use`),

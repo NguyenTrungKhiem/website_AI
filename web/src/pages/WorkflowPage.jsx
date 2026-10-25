@@ -48,7 +48,10 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
   const toggleClip = (id) => setClipIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const selectedClips = clips.filter((c) => clipIds.includes(c.id));
   const perClip = wf.perClipInputs || [];
-  const missing = wf.inputs.filter((i) => i.required && !inputs[i.key]).map((i) => i.label);
+  const noVideo = !!wf.noVideo; // quy trình chỉ làm ảnh
+  const isEmpty = (inp) => (inp.multiple ? !(inputs[inp.key]?.length) : !inputs[inp.key]);
+  const missing = wf.inputs.filter((i) => i.required && isEmpty(i)).map((i) => i.label);
+  const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
   const missingClips = perClip.length
     ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
     : 0;
@@ -68,7 +71,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
         {' · '}<a onClick={() => go('settings')}>cài đặt</a>
       </p>
 
-      <div className="card stack">
+      {!noVideo && <div className="card stack">
         <div className="row between">
           <b>1. Video gốc và các đoạn đã cắt ({clipIds.length}/{clips.length})</b>
           <div className="row">
@@ -103,10 +106,10 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
             refresh={refresh}
           />
         )}
-      </div>
+      </div>}
 
       <div className="card stack">
-        <b>2. Ảnh tham chiếu</b>
+        <b>{noVideo ? '1' : '2'}. Ảnh tham chiếu</b>
         <div className="grid2">
           {wf.inputs.map((inp) => (
             <AssetPicker
@@ -114,7 +117,8 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
               kind={inp.kind}
               label={inp.label + (inp.required ? ' *' : '')}
               assets={state.assets}
-              value={inputs[inp.key] || null}
+              multiple={!!inp.multiple}
+              value={inputs[inp.key] || (inp.multiple ? [] : null)}
               onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: v }))}
               refresh={refresh}
               state={state}
@@ -124,7 +128,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       </div>
 
       <div className="card stack">
-        <b>3. Tuỳ chọn</b>
+        <b>{noVideo ? '2' : '3'}. Tuỳ chọn</b>
         {wf.options.map((o) => (
           <label key={o.key} className="check">
             <input type="checkbox" checked={!!options[o.key]} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.checked }))} />
@@ -135,8 +139,8 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       </div>
 
       <div className="row">
-        <button className="primary big" disabled={busy || !clipIds.length || missing.length > 0 || missingClips > 0} onClick={start}>
-          ▶ Chạy {wf.name} cho {clipIds.length} đoạn
+        <button className="primary big" disabled={busy || (!noVideo && !clipIds.length) || missing.length > 0 || missingClips > 0} onClick={start}>
+          ▶ Chạy {wf.name} {noVideo ? (outfitCount ? `– ${outfitCount} ảnh` : '') : `cho ${clipIds.length} đoạn`}
         </button>
         {missing.length > 0 && <span className="muted small">Cần chọn: {missing.join(', ')}</span>}
         {missingClips > 0 && <span className="muted small">Còn {missingClips} đoạn chưa chọn trang phục</span>}
@@ -339,6 +343,45 @@ function ClipTable({ run: r, jobs, refresh }) {
   );
 }
 
+// Ảnh kết quả của quy trình chỉ làm ảnh: mỗi ảnh là thẻ job thu gọn (xem, Thử lại, chọn lần tạo) + tải về + lưu làm ảnh model
+function OutputGallery({ run: r, jobs, refresh }) {
+  const { busy, error, run } = useAction();
+  const byId = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
+  const [savedMsg, setSavedMsg] = useState('');
+  const saveAs = (assetId, kind) =>
+    run(async () => {
+      await api.copyAsset(assetId, kind);
+      await refresh();
+      setSavedMsg(kind === 'model' ? 'Đã lưu vào thư viện ảnh model' : 'Đã lưu');
+      setTimeout(() => setSavedMsg(''), 2500);
+    });
+  return (
+    <div className="stack">
+      <b>Ảnh kết quả ({r.outputs.filter((o) => o.status === 'done').length}/{r.outputs.length})</b>
+      <div className="outputs">
+        {r.outputs.map((o) => {
+          const job = byId[o.id];
+          return (
+            <div key={o.key} className="output stack">
+              <small className="ellipsis" title={o.label}>{o.label}</small>
+              {job ? <JobCard compact job={job} refresh={refresh} /> : <span className="muted">–</span>}
+              {o.outputUrl && (
+                <div className="row">
+                  <a href={o.outputUrl} download>Tải về</a>
+                  {o.assetId && <a onClick={() => saveAs(o.assetId, 'model')} title="Sao chép vào thư viện ảnh model để dùng cho AI Dancing / Thay trang phục">Lưu làm ảnh model</a>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {savedMsg && <span className="ok small">{savedMsg}</span>}
+      {error && <div className="err">{error}</div>}
+      <small className="muted">Mỗi ảnh có nút Thử lại / chọn lần tạo như video. Ảnh kết quả đã được lưu vào thư viện (loại lookbook); bấm "Lưu làm ảnh model" nếu muốn dùng nó cho các quy trình video.</small>
+    </div>
+  );
+}
+
 const RUN_STATUS = { running: ['Đang chạy', 'blue'], paused: ['Chờ bạn kiểm tra', 'amber'], done: ['Hoàn thành', 'green'], failed: ['Dừng vì lỗi', 'red'], cancelled: ['Đã huỷ', 'gray'] };
 
 function RunCard({ run: r, state, refresh, go }) {
@@ -354,8 +397,8 @@ function RunCard({ run: r, state, refresh, go }) {
     <div className={'card stack run' + (r.status === 'failed' ? ' failed' : '')}>
       <div className="row between">
         <div>
-          <b>{source?.name || 'Video gốc đã xoá'}</b>{' '}
-          <small className="muted">· {r.clipIds.length} đoạn · {new Date(r.createdAt).toLocaleString('vi-VN')}</small>
+          <b>{r.sourceId ? (source?.name || 'Video gốc đã xoá') : r.workflowName}</b>{' '}
+          <small className="muted">· {r.sourceId ? `${r.clipIds.length} đoạn` : `${r.outputs?.length || 0} ảnh`} · {new Date(r.createdAt).toLocaleString('vi-VN')}</small>
         </div>
         <span className={`badge ${color}`}>{label}</span>
       </div>
@@ -404,7 +447,8 @@ function RunCard({ run: r, state, refresh, go }) {
         </div>
       )}
 
-      <ClipTable run={r} jobs={jobs} refresh={refresh} />
+      {r.clipRows.length > 0 && <ClipTable run={r} jobs={jobs} refresh={refresh} />}
+      {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} refresh={refresh} />}
 
       <div className="row">
         {r.status === 'paused' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục: thay bối cảnh</button>}
