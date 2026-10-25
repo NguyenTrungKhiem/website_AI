@@ -8,6 +8,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
   const [sourceId, setSourceId] = useState(state.sources[0]?.id || null);
   const [clipIds, setClipIds] = useState([]);
   const [inputs, setInputs] = useState({});
+  const [clipInputs, setClipInputs] = useState({}); // ảnh riêng từng đoạn: { [clipId]: { [key]: assetId } }
   const [options, setOptions] = useState(() => Object.fromEntries(wf.options.map((o) => [o.key, o.default])));
   const { busy, error, run } = useAction();
 
@@ -45,11 +46,16 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
   }, [runs, go]);
 
   const toggleClip = (id) => setClipIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const selectedClips = clips.filter((c) => clipIds.includes(c.id));
+  const perClip = wf.perClipInputs || [];
   const missing = wf.inputs.filter((i) => i.required && !inputs[i.key]).map((i) => i.label);
+  const missingClips = perClip.length
+    ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
+    : 0;
 
   const start = () =>
     run(async () => {
-      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs, options });
+      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs, clipInputs, options });
       await refresh();
     });
 
@@ -87,6 +93,16 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
             ))}
           </div>
         )}
+        {perClip.length > 0 && selectedClips.length > 0 && (
+          <ClipInputsTable
+            clips={selectedClips}
+            perClipInputs={perClip}
+            value={clipInputs}
+            onChange={setClipInputs}
+            state={state}
+            refresh={refresh}
+          />
+        )}
       </div>
 
       <div className="card stack">
@@ -119,10 +135,11 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       </div>
 
       <div className="row">
-        <button className="primary big" disabled={busy || !clipIds.length || missing.length > 0} onClick={start}>
+        <button className="primary big" disabled={busy || !clipIds.length || missing.length > 0 || missingClips > 0} onClick={start}>
           ▶ Chạy {wf.name} cho {clipIds.length} đoạn
         </button>
         {missing.length > 0 && <span className="muted small">Cần chọn: {missing.join(', ')}</span>}
+        {missingClips > 0 && <span className="muted small">Còn {missingClips} đoạn chưa chọn trang phục</span>}
       </div>
       {error && <div className="err">{error}</div>}
 
@@ -133,6 +150,84 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
         runs.map((r) => <RunCard key={r.id} run={r} state={state} refresh={refresh} go={go} />)
       )}
     </section>
+  );
+}
+
+// Bảng chọn ảnh riêng cho từng đoạn (vd. Thay trang phục: mặt trước bắt buộc, mặt sau tuỳ chọn).
+// Bấm ô ảnh để mở thư viện chọn; "↓ áp cho các đoạn sau" chép ảnh của đoạn này xuống các đoạn kế tiếp.
+function ClipInputsTable({ clips, perClipInputs, value, onChange, state, refresh }) {
+  const [picking, setPicking] = useState(null); // { clipId, key }
+  const assetOf = (id) => state.assets.find((a) => a.id === id);
+  const set = (clipId, key, assetId) => onChange((v) => ({ ...v, [clipId]: { ...(v[clipId] || {}), [key]: assetId } }));
+  const fillDown = (fromIdx, key) => {
+    const src = value[clips[fromIdx].id]?.[key];
+    if (!src) return;
+    onChange((v) => {
+      const next = { ...v };
+      for (const c of clips.slice(fromIdx + 1)) next[c.id] = { ...(next[c.id] || {}), [key]: src };
+      return next;
+    });
+  };
+  const inp = picking && perClipInputs.find((i) => i.key === picking.key);
+  return (
+    <div className="stack">
+      <b>Trang phục cho từng đoạn</b>
+      <table className="table clip-inputs">
+        <thead>
+          <tr>
+            <th>Đoạn</th>
+            {perClipInputs.map((i) => <th key={i.key}>{i.label}{i.required ? ' *' : ''}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {clips.map((c, idx) => (
+            <tr key={c.id}>
+              <td className="clip-name">
+                <div className="row">
+                  <img className="mini-thumb" src={c.thumbUrl} alt="" />
+                  <div><b>#{idx + 1}</b><div className="small muted">{c.name} · {fmt(c.end - c.start)}</div></div>
+                </div>
+              </td>
+              {perClipInputs.map((i) => {
+                const a = assetOf(value[c.id]?.[i.key]);
+                return (
+                  <td key={i.key}>
+                    <div className="row">
+                      <div className={'thumb pick' + (a ? '' : ' empty') + (i.required && !a ? ' missing' : '')} onClick={() => setPicking({ clipId: c.id, key: i.key })} title={a ? a.name : 'Bấm để chọn ảnh'}>
+                        {a ? <img src={a.url} alt="" /> : <span>+ Chọn</span>}
+                      </div>
+                      <div className="stack gap-xs">
+                        {a && <a onClick={() => set(c.id, i.key, null)}>Bỏ</a>}
+                        {a && idx < clips.length - 1 && <a onClick={() => fillDown(idx, i.key)} title="Dùng ảnh này cho các đoạn sau">↓ áp cho đoạn sau</a>}
+                      </div>
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {picking && (
+        <div className="lightbox" onClick={() => setPicking(null)}>
+          <div className="lightbox-body chooser" onClick={(e) => e.stopPropagation()}>
+            <button className="lightbox-close" onClick={() => setPicking(null)} title="Đóng">×</button>
+            <div className="lightbox-side stack">
+              <b>Chọn {inp?.label} cho {clips.find((c) => c.id === picking.clipId)?.name}</b>
+              <AssetPicker
+                kind={inp?.kind || 'product'}
+                label="Thư viện ảnh"
+                assets={state.assets}
+                value={value[picking.clipId]?.[picking.key] || null}
+                onChange={(id) => { if (id) { set(picking.clipId, picking.key, id); setPicking(null); } }}
+                refresh={refresh}
+                state={state}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -217,6 +312,11 @@ function ClipTable({ run: r, jobs, refresh }) {
                   <td className="clip-name">
                     <b>#{i + 1}</b>
                     <div className="small muted">{row.name}</div>
+                    {row.inputs && Object.values(row.inputs).some(Boolean) && (
+                      <div className="row gap-xs" title="Ảnh riêng của đoạn này">
+                        {Object.entries(row.inputs).map(([k, a]) => a && <img key={k} className="mini-thumb" src={a.url} alt="" title={a.name} />)}
+                      </div>
+                    )}
                     <FileDrop accept="video/*" multiple onFiles={(files) => replaceWith(row.clipId, files)}>
                       <button disabled={busy} className="small-btn" title="Thay video motion của đoạn này bằng file từ máy; chọn nhiều file thì các file sau thay các đoạn kế tiếp">
                         📥 Thay bằng video từ máy
@@ -275,6 +375,7 @@ function RunCard({ run: r, state, refresh, go }) {
       {(r.frameUrl || bgJob || r.backgroundUrl) && (
         <div className="row">
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
+          {r.anchorUrl && <figure className="mini"><img src={r.anchorUrl} alt="" /><figcaption>Mặt đã render (đoạn 1) làm mẫu cho đoạn sau</figcaption></figure>}
           {bgJob ? (
             // Thẻ job ảnh bối cảnh: Thử lại / Sửa prompt / chọn lần tạo. Đổi bối cảnh → web tự thay nền lại cho mọi đoạn.
             <div className="stack bg-job">

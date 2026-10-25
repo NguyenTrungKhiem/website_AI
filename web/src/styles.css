@@ -40,6 +40,11 @@ figure.mini { margin: 0; width: 120px; }
 figure.mini img, figure.mini video { width: 100%; aspect-ratio: 9/16; object-fit: cover; border-radius: 6px; background: #000; }
 .wf-prompts { border-left: 2px solid var(--line); padding-left: 12px; }
 .clip-table td { vertical-align: top; }
+.clip-inputs td { vertical-align: middle; }
+.thumb.pick { width: 64px; height: 84px; display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+.thumb.pick.missing { border-color: var(--amber); }
+.gap-xs { gap: 4px; }
+.lightbox-body.chooser { grid-template-columns: 1fr; max-width: 760px; }
 .clip-table .clip-name { width: 180px; }
 .clip-table .drop { border: 0; display: inline-block; margin-top: 6px; }
 .small-btn { font-size: 12px; padding: 4px 8px; }

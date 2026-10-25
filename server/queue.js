@@ -115,15 +115,23 @@ export function pump() {
 function prepare(job) {
   const images = [];
   if (job.type === 'motion') {
-    const model = assetPath(job.assets.model);
-    const product = assetPath(job.assets.product);
-    if (model) images.push(model);
-    if (product) images.push(product);
+    let flowRefs;
+    if (job.imagePaths?.length) {
+      // Quy trình đưa sẵn danh sách ảnh đúng thứ tự (vd. Thay trang phục: model, khung mặt khoá, trang phục trước/sau)
+      for (const f of job.imagePaths) if (fs.existsSync(f)) images.push(f);
+      flowRefs = Object.fromEntries(db.assets.filter((a) => a.flowTitle && images.includes(a.path)).map((a) => [a.path, a.flowTitle]));
+    } else {
+      const model = assetPath(job.assets.model);
+      const product = assetPath(job.assets.product);
+      if (model) images.push(model);
+      if (product) images.push(product);
+      flowRefs = flowRefsOf(job.assets.model, job.assets.product);
+    }
     const prompt = buildMotionPrompt({
       userPrompt: job.prompt, raw: job.rawPrompt,
       template: job.template || db.settings.motionTemplate,
     });
-    return { images, prompt, flowRefs: flowRefsOf(job.assets.model, job.assets.product) };
+    return { images, prompt, flowRefs };
   }
   if (job.type === 'background') {
     const bg = assetPath(job.assets.background);

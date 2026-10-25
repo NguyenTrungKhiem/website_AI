@@ -8,7 +8,7 @@ import { frameAt } from '../ffmpeg.js';
 import { WORKFLOWS } from './index.js';
 import fs from 'node:fs';
 
-export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, options = {}, prompts = {} }) {
+export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, clipInputs = {}, options = {}, prompts = {} }) {
   const wf = WORKFLOWS[workflowId];
   if (!wf) throw new Error('Không có quy trình ' + workflowId);
   const source = db.sources.find((s) => s.id === sourceId);
@@ -17,6 +17,18 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, opt
   if (!clips.length || clips.includes(undefined)) throw new Error('Chọn ít nhất 1 đoạn đã cắt của video gốc này');
   for (const inp of wf.inputs) {
     if (inp.required && !inputs[inp.key]) throw new Error(`Thiếu ${inp.label}`);
+  }
+  // Ảnh riêng cho từng đoạn (vd. Thay trang phục: mỗi đoạn một bộ trang phục): { [clipId]: { [key]: assetId } }
+  const perClip = {};
+  for (const clip of clips) {
+    const given = clipInputs[clip.id] || {};
+    perClip[clip.id] = {};
+    for (const inp of wf.perClipInputs || []) {
+      const v = given[inp.key] || null;
+      if (inp.required && !v) throw new Error(`Đoạn "${clip.name}": thiếu ${inp.label}`);
+      if (v && !db.assets.find((a) => a.id === v)) throw new Error(`Đoạn "${clip.name}": ảnh ${inp.label} không còn trong thư viện`);
+      perClip[clip.id][inp.key] = v;
+    }
   }
   const opts = Object.fromEntries(wf.options.map((o) => [o.key, options[o.key] ?? o.default]));
   // Prompt dùng cho lần chạy này được "đóng băng" vào run để sửa prompt mẫu sau không ảnh hưởng run đang chạy
@@ -29,6 +41,7 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, opt
     sourceId,
     clipIds: clips.map((c) => c.id),
     inputs,
+    clipInputs: perClip,
     options: opts,
     prompts: frozen,
     status: 'running',
@@ -240,14 +253,22 @@ function makeCtx(run, wf) {
     source,
     clips,
     inputs: run.inputs,
+    clipInputs: run.clipInputs || {}, // ảnh riêng từng đoạn: { [clipId]: { [key]: assetId } }
     stages: run.stages,
     state: null, // trạng thái riêng của bước đang chạy (được lưu)
     prompt: (key) => run.prompts[key] || wf.prompts[key]?.text || '',
+    assetPath: (id) => (id ? db.assets.find((a) => a.id === id)?.path || null : null),
 
     // Lấy 1 khung hình của video gốc
     async frame(at) {
       const file = path.join(DIRS.assets, `frame-${run.id}.jpg`);
       await frameAt(source.path, file, at);
+      return file;
+    },
+    // Lấy 1 khung hình của video bất kỳ (vd. video đã render) -> file ảnh đặt tên theo `name`
+    async frameOf(videoPath, at, name) {
+      const file = path.join(DIRS.assets, `frame-${run.id}-${name}.jpg`);
+      await frameAt(videoPath, file, at);
       return file;
     },
 
@@ -331,11 +352,18 @@ export function viewRun(run) {
       const sj = Object.entries(active).filter(([k]) => k.startsWith(s.id + ':')).map(([, j]) => j);
       return { id: s.id, label: s.label, status: st.status, done: sj.filter((j) => j.status === 'done').length, total: sj.length };
     }),
-    // Từng đoạn: video motion (hoặc video nhập thay thế) và video đã thay nền
+    // Từng đoạn: video motion (hoặc video nhập thay thế), video đã thay nền, ảnh riêng của đoạn (nếu quy trình có)
     clipRows: run.clipIds.map((cid) => {
       const clip = db.clips.find((c) => c.id === cid);
-      return { clipId: cid, name: clip?.name || cid, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
+      const inputs = Object.fromEntries(
+        (wf?.perClipInputs || []).map((inp) => {
+          const a = db.assets.find((x) => x.id === run.clipInputs?.[cid]?.[inp.key]);
+          return [inp.key, a ? { id: a.id, url: mediaUrl(a.path), name: a.name } : null];
+        }),
+      );
+      return { clipId: cid, name: clip?.name || cid, inputs, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
     }),
+    anchorUrl: mediaUrl(run.stages.motion?.anchorPath), // khung mặt đã render của đoạn 1 (Thay trang phục)
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)

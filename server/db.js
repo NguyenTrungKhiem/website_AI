@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const DATA_DIR = path.resolve(import.meta.dirname, '../data');
+// DATA_DIR=<thư mục> (biến môi trường) để chạy thử với dữ liệu riêng, không đụng data/ thật
+export const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(import.meta.dirname, '../data');
 export const DIRS = {
   sources: path.join(DATA_DIR, 'sources'),
   clips: path.join(DATA_DIR, 'clips'),
