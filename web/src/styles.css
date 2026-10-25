@@ -41,6 +41,7 @@ figure.mini img, figure.mini video { width: 100%; aspect-ratio: 9/16; object-fit
 .wf-prompts { border-left: 2px solid var(--line); padding-left: 12px; }
 .clip-table td { vertical-align: top; }
 .clip-inputs td { vertical-align: middle; }
+.mini-thumb { width: 36px; height: 64px; object-fit: cover; border-radius: 4px; background: #000; flex-shrink: 0; }
 .thumb.pick { width: 64px; height: 84px; display: grid; place-items: center; font-size: 11px; color: var(--muted); }
 .thumb.pick.missing { border-color: var(--amber); }
 .gap-xs { gap: 4px; }

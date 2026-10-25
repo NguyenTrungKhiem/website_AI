@@ -15,7 +15,8 @@
       "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);const w=j.workflows.find\\(w=>w.id==='anh-model'\\);const p=w.prompts.render.text;console.log\\('server trả prompt mới: túi xách=',/HANDBAG/.test\\(p\\),'| pose theo trang phục=',/Dress or skirt/.test\\(p\\)&&/Full outfit/.test\\(p\\)\\)}\\)\")",
       "Bash(node --check server/workflows/hat-nhep.js)",
       "Bash(node --check server/workflows/index.js)",
-      "Bash(node --input-type=module -e ' *)"
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('workflows:',j.workflows.map\\(w=>w.icon+' '+w.name\\).join\\(' | '\\)\\)}\\)\")"
     ]
   }
 }
