@@ -14,7 +14,6 @@ function buildTabs(workflows = []) {
     { id: 'merge', label: 'Ghép video', icon: '🎞️' },
     { id: 'publish', label: 'Đăng video', icon: '🚀' },
     { id: 'soon', group: 'Sắp có' },
-    { id: 'lipsync', label: 'Hát nhép', icon: '🎤', soon: true, sub: true },
     { id: 'suno', label: 'Nhạc Suno', icon: '🎵', soon: true, sub: true },
     { id: 'settings', label: 'Cài đặt', icon: '⚙️' },
   ];
@@ -96,7 +95,7 @@ export default function App() {
             {tab === 'merge' && <MergePage {...props} />}
             {tab === 'publish' && <PublishPage {...props} />}
             {tab === 'settings' && <SettingsPage {...props} />}
-            {(tab === 'lipsync' || tab === 'suno') && <ComingSoon tab={tab} />}
+            {tab === 'suno' && <ComingSoon tab={tab} />}
           </>
         )}
       </main>
@@ -107,12 +106,8 @@ export default function App() {
 function ComingSoon({ tab }) {
   return (
     <section>
-      <h1>{tab === 'lipsync' ? 'Video hát nhép' : 'Tạo nhạc với Suno'}</h1>
-      <div className="card muted">
-        {tab === 'lipsync'
-          ? 'Tính năng sẽ phát triển ở giai đoạn sau: ghép audio + ảnh/video model để Omni Flash tạo khẩu hình hát nhép.'
-          : 'Tính năng sẽ phát triển ở giai đoạn sau: tạo nhạc bằng Suno rồi ghép vào video.'}
-      </div>
+      <h1>Tạo nhạc với Suno</h1>
+      <div className="card muted">Tính năng sẽ phát triển ở giai đoạn sau: tạo nhạc bằng Suno rồi ghép vào video.</div>
     </section>
   );
 }

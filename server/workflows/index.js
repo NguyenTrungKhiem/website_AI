@@ -1,9 +1,15 @@
 // Danh sách quy trình tự động. Thêm quy trình mới: tạo file cùng cấu trúc với dancing.js rồi đăng ký ở đây.
 import dancing from './dancing.js';
 import thayTrangPhuc from './thay-trang-phuc.js';
+import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
 
-export const WORKFLOWS = { [dancing.id]: dancing, [thayTrangPhuc.id]: thayTrangPhuc, [anhModel.id]: anhModel };
+export const WORKFLOWS = {
+  [dancing.id]: dancing,
+  [thayTrangPhuc.id]: thayTrangPhuc,
+  [hatNhep.id]: hatNhep,
+  [anhModel.id]: anhModel,
+};
 
 // Mô tả gửi cho giao diện (không gồm hàm run)
 export const listWorkflows = () =>
