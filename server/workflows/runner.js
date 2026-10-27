@@ -183,6 +183,21 @@ function syncRun(run) {
     reset('replace');
     stale = true;
   }
+  // Ảnh vóc dáng 16:9 (Fashion V2V) tạo lại -> cập nhật ảnh, kiểm tra lại, mọi đoạn phải tạo video lại
+  const trState = run.stages.turnaround;
+  const trJob = get('turnaround:sheet');
+  if (trState?.assetId && trJob?.outputPath && trState.assetFrom && trState.assetFrom !== trJob.outputPath) {
+    const a = db.assets.find((x) => x.id === trState.assetId);
+    if (a) {
+      fs.copyFileSync(trJob.outputPath, a.path);
+      a.flowTitle = trJob.attempts.find((x) => x.outputPath === trJob.outputPath)?.flowTitle || null;
+    }
+    trState.assetFrom = trJob.outputPath;
+    for (const cid of run.clipIds) delete jobsMap[`motion:${cid}`];
+    if (run.stages.review && run.stages.review.status !== 'skipped') run.stages.review = { status: 'pending' };
+    reset('motion');
+    stale = true;
+  }
   // Thay nền: đầu vào phải là video motion hiện tại của đoạn đó; video motion đổi -> kiểm tra lại trước khi thay nền
   for (const cid of run.clipIds) {
     const mj = get(`motion:${cid}`);
@@ -392,6 +407,7 @@ export function viewRun(run) {
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)
+    turnaround: brief(byKey('turnaround:sheet')) || null, // Fashion V2V: job sinh ảnh vóc dáng 16:9
     jobIds: jobs.map((j) => j.id),
     merge: merge ? { id: merge.id, status: merge.status, url: mediaUrl(merge.outputPath), thumbUrl: mediaUrl(merge.thumbPath), error: merge.error } : null,
   };

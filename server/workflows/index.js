@@ -3,11 +3,13 @@ import dancing from './dancing.js';
 import thayTrangPhuc from './thay-trang-phuc.js';
 import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
+import fashionV2v from './fashion-v2v.js';
 
 export const WORKFLOWS = {
   [dancing.id]: dancing,
   [thayTrangPhuc.id]: thayTrangPhuc,
   [hatNhep.id]: hatNhep,
+  [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,
 };
 

@@ -57,6 +57,8 @@ figure.mini img, figure.mini video { width: 100%; aspect-ratio: 9/16; object-fit
 .job.compact .job-media { grid-template-columns: 1fr; }
 .job.compact .job-media video, .job.compact .job-media img, .job.compact .placeholder { max-height: 300px; }
 .bg-job { max-width: 260px; gap: 4px; }
+.bg-job.wide { max-width: 420px; }
+.bg-job.wide .job.compact { max-width: 420px; }
 .job.compact .row button { padding: 4px 8px; font-size: 12px; }
 .inline-select { margin-left: 8px; padding: 2px 6px; font-size: 12px; }
 .thumb.wide.add { display: grid; place-items: center; text-align: center; padding: 6px; }

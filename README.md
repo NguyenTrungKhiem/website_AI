@@ -41,6 +41,10 @@ Menu **👗 Thay trang phục** (`server/workflows/thay-trang-phuc.js`): dùng k
 
 Menu **🎤 Hát nhép** (`server/workflows/hat-nhep.js`): cấu trúc giống Thay trang phục (trang phục riêng từng đoạn, khoá khuôn mặt theo đoạn 1, bối cảnh mới, ghép với âm thanh gốc khớp từng đoạn). Khác ở prompt: **khẩu hình là ưu tiên cao nhất** — hình miệng, độ mở, răng/lưỡi, nhịp từng âm tiết, biểu cảm, cử động đầu phải giữ y nguyên theo từng khung của video gốc; chỉ thay nhận dạng khuôn mặt, trang phục và nền. Bước kiểm tra sau khi thay mặt: dùng ⇄ So sánh để xem miệng có khớp video gốc không trước khi tốn credit thay nền.
 
+## Quy trình Fashion V2V
+
+Menu **🎬 Fashion V2V** (`server/workflows/fashion-v2v.js`): không tạo bối cảnh tự động. Bạn chọn **Ảnh 2** khuôn mặt, **Ảnh 3** sản phẩm / trang phục, **Ảnh 4** bối cảnh có sẵn (tải lên ở ô bối cảnh). Web tự tạo **Ảnh 1** = bảng vóc dáng toàn thân 16:9 (trước / nghiêng / sau) của nhân vật mặc sản phẩm bằng Nano Banana (0 credit, prompt "High-fashion turnaround"), dừng lại cho bạn duyệt (Thử lại / Sửa prompt được), rồi mỗi đoạn tạo **1 lần** video trên Flow với nguyên liệu đúng thứ tự Ảnh 1 → 2 → 3 → 4 → video gốc và prompt "Cinematic fashion V2V & environment swap" (cả hai prompt sửa được ở "Prompt mẫu của quy trình"). Xong thì ghép các đoạn + chèn âm thanh gốc như các quy trình khác. Ảnh vóc dáng tạo lại thì các đoạn tự tạo video lại.
+
 ## Quy trình Ảnh model mặc đồ (chỉ ảnh, 0 credit)
 
 Menu **📸 Ảnh model mặc đồ** (`server/workflows/anh-model.js`, quy trình `noVideo`): 1 ảnh model toàn thân + **nhiều** ảnh trang phục (chọn nhiều trong thư viện, có số thứ tự) + 1 ảnh bối cảnh. Bước 1 làm sạch bối cảnh (bỏ người, giữ nguyên khung cảnh; tắt được nếu ảnh đã sạch), bước 2 render mỗi trang phục thành 1 ảnh model mặc bộ đó trong bối cảnh (ảnh 1 = model, 2 = trang phục, 3 = bối cảnh; Nano Banana). Ảnh kết quả hiện ở thẻ lần chạy (Thử lại / chọn lần tạo / tải về) và tự lưu vào thư viện loại `lookbook`; nút **Lưu làm ảnh model** (hoặc bật tuỳ chọn "Lưu luôn thành ảnh model") sao chép sang thư viện ảnh model để dùng cho AI Dancing / Thay trang phục.

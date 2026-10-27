@@ -391,6 +391,9 @@ function RunCard({ run: r, state, refresh, go }) {
   const jobs = state.jobs.filter((j) => j.runId === r.id);
   const [label, color] = RUN_STATUS[r.status] || [r.status, 'gray'];
   const bgJob = r.background && jobs.find((j) => j.id === r.background.id);
+  const trJob = r.turnaround && jobs.find((j) => j.id === r.turnaround.id); // Fashion V2V: ảnh vóc dáng 16:9
+  // Đang dừng chờ kiểm tra ở bước nào (trước khi tạo video, hay sau khi thay nhân vật)
+  const pausedBeforeMotion = r.status === 'paused' && r.stageList.some((s) => s.id === 'motion' && s.status !== 'done');
   const act = (fn) => run(async () => { await fn(); await refresh(); });
 
   return (
@@ -415,9 +418,17 @@ function RunCard({ run: r, state, refresh, go }) {
         ))}
       </div>
 
-      {(r.frameUrl || bgJob || r.backgroundUrl) && (
+      {(r.frameUrl || bgJob || trJob || r.backgroundUrl) && (
         <div className="row">
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
+          {trJob && (
+            // Thẻ job ảnh vóc dáng 16:9: Thử lại / Sửa prompt / chọn lần tạo. Đổi ảnh → mọi đoạn tạo video lại.
+            <div className="stack bg-job wide">
+              <small className="muted">Ảnh 1 – vóc dáng toàn thân 16:9 (mặc sản phẩm)</small>
+              <JobCard compact job={trJob} refresh={refresh} />
+              <small className="muted">Thử lại hoặc chọn lần tạo khác → kiểm tra lại, rồi mọi đoạn tạo video lại (≈20 credit/đoạn).</small>
+            </div>
+          )}
           {r.anchorUrl && <figure className="mini"><img src={r.anchorUrl} alt="" /><figcaption>Mặt đã render (đoạn 1) làm mẫu cho đoạn sau</figcaption></figure>}
           {bgJob ? (
             // Thẻ job ảnh bối cảnh: Thử lại / Sửa prompt / chọn lần tạo. Đổi bối cảnh → web tự thay nền lại cho mọi đoạn.
@@ -440,18 +451,27 @@ function RunCard({ run: r, state, refresh, go }) {
       )}
 
       {r.error && <div className="err">{r.error}</div>}
-      {r.status === 'paused' && (
+      {r.status === 'paused' && (pausedBeforeMotion ? (
+        <div className="alert warn small">
+          ⏸ Ảnh vóc dáng 16:9 đã tạo xong (0 credit). Xem ảnh ở trên; chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc chọn lần tạo khác.
+          Ưng rồi bấm <b>▶ Tiếp tục</b> để tạo video cho từng đoạn (bước này bắt đầu tốn credit, ≈20 credit/đoạn).
+        </div>
+      ) : (
         <div className="alert warn small">
           ⏸ Đã thay nhân vật + sản phẩm xong. Xem video ở bảng <b>Từng đoạn</b> bên dưới; chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc thay bằng video từ máy.
           Ưng rồi bấm <b>▶ Tiếp tục</b> để thay bối cảnh (bước này bắt đầu tốn credit).
         </div>
-      )}
+      ))}
 
       {r.clipRows.length > 0 && <ClipTable run={r} jobs={jobs} refresh={refresh} />}
       {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} refresh={refresh} />}
 
       <div className="row">
-        {r.status === 'paused' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục: thay bối cảnh</button>}
+        {r.status === 'paused' && (
+          <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>
+            {pausedBeforeMotion ? '▶ Tiếp tục: tạo video' : '▶ Tiếp tục: thay bối cảnh'}
+          </button>
+        )}
         {r.status === 'failed' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục</button>}
         {r.status === 'cancelled' && <button disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Chạy tiếp</button>}
         {(r.status === 'running' || r.status === 'paused') && <button disabled={busy} onClick={() => act(() => api.cancelRun(r.id))}>⏹ Huỷ</button>}
