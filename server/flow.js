@@ -39,6 +39,15 @@ export async function launchChrome() {
   const exe = chromePath();
   if (!exe) throw new Error('Không tìm thấy Chrome/Edge trên máy');
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
+
+  // Trên Windows, thử kích hoạt qua Task Scheduler để cửa sổ Chrome hiện rõ ràng trên Desktop tương tác
+  if (process.platform === 'win32') {
+    try {
+      const { exec } = await import('node:child_process');
+      exec('schtasks /run /tn "FlowChrome"', () => {});
+    } catch {}
+  }
+
   const p = spawn(
     exe,
     [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', withEn(FLOW_URL)],
