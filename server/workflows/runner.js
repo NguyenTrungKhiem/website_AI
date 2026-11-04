@@ -345,7 +345,7 @@ function makeCtx(run, wf) {
       const st = this.state;
       let merge = st.mergeId && db.merges.find((m) => m.id === st.mergeId);
       if (!merge) {
-        const audio = db.audios.find((a) => a.sourceId === source.id);
+        const audio = source ? db.audios.find((a) => a.sourceId === source.id) : null;
         const shouldRemoveWatermark = removeWatermark ?? run.options.removeWatermark ?? db.settings.removeWatermark ?? true;
         merge = createMerge({
           jobIds,

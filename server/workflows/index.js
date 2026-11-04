@@ -4,10 +4,12 @@ import thayTrangPhuc from './thay-trang-phuc.js';
 import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
 import fashionV2v from './fashion-v2v.js';
+import videoThoiTrang from './video-thoi-trang.js';
 
 export const WORKFLOWS = {
   [dancing.id]: dancing,
   [thayTrangPhuc.id]: thayTrangPhuc,
+  [videoThoiTrang.id]: videoThoiTrang,
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,

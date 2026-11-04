@@ -3,8 +3,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { AssetPicker, ConfirmButton, FileDrop, JobCard, JobList, fmt, useAction } from '../components.jsx';
+import FashionSalesView from './FashionSalesView.jsx';
 
 export default function WorkflowPage({ state, refresh, go, wf }) {
+  if (wf?.id === 'video-thoi-trang') {
+    return <FashionSalesView wf={wf} state={state} refresh={refresh} go={go} />;
+  }
+
   const [sourceId, setSourceId] = useState(state.sources[0]?.id || null);
   const [clipIds, setClipIds] = useState([]);
   const [inputs, setInputs] = useState({});

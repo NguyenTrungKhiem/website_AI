@@ -103,7 +103,21 @@ export default function SettingsPage({ state, refresh }) {
         <p className="muted small">Tạo video/ảnh bằng credit Flow, chạy lần lượt từng video trong 1 cửa sổ Chrome riêng.</p>
         <FlowPanel />
         <div className="grid3">
-          <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Có video tham chiếu: 720p ≈ 20 credit, 360p ≈ 10 credit / video" />
+          <Field
+            {...f}
+            path="flowVideoModel"
+            label="Mô hình video trên Flow"
+            options={['Omni 1.1 Flash', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite']}
+            hint="Omni 1.1 Flash tạo video 10s phân đoạn ổn định (15 credits)"
+          />
+          <Field
+            {...f}
+            path="flowDuration"
+            label="Thời lượng video (Omni Flash)"
+            options={['10s', '8s', '6s', '4s']}
+            hint="Thời lượng tạo video trên Flow (mặc định 10s)"
+          />
+          <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Dành cho Omni Flash: 720p ≈ 15-20 credit, 360p ≈ 10 credit / video" />
           <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />
           <Field {...f} path="flowProjectUrl" label="Dự án Flow dùng chung" hint="Để trống thì tự tạo dự án mới lần đầu" />
         </div>

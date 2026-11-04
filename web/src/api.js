@@ -63,6 +63,7 @@ export const api = {
   deleteRun: (id, withJobs = true) => req('DELETE', `/api/runs/${id}?withJobs=${withJobs ? 1 : 0}`),
   flowStatus: () => req('GET', '/api/flow/status'),
   flowLaunch: () => req('POST', '/api/flow/launch'),
+  flowPreset: (body) => req('POST', '/api/flow/preset', body),
   extractAudio: (sourceId) => req('POST', `/api/sources/${sourceId}/extract-audio`),
   uploadAudio: (file) => {
     const f = new FormData();
@@ -73,4 +74,6 @@ export const api = {
   merge: (body) => req('POST', '/api/merges', body),
   deleteMerge: (id) => req('DELETE', `/api/merges/${id}`),
   delogoMerge: (id) => req('POST', `/api/merges/${id}/delogo`),
+  cropAsset: (body) => req('POST', '/api/assets/crop', body),
+  renderBackAsset: (id, prompt) => req('POST', `/api/assets/${id}/render-back`, { prompt }),
 };

@@ -25,6 +25,13 @@ Keep the exact same product: same design, cut, color, pattern, fabric texture, p
 If the reference contains a person, mannequin, hands, or any other objects, text or props, remove them and show only the main product (usually a clothing item) by itself.
 Present the product cleanly on a plain, neutral, evenly lit background, front view, fully visible, centered, with natural shadows and no cropping.`;
 
+// Tạo ảnh mặt sau dựa trên ảnh mặt trước của trang phục
+export const DEFAULT_BACK_VIEW_PROMPT = `Create a clean, photorealistic product photo of the BACK VIEW of the exact clothing garment shown in the reference image (front view).
+Keep the exact same garment: same color, fabric, pattern, texture, neckline style from the back, sleeve length, hemline, and design language.
+Show the back details naturally (e.g. back zipper, back seams, back cut, back buttons) faithful to the front garment's style.
+If the reference contains a person, mannequin, hands, or any other objects, text or props, remove them and show only the back view of the garment by itself.
+Present the back-view garment cleanly on a plain, neutral, evenly lit background, fully visible, centered, with natural shadows and no cropping.`;
+
 export function fillTemplate(template, userPrompt) {
   const p = (userPrompt || '').trim();
   const out = template.includes('{prompt}') ? template.replace('{prompt}', p) : `${template}\n${p}`;

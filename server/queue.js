@@ -172,8 +172,13 @@ async function run(job) {
   // Flow: nhớ đường dẫn file kết quả ngay khi thấy, để nếu tải về lỗi thì lần Thử lại chỉ tải lại chứ không tạo mới
   // flowTitle = tên kết quả trên Flow: ảnh tạo ra có thể dùng lại làm nguyên liệu mà không tải lên lại
   const onResult = (src, info = {}) => { attempt.flowSrc = src; if (info.title) attempt.flowTitle = info.title; save(); };
-  // meta.aspectRatio: job ép tỉ lệ riêng (vd. quy trình Ảnh model luôn 9:16) thay vì tỉ lệ trong Cài đặt
-  const settings = job.meta?.aspectRatio ? { ...db.settings, aspectRatio: job.meta.aspectRatio } : db.settings;
+  // meta: job ép tỉ lệ, model hoặc thời lượng riêng (vd. quy trình Ảnh model luôn 9:16, Thời trang dùng Omni Flash 10s) thay vì Cài đặt
+  const settings = {
+    ...db.settings,
+    ...(job.meta?.aspectRatio ? { aspectRatio: job.meta.aspectRatio } : {}),
+    ...(job.meta?.flowVideoModel ? { flowVideoModel: job.meta.flowVideoModel } : {}),
+    ...(job.meta?.flowDuration ? { flowDuration: job.meta.flowDuration } : {}),
+  };
   const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
   try {
     let result;
@@ -215,9 +220,16 @@ async function run(job) {
 async function mockGenerate({ video, images, outputFile, log }, isImage) {
   log('Engine giả: đang chờ 2s');
   await new Promise((r) => setTimeout(r, 2000));
-  const src = isImage ? images[0] : video;
+  const src = isImage ? images[0] : (video || images[0]);
   if (!src) throw new Error('Engine giả: thiếu đầu vào');
-  fs.copyFileSync(src, outputFile);
+  if (!isImage && !video) {
+    const { exec } = await import('node:child_process');
+    await new Promise((resolve) => {
+      exec(`ffmpeg -y -loop 1 -i "${src}" -c:v libx264 -t 2 -pix_fmt yuv420p "${outputFile}"`, () => resolve());
+    });
+  } else {
+    fs.copyFileSync(src, outputFile);
+  }
   return { id: 'mock', text: 'mock' };
 }
 

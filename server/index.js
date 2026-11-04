@@ -3,14 +3,14 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
-import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo } from './ffmpeg.js';
+import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage } from './ffmpeg.js';
 import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks } from './queue.js';
 import { publish } from './social.js';
 import * as zernio from './zernio.js';
 import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
-import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT } from './prompts.js';
+import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT, DEFAULT_BACK_VIEW_PROMPT } from './prompts.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob } from './workflows/runner.js';
@@ -26,7 +26,11 @@ app.use('/media', express.static(DATA_DIR));
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, DIRS.tmp),
-    filename: (req, file, cb) => cb(null, newId() + path.extname(file.originalname).toLowerCase()),
+    filename: (req, file, cb) => {
+      let ext = path.extname(file.originalname).toLowerCase();
+      if (['.jfif', '.jif', '.jpe'].includes(ext)) ext = '.jpg';
+      cb(null, newId() + ext);
+    },
   }),
   limits: { fileSize: 2 * 1024 ** 3 },
 });
@@ -35,6 +39,13 @@ const wrap = (fn) => (req, res) =>
   Promise.resolve(fn(req, res)).catch((e) => res.status(400).json({ error: e.message }));
 
 const rm = (f) => f && fs.rm(f, { force: true }, () => {});
+
+// Đảm bảo các ảnh mặt sau đã render không bị ẩn staging
+for (const a of db.assets) {
+  if (a.isBackView || a.name?.includes('Mặt sau Flow')) {
+    a.staging = false;
+  }
+}
 
 // ---------- Trạng thái tổng ----------
 const viewJob = (j) => ({
@@ -50,7 +61,12 @@ const viewJob = (j) => ({
 app.get('/api/state', (req, res) => {
   res.json({
     settings: db.settings,
-    defaults: { motionTemplate: DEFAULT_MOTION_TEMPLATE, backgroundTemplate: DEFAULT_BACKGROUND_TEMPLATE, productCleanPrompt: DEFAULT_PRODUCT_CLEAN_PROMPT },
+    defaults: {
+      motionTemplate: DEFAULT_MOTION_TEMPLATE,
+      backgroundTemplate: DEFAULT_BACKGROUND_TEMPLATE,
+      productCleanPrompt: DEFAULT_PRODUCT_CLEAN_PROMPT,
+      backViewPrompt: DEFAULT_BACK_VIEW_PROMPT,
+    },
     sources: db.sources.map((s) => ({
       ...s,
       url: mediaUrl(s.path),
@@ -77,6 +93,7 @@ app.put('/api/settings', (req, res) => {
 // ---------- Google Flow (Playwright) ----------
 app.get('/api/flow/status', wrap(async (req, res) => res.json(await flow.status())));
 app.post('/api/flow/launch', wrap(async (req, res) => res.json(await flow.launchChrome())));
+app.post('/api/flow/preset', wrap(async (req, res) => res.json(await flow.preset(req.body))));
 
 // ---------- Video gốc + cắt ----------
 app.post('/api/sources', upload.single('file'), wrap(async (req, res) => {
@@ -209,7 +226,9 @@ app.post('/api/assets', upload.single('file'), wrap(async (req, res) => {
   const kind = req.body.kind;
   if (!['model', 'product', 'background', 'logo'].includes(kind)) throw new Error('kind không hợp lệ');
   const id = newId();
-  const dest = path.join(DIRS.assets, id + path.extname(req.file.filename));
+  let ext = path.extname(req.file.filename).toLowerCase();
+  if (['.jfif', '.jif', '.jpe'].includes(ext)) ext = '.jpg';
+  const dest = path.join(DIRS.assets, id + ext);
   fs.renameSync(req.file.path, dest);
   const a = { id, kind, name: req.file.originalname, path: dest, createdAt: Date.now() };
   db.assets.unshift(a);
@@ -233,19 +252,72 @@ app.post('/api/assets/:id/clean', wrap(async (req, res) => {
   res.json(viewJob(job));
 }));
 
+// Tạo ảnh mặt sau của trang phục dựa trên ảnh mặt trước bằng Flow
+app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  const prompt = (req.body?.prompt || '').trim() || DEFAULT_BACK_VIEW_PROMPT;
+  const job = createJob({
+    type: 'image',
+    imagePaths: [a.path],
+    template: prompt,
+    videoLabel: `Mặt sau – ${a.name}`,
+    meta: { backOf: a.id, kind: 'product' },
+  });
+  res.json(viewJob(job));
+}));
+
+// Cắt một vùng chữ nhật từ ảnh nguồn bằng FFmpeg và lưu thành asset mới
+app.post('/api/assets/crop', wrap(async (req, res) => {
+  const { assetId, x = 0, y = 0, width, height, name, kind = 'product' } = req.body || {};
+  const src = db.assets.find((a) => a.id === assetId);
+  if (!src || !fs.existsSync(src.path)) throw new Error('Không tìm thấy ảnh gốc để cắt');
+  const w = Math.round(Number(width));
+  const h = Math.round(Number(height));
+  if (!w || !h || w <= 0 || h <= 0) throw new Error('Kích thước vùng cắt không hợp lệ');
+
+  const id = newId();
+  const dest = path.join(DIRS.assets, `${id}.png`);
+  await cropImage(src.path, dest, { x, y, width: w, height: h });
+
+  const newAsset = {
+    id,
+    kind,
+    name: name?.trim() || `${src.name} (cắt)`,
+    path: dest,
+    createdAt: Date.now(),
+    fromAssetId: src.id,
+  };
+  db.assets.unshift(newAsset);
+  save();
+  res.json({ ...newAsset, url: mediaUrl(dest) });
+}));
+
 settledHooks.push((job) => {
-  if (job.type !== 'image' || job.status !== 'done' || !job.meta?.cleanOf || !job.outputPath) return;
+  if (job.type !== 'image' || job.status !== 'done' || (!job.meta?.cleanOf && !job.meta?.backOf) || !job.outputPath) return;
+  const refId = job.meta.cleanOf || job.meta.backOf;
   if (job.meta.assetFrom === job.outputPath) return; // đã lưu rồi
-  const src = db.assets.find((x) => x.id === job.meta.cleanOf);
+  const src = db.assets.find((x) => x.id === refId);
   const id = newId();
   const dest = path.join(DIRS.assets, id + path.extname(job.outputPath));
   fs.copyFileSync(job.outputPath, dest);
-  const base = (src?.name || 'ảnh').replace(/ \(Flow\)( #\d+)?$/, '');
-  const n = db.assets.filter((x) => x.fromAssetId === job.meta.cleanOf).length + 1;
-  // Kết quả là ảnh nháp: chỉ vào thư viện khi người dùng bấm Dùng (POST /api/assets/:id/use).
-  // flowTitle = tên ảnh trên Flow -> dùng làm nguyên liệu sau này không phải tải lên lại.
+  const isBack = !!job.meta.backOf;
+  const base = (src?.name || 'ảnh').replace(/ \((Flow|Mặt sau Flow)\)( #\d+)?$/, '');
+  const n = db.assets.filter((x) => x.fromAssetId === refId).length + 1;
   const flowTitle = job.attempts.find((a) => a.outputPath === job.outputPath)?.flowTitle || null;
-  db.assets.unshift({ id, kind: job.meta.kind, name: `${base} (Flow)${n > 1 ? ` #${n}` : ''}`, path: dest, createdAt: Date.now(), fromJobId: job.id, fromAssetId: job.meta.cleanOf, staging: true, flowTitle });
+  const suffix = isBack ? ' (Mặt sau Flow)' : ' (Flow)';
+  db.assets.unshift({
+    id,
+    kind: job.meta.kind || 'product',
+    name: `${base}${suffix}${n > 1 ? ` #${n}` : ''}`,
+    path: dest,
+    createdAt: Date.now(),
+    fromJobId: job.id,
+    fromAssetId: refId,
+    staging: isBack ? false : true,
+    isBackView: isBack,
+    flowTitle,
+  });
   job.meta.assetId = id;
   job.meta.assetFrom = job.outputPath;
   save();

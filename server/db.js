@@ -21,6 +21,8 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const DEFAULT_SETTINGS = {
   engine: 'flow', // flow = tự động hoá Google Flow (dùng credit Flow) | mock = engine giả để thử quy trình
   flowResolution: '720p', // 360p rẻ hơn 1 nửa credit
+  flowVideoModel: 'Omni 1.1 Flash', // 'Omni 1.1 Flash' | 'Veo 3.1 - Fast' | 'Veo 3.1 - Quality' | 'Veo 3.1 - Lite'
+  flowDuration: '10s', // '10s' | '8s' | '6s' | '4s'
   flowProjectUrl: '', // dự án Flow dùng chung, tự tạo lần đầu
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
   aspectRatio: '9:16',

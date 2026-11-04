@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
-import { DATA_DIR } from './db.js';
+import { DATA_DIR, db } from './db.js';
 
 export const FLOW_URL = 'https://flow.google.com/';
 // Flow từng nằm ở labs.google/fx/tools/flow, nay chuyển sang flow.google.com
@@ -101,6 +101,58 @@ export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // Sinh ảnh (Nano Banana) từ ảnh tham chiếu + prompt, vd. tạo bối cảnh mới từ khung hình video gốc
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
+// Gõ prompt và kích hoạt popup @ để gắn thẻ mention-chip chính thức của Google Flow
+async function fillPromptWithMentions(page, prompt, items, log) {
+  await dismissOverlays(page);
+  const clear = page.getByRole('button', { name: 'Clear prompt' });
+  if (await clear.isVisible().catch(() => false)) await clear.click();
+  await sleep(400);
+
+  const box = page.getByRole('textbox', { name: 'What do you want to create?' });
+  await box.click();
+  await sleep(300);
+
+  const parts = prompt.split(/(@Image\d+)/g);
+  for (const part of parts) {
+    const match = part.match(/^@Image(\d+)$/);
+    if (match) {
+      const idx = parseInt(match[1], 10) - 1;
+      const target = items[idx];
+      const key = target ? (target.title || path.parse(target.file || target.src).name) : null;
+      if (key) {
+        log(`Gắn mention: ${part} → "${key}"`);
+        await page.keyboard.type('@');
+        await sleep(500);
+
+        const popover = page.locator('flow-add-menu-popover-content');
+        const search = popover.locator('input.search-input');
+        if (await search.isVisible({ timeout: 2500 }).catch(() => false)) {
+          await search.fill(key);
+          await sleep(500);
+        }
+
+        const itemBtn = popover.locator('button.asset-item').first();
+        if (await itemBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
+          await itemBtn.click();
+          await sleep(500);
+          const addBtn = popover.getByRole('button', { name: 'Add to prompt' });
+          if (await addBtn.isVisible().catch(() => false)) await addBtn.click();
+          await sleep(300);
+        } else {
+          // Nếu không thấy nút ảnh trong popup, đóng popup và chèn text thường
+          await page.keyboard.press('Escape');
+          await sleep(200);
+          await page.keyboard.insertText(part);
+        }
+      } else {
+        await page.keyboard.insertText(part);
+      }
+    } else if (part) {
+      await page.keyboard.insertText(part);
+    }
+  }
+}
+
 // flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
 async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video' }) {
   const page = await flowPage();
@@ -114,7 +166,9 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
   // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại), hoặc ảnh do Flow tạo (title)
   // dùng thẳng từ thư viện dự án. Thứ tự trong ô prompt: ảnh model -> ảnh sản phẩm (hoặc ảnh bối cảnh) -> video gốc
   const toUpload = (f) => {
-    const dest = path.join(DATA_DIR, 'tmp', `vs-${hashFile(f)}${path.extname(f).toLowerCase()}`);
+    let ext = path.extname(f).toLowerCase();
+    if (['.jfif', '.jif', '.jpe'].includes(ext)) ext = '.jpg';
+    const dest = path.join(DATA_DIR, 'tmp', `vs-${hashFile(f)}${ext}`);
     fs.copyFileSync(f, dest);
     return dest;
   };
@@ -149,17 +203,28 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
     } else {
       log(files.length ? 'File đã có sẵn trên Flow, không tải lại' : 'Dùng lại ảnh có sẵn trên Flow, không tải lên');
     }
-    for (const it of items) {
-      log(`Thêm vào prompt: ${it.title ? `${it.title} (ảnh Flow tạo)` : path.basename(it.file)}`);
-      await addIngredient(page, keyOf(it));
+    const hasMentions = /@Image\d+/.test(prompt);
+
+    if (!hasMentions) {
+      for (const it of items) {
+        log(`Thêm vào prompt: ${it.title ? `${it.title} (ảnh Flow tạo)` : path.basename(it.file)}`);
+        await addIngredient(page, keyOf(it));
+      }
     }
 
-    log(kind === 'image' ? 'Chọn Ảnh · Nano Banana' : 'Chọn Video · Omni 1.1 Flash');
+    const videoModelName = settings.flowVideoModel || 'Omni 1.1 Flash';
+    const durLabel = settings.flowDuration ? ` · ${settings.flowDuration}` : '';
+    log(kind === 'image' ? 'Chọn Ảnh · Nano Banana' : `Chọn Video · ${videoModelName}${durLabel}`);
     const credits = await configure(page, settings, kind);
 
-    const box = page.getByRole('textbox', { name: 'What do you want to create?' });
-    await box.click();
-    await box.fill(flowPrompt(prompt, images.length));
+    if (hasMentions) {
+      log('Chèn prompt và liên kết thẻ mention @Image vào ảnh');
+      await fillPromptWithMentions(page, prompt, items, log);
+    } else {
+      const box = page.getByRole('textbox', { name: 'What do you want to create?' });
+      await box.click();
+      await box.fill(flowPrompt(prompt, images.length));
+    }
 
     const before = await snapshotTiles(page);
     const start = page.getByRole('button', { name: 'Start generation' });
@@ -368,6 +433,7 @@ async function configure(page, settings, kind = 'video') {
     await agent.click();
     await sleep(800);
   }
+  await dismissOverlays(page);
   await page.getByRole('button', { name: 'Settings trigger' }).click();
   const radio = (name) => page.getByRole('radio', { name, exact: true });
   const family = page.getByRole('button', { name: 'Select model family' });
@@ -386,14 +452,51 @@ async function configure(page, settings, kind = 'video') {
     await sleep(400);
     await radio('Ingredients').click();
     await radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16').click();
-    await pickFamily(/Omni/);
-    await page.getByRole('radio', { name: settings.flowResolution === '360p' ? /^360p/ : /^720p/ }).click();
+    const model = settings.flowVideoModel || 'Omni 1.1 Flash';
+    if (/veo 3\.1.*quality/i.test(model)) {
+      await pickFamily(/Veo 3\.1.*Quality/i);
+    } else if (/veo 3\.1.*fast/i.test(model)) {
+      await pickFamily(/Veo 3\.1.*Fast/i);
+    } else if (/veo 3\.1.*lite/i.test(model)) {
+      await pickFamily(/Veo 3\.1.*Lite/i);
+    } else {
+      await pickFamily(/Omni/i);
+    }
+    const resRadio = page.getByRole('radio', { name: settings.flowResolution === '360p' ? /^360p/ : /^720p/ });
+    if (await resRadio.isVisible().catch(() => false)) {
+      await resRadio.click().catch(() => {});
+    }
+    const duration = settings.flowDuration || '10s';
+    const durRadio = page.getByRole('radio', { name: new RegExp(`^${duration}$`, 'i') });
+    if (await durRadio.isVisible().catch(() => false)) {
+      await durRadio.click().catch(() => {});
+    }
   }
   await radio('x1').click();
   await sleep(500);
   const credits = await page.getByRole('link', { name: /credits/ }).innerText().catch(() => '? credits');
   await page.keyboard.press('Escape');
   return credits;
+}
+
+// Cấu hình trước Flow (ví dụ khi người dùng mở trang module video thời trang)
+export async function preset({ model = 'Omni 1.1 Flash', duration = '10s', resolution = '720p', aspectRatio = '9:16' } = {}) {
+  if (!(await isRunning())) return { ok: false, reason: 'Chrome not running' };
+  try {
+    const page = await flowPage();
+    await openProject(page, db.settings);
+    const settings = {
+      ...db.settings,
+      flowVideoModel: model,
+      flowDuration: duration,
+      flowResolution: resolution || db.settings.flowResolution,
+      aspectRatio: aspectRatio || db.settings.aspectRatio,
+    };
+    const credits = await configure(page, settings, 'video');
+    return { ok: true, credits };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 // Prompt cũ có thể còn <IMAGE_REF_n> -> Flow hiểu theo thứ tự ảnh đã thêm

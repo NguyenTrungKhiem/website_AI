@@ -244,6 +244,15 @@ export function frameAt(src, dest, at = 0.1) {
   return run(ffmpegPath, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1', '-q:v', '2', dest]);
 }
 
+// Cắt một vùng hình chữ nhật từ ảnh nguồn
+export function cropImage(src, dest, { x = 0, y = 0, width, height }) {
+  const w = Math.round(Number(width));
+  const h = Math.round(Number(height));
+  const cx = Math.max(0, Math.round(Number(x)));
+  const cy = Math.max(0, Math.round(Number(y)));
+  return run(ffmpegPath, ['-y', '-i', src, '-vf', `crop=${w}:${h}:${cx}:${cy}`, dest]);
+}
+
 // Ảnh thu nhỏ cho file ảnh
 export function imageThumb(src, dest) {
   return run(ffmpegPath, ['-y', '-i', src, '-vf', 'scale=320:-2', dest]);
