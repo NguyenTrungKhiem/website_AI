@@ -5,6 +5,7 @@ import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
 import fashionV2v from './fashion-v2v.js';
 import videoThoiTrang from './video-thoi-trang.js';
+import { db } from '../db.js';
 
 export const WORKFLOWS = {
   [dancing.id]: dancing,
@@ -17,15 +18,27 @@ export const WORKFLOWS = {
 
 // Mô tả gửi cho giao diện (không gồm hàm run)
 export const listWorkflows = () =>
-  Object.values(WORKFLOWS).map((w) => ({
-    id: w.id,
-    name: w.name,
-    icon: w.icon,
-    description: w.description,
-    noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
-    inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id)
-    perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
-    prompts: w.prompts,
-    options: w.options,
-    stages: w.stages.map((s) => ({ id: s.id, label: s.label })),
-  }));
+  Object.values(WORKFLOWS).map((w) => {
+    const saved = db.settings?.workflows?.[w.id]?.prompts || {};
+    const mergedPrompts = {};
+    for (const [k, p] of Object.entries(w.prompts || {})) {
+      mergedPrompts[k] = {
+        ...p,
+        text: (saved[k] || '').trim() || p.text,
+        factoryText: p.text,
+        isCustom: !!(saved[k] && saved[k].trim() && saved[k].trim() !== p.text.trim()),
+      };
+    }
+    return {
+      id: w.id,
+      name: w.name,
+      icon: w.icon,
+      description: w.description,
+      noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
+      inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id)
+      perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
+      prompts: mergedPrompts,
+      options: w.options,
+      stages: w.stages.map((s) => ({ id: s.id, label: s.label })),
+    };
+  });

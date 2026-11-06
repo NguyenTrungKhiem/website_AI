@@ -473,18 +473,32 @@ Trả về định dạng JSON thuần theo cấu trúc:
   "price": 150000
 }`;
 
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' },
-    }),
-  });
+  const modelsToTry = [model, 'gemini-2.5-flash', 'gemini-3.1-flash-lite'].filter(Boolean);
+  const uniqueModels = [...new Set(modelsToTry)];
+  let res = null;
+  let lastError = null;
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini API lỗi (${res.status}): ${errText}`);
+  for (const m of uniqueModels) {
+    try {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: 'application/json' },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) break;
+      const errText = await res.text().catch(() => '');
+      lastError = new Error(`Gemini (${m}) lỗi ${res.status}: ${errText.slice(0, 100)}`);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  if (!res || !res.ok) {
+    throw new Error(`Gemini API lỗi: ${lastError?.message || 'fetch failed'}`);
   }
 
   const json = await res.json();

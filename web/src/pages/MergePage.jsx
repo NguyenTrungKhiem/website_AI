@@ -46,14 +46,17 @@ export default function MergePage({ state, refresh, go, handoff }) {
 
   const submit = () =>
     run(async () => {
+      const isMute = audioId === 'mute';
+      const effectiveAudioId = isMute ? null : audioId;
       await api.merge({
         jobIds: seq,
-        audioId,
+        audioId: effectiveAudioId,
         audioMode: mode,
         offset,
         name,
         watermarkMode,
         removeWatermark: watermarkMode !== 'off',
+        keepOriginalAudio: !isMute && !effectiveAudioId,
       });
       await refresh();
     });
@@ -156,7 +159,15 @@ export default function MergePage({ state, refresh, go, handoff }) {
         <div className="audios">
           <label className={'audio' + (!audioId ? ' selected' : '')}>
             <input type="radio" checked={!audioId} onChange={() => setAudioId(null)} />
-            <span>🔇 Không chèn âm thanh</span>
+            <span className="grow">
+              🎬 <b>Giữ âm thanh gốc của các đoạn video</b> <small className="muted">(Nối tiếng của từng đoạn video - Mặc định)</small>
+            </span>
+          </label>
+          <label className={'audio' + (audioId === 'mute' ? ' selected' : '')}>
+            <input type="radio" checked={audioId === 'mute'} onChange={() => setAudioId('mute')} />
+            <span className="grow">
+              🔇 <b>Tắt âm thanh (Video câm)</b> <small className="muted">(Không dùng bất kỳ âm thanh nào)</small>
+            </span>
           </label>
           {state.audios.map((a) => (
             <label key={a.id} className={'audio' + (audioId === a.id ? ' selected' : '')}>
@@ -262,7 +273,7 @@ export default function MergePage({ state, refresh, go, handoff }) {
         </div>
 
         <button className="primary" disabled={busy || !items.length} onClick={submit}>
-          🎞️ Ghép {items.length} video{audio ? ' + âm thanh' : ''}
+          🎞️ Ghép {items.length} video{audio ? ' + âm thanh' : audioId === 'mute' ? ' (Tắt tiếng)' : ' (Giữ tiếng gốc)'}
         </button>
         {error && <div className="err">{error}</div>}
       </div>

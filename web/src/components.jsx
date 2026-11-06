@@ -91,7 +91,27 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
   const list = assets.filter((a) => a.kind === kind && !a.staging);
   const { busy, error, run } = useAction();
   const [viewing, setViewing] = useState(null); // id ảnh đang phóng to
-  const [found, setFound] = useState(null); // kết quả bóc tách gần nhất (giữ nguyên sau khi chọn ảnh)
+  
+  // Lưu kết quả bóc tách sản phẩm theo kind vào localStorage để không bị mất khi chuyển qua Cài đặt hoặc module khác
+  const [found, setFound] = useState(() => {
+    try {
+      const raw = localStorage.getItem(`last_scraped_product_${kind}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (found) {
+        localStorage.setItem(`last_scraped_product_${kind}`, JSON.stringify(found));
+      } else {
+        localStorage.removeItem(`last_scraped_product_${kind}`);
+      }
+    } catch {}
+  }, [found, kind]);
+
   const [slider, setSlider] = useState(null); // { images, startIdx } popup trượt + làm sạch
   const viewingAsset = list.find((a) => a.id === viewing);
   const selectedIds = multiple ? (Array.isArray(value) ? value : []) : value ? [value] : [];
@@ -427,6 +447,15 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
               {found.priceFormatted && (
                 <span className="product-price">{found.priceFormatted}</span>
               )}
+              <button
+                type="button"
+                className="btn-link small"
+                style={{ marginLeft: 'auto', color: 'var(--muted)', cursor: 'pointer' }}
+                onClick={() => setFound(null)}
+                title="Đóng kết quả bóc tách này"
+              >
+                ✕ Đóng kết quả
+              </button>
             </div>
 
             <div className="product-title-block">
@@ -616,7 +645,19 @@ function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse
           {curJob?.status === 'failed' && !isWorking(curJob) && <div className="err small">{curJob.error}</div>}
 
           <label>
-            <span>Prompt làm sạch (tiếng Anh)</span>
+            <div className="row between" style={{ alignItems: 'center' }}>
+              <span>Prompt làm sạch (tiếng Anh)</span>
+              {prompt !== (settings.productCleanPrompt || defaults.productCleanPrompt || '') && (
+                <a
+                  className="small"
+                  onClick={() => setPrompt(settings.productCleanPrompt || defaults.productCleanPrompt || '')}
+                  style={{ cursor: 'pointer' }}
+                  title="Khôi phục prompt làm sạch về mẫu gốc"
+                >
+                  🔄 Reset về prompt gốc
+                </a>
+              )}
+            </div>
             <textarea rows={6} className="mono" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </label>
           <small className="muted">
@@ -751,13 +792,25 @@ export function JobCard({ job, refresh, selectable, selected, onToggle, compact 
           <ConfirmButton armedText="Xoá video này?" onConfirm={() => run(async () => { await api.deleteJob(job.id); await refresh(); })}>Xoá</ConfirmButton>
         </div>
       ) : (
-        <div className="row">
+        <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
           <button
             disabled={busy || job.status === 'running' || job.status === 'queued'}
             onClick={retry}
           >
             🔄 Thử lại
           </button>
+          {job.type !== 'image' && (
+            <button
+              disabled={busy || job.status === 'running' || job.status === 'queued'}
+              title="Tải video mới nhất vừa render xong trong cửa sổ Chrome Google Flow gán cho video này"
+              onClick={() => run(async () => {
+                await api.importFlowJob(job.id);
+                await refresh();
+              })}
+            >
+              📥 Lấy từ Flow
+            </button>
+          )}
           <button
             disabled={job.status === 'running' || job.status === 'queued'}
             onClick={() => { setPrompt(job.prompt); setEditing(true); }}

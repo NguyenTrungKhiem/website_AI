@@ -282,7 +282,7 @@ export default function SettingsPage({ state, refresh }) {
         </p>
         <div className="grid2">
           <Field {...f} path="geminiApiKey" label="Gemini API Key" type="password" hint="Lấy API key miễn phí tại Google AI Studio (aistudio.google.com). Để trống sẽ dùng bộ lọc Regex thông minh." />
-          <Field {...f} path="geminiModel" label="Model Gemini" options={['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']} hint="Nên dùng gemini-2.5-flash để tốc độ phản hồi nhanh nhất" />
+          <Field {...f} path="geminiModel" label="Model Gemini" options={['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']} hint="Khuyên dùng gemini-2.5-flash (tốc độ 1s, cực kỳ ổn định). Nếu gemini-3.8-flash bị quá tải 503 hoặc nghẽn mạng, hệ thống sẽ tự động chuyển sang gemini-2.5-flash." />
         </div>
       </div>
 

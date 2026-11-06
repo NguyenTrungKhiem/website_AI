@@ -16,7 +16,7 @@ export function rangeOf(job) {
 }
 
 // Kiểm tra trước khi ghép, trả về danh sách đoạn + cấu hình âm thanh cho ffmpeg
-export function planMerge({ jobIds, audioId, audioMode, offset }) {
+export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio = true }) {
   const jobs = jobIds.map((id) => db.jobs.find((j) => j.id === id));
   if (!jobs.length) throw new Error('Chọn ít nhất 1 video');
   if (jobs.some((j) => !j?.outputPath || !fs.existsSync(j.outputPath))) throw new Error('Có video chưa xong hoặc đã bị xoá');
@@ -36,11 +36,13 @@ export function planMerge({ jobIds, audioId, audioMode, offset }) {
     return {
       segments: jobs.map((j, i) => ({ file: j.outputPath, duration: +(ranges[i].end - ranges[i].start).toFixed(3) })),
       audio: { file: audio.path, ranges: ranges.map((r) => [r.start, r.end]) },
+      keepOriginalAudio: false,
     };
   }
   return {
     segments: jobs.map((j) => ({ file: j.outputPath })),
     audio: audio ? { file: audio.path, offset: Number(offset) || 0 } : null,
+    keepOriginalAudio: audio ? false : (keepOriginalAudio !== false),
   };
 }
 
@@ -55,8 +57,9 @@ export function createMerge({
   watermarkMode,
   watermarkText,
   watermarkImageId,
+  keepOriginalAudio = true,
 }) {
-  const plan = planMerge({ jobIds, audioId, audioMode, offset });
+  const plan = planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio });
   const id = newId();
   const effectiveMode = watermarkMode || (removeWatermark === false ? 'off' : (db.settings.watermarkMode || 'delogo'));
   const effectiveText = watermarkText !== undefined ? watermarkText : (db.settings.watermarkText || '');
@@ -74,6 +77,7 @@ export function createMerge({
     watermarkText: effectiveText,
     watermarkImageId: effectiveImgId,
     watermarkRemoved: effectiveMode !== 'off',
+    keepOriginalAudio: audioId ? false : (keepOriginalAudio !== false),
     inputPaths: plan.segments.map((s) => s.file), // để biết video nguồn có đổi sau khi ghép không
     status: 'running',
     error: null,
@@ -111,6 +115,7 @@ async function runMerge(merge, plan) {
       watermarkText: merge.watermarkText,
       watermarkImagePath,
       watermarkFontSize: db.settings.watermarkFontSize || 20,
+      keepOriginalAudio: merge.keepOriginalAudio !== false,
     });
     const thumbPath = path.join(DIRS.merged, `${merge.id}.jpg`);
     await thumbnail(dest, thumbPath).catch(() => {});

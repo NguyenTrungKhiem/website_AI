@@ -27,7 +27,7 @@ const DEFAULT_SETTINGS = {
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
   aspectRatio: '9:16',
   geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
-  geminiModel: 'gemini-2.5-flash',
+  geminiModel: 'gemini-3.8-flash',
   productCleanPrompt: '', // prompt tạo lại ảnh sản phẩm sạch; trống = mặc định (server/prompts.js)
   zernioApiKey: '', // API key từ Zernio để kết nối và lên lịch đăng đa nền tảng
   removeWatermark: true, // Tự động xoá logo Gemini / Google Flow khi ghép video

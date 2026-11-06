@@ -2,7 +2,7 @@
 // dừng khi có job lỗi (người dùng bấm "Tiếp tục" để chạy lại job lỗi và đi tiếp).
 import path from 'node:path';
 import { db, save, DIRS, newId, mediaUrl } from '../db.js';
-import { createJob, createImportJob, retryJob, settledHooks } from '../queue.js';
+import { createJob, createImportJob, retryJob, cancelJob, applyFlowVideoToJob, settledHooks } from '../queue.js';
 import { createMerge, mergeSettledHooks } from '../merge.js';
 import { frameAt } from '../ffmpeg.js';
 import { WORKFLOWS } from './index.js';
@@ -45,10 +45,23 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, cli
       perClip[clip.id][inp.key] = v;
     }
   }
-  const opts = Object.fromEntries(wf.options.map((o) => [o.key, options[o.key] ?? o.default]));
+  // Bảo toàn đầy đủ options được truyền vào (kể cả promptScene1, promptScene2, customPrompt)
+  const opts = {
+    ...options,
+    ...Object.fromEntries(wf.options.map((o) => [o.key, options[o.key] ?? o.default])),
+  };
   // Prompt dùng cho lần chạy này được "đóng băng" vào run để sửa prompt mẫu sau không ảnh hưởng run đang chạy
   const saved = db.settings.workflows?.[workflowId]?.prompts || {};
-  const frozen = Object.fromEntries(Object.entries(wf.prompts).map(([k, p]) => [k, (prompts[k] ?? saved[k] ?? '').trim() || p.text]));
+  const customPromptFor = (k) => {
+    if (prompts[k]) return prompts[k];
+    if (k === 'case2_scene1' && options.promptScene1) return options.promptScene1;
+    if (k === 'case2_scene2' && options.promptScene2) return options.promptScene2;
+    if (k === 'case1' && options.customPrompt) return options.customPrompt;
+    return saved[k];
+  };
+  const frozen = Object.fromEntries(
+    Object.entries(wf.prompts).map(([k, p]) => [k, (customPromptFor(k) ?? '').trim() || p.text])
+  );
 
   const run = {
     id: newId(),
@@ -91,8 +104,15 @@ export function resumeRun(run) {
 export function cancelRun(run) {
   run.status = 'cancelled';
   run.finishedAt = Date.now();
-  // Job còn chờ trong hàng đợi thì bỏ luôn
-  for (const j of db.jobs) if (j.runId === run.id && j.status === 'queued') Object.assign(j, { status: 'failed', error: 'Quy trình đã huỷ' });
+  // Cancel cả job queued lẫn job running thuộc quy trình này
+  for (const j of db.jobs.filter((j) => j.runId === run.id)) {
+    if (j.status === 'queued' || j.status === 'running') {
+      cancelJob(j.id, 'Quy trình đã huỷ');
+    }
+  }
+  for (const st of Object.values(run.stages || {})) {
+    if (st && st.status === 'running') st.status = 'cancelled';
+  }
   save();
   return run;
 }
@@ -100,14 +120,16 @@ export function cancelRun(run) {
 export function deleteRun(run, { withJobs = true } = {}) {
   if (withJobs) {
     for (const j of db.jobs.filter((j) => j.runId === run.id)) {
-      if (j.status === 'running') throw new Error('Có job đang chạy, chờ xong rồi xoá');
+      if (j.status === 'running') {
+        cancelJob(j.id, 'Xoá lần chạy');
+      }
     }
     for (const j of db.jobs.filter((j) => j.runId === run.id)) {
       for (const a of j.attempts) { rm(a.outputPath); rm(a.thumbPath); }
     }
     db.jobs = db.jobs.filter((j) => j.runId !== run.id);
   }
-  db.runs = db.runs.filter((r) => r !== run);
+  db.runs = db.runs.filter((r) => r.id !== run.id);
   save();
 }
 
@@ -153,6 +175,110 @@ export async function replaceClipVideos(run, clipId, files) {
   save();
   advance(run);
   return replaced;
+}
+
+/**
+ * Tải video mới nhất từ Flow về và gán trực tiếp cho bước/job đang cần trong run,
+ * sau đó tự động kích hoạt advance(run) để chạy các bước tiếp theo.
+ */
+export async function importFlowVideoToRun(run, { stageId, clipId, key } = {}) {
+  if (run.status === 'failed' || run.status === 'cancelled' || run.status === 'paused') {
+    run.status = 'running';
+    run.error = null;
+    run.finishedAt = null;
+  }
+
+  const jobsMap = (run.stages._jobs ||= {});
+  let targetKey = key || null;
+  let targetStage = stageId || null;
+
+  if (run.workflow === 'video-thoi-trang') {
+    if (stageId === 'scene2' || (!stageId && run.stages.scene1?.status === 'done')) {
+      targetStage = 'scene2';
+      targetKey = 'video:scene2';
+    } else {
+      targetStage = 'scene1';
+      targetKey = jobsMap['video:main'] ? 'video:main' : 'video:scene1';
+    }
+  } else {
+    // Các quy trình khác (dancing, thay-trang-phuc, hat-nhep, fashion-v2v)
+    if (clipId) {
+      if (run.stages.replace && run.stages.motion?.status === 'done') {
+        targetStage = 'replace';
+        targetKey = `replace:${clipId}`;
+      } else {
+        targetStage = 'motion';
+        targetKey = `motion:${clipId}`;
+      }
+    } else if (!targetKey) {
+      // Tìm đoạn chưa xong
+      for (const cid of run.clipIds || []) {
+        const mj = jobsMap[`motion:${cid}`] && db.jobs.find((j) => j.id === jobsMap[`motion:${cid}`]);
+        if (!mj || mj.status !== 'done') {
+          targetStage = 'motion';
+          targetKey = `motion:${cid}`;
+          break;
+        }
+      }
+      if (!targetKey && run.options?.replaceBackground) {
+        for (const cid of run.clipIds || []) {
+          const rj = jobsMap[`replace:${cid}`] && db.jobs.find((j) => j.id === jobsMap[`replace:${cid}`]);
+          if (!rj || rj.status !== 'done') {
+            targetStage = 'replace';
+            targetKey = `replace:${cid}`;
+            break;
+          }
+        }
+      }
+      if (!targetKey && run.clipIds?.[0]) {
+        targetStage = 'motion';
+        targetKey = `motion:${run.clipIds[0]}`;
+      }
+    }
+  }
+
+  if (!targetKey) {
+    throw new Error('Không xác định được bước nào cần video để gán');
+  }
+
+  let job = jobsMap[targetKey] && db.jobs.find((j) => j.id === jobsMap[targetKey]);
+  if (!job) {
+    const wf = WORKFLOWS[run.workflow];
+    const clip = clipId ? db.clips.find((c) => c.id === clipId) : null;
+    job = createJob({
+      type: 'video',
+      runId: run.id,
+      stage: targetStage,
+      videoLabel: clip ? `${clip.name} (Flow)` : `${wf?.name || run.workflow} - ${targetStage}`,
+    });
+    jobsMap[targetKey] = job.id;
+  }
+
+  await applyFlowVideoToJob(job);
+
+  if (targetStage && run.stages[targetStage]) {
+    run.stages[targetStage].status = 'done';
+    run.stages[targetStage].error = null;
+  }
+
+  if (run.workflow === 'video-thoi-trang' && targetStage === 'scene1') {
+    if (run.stages.last_frame) {
+      run.stages.last_frame.status = 'pending';
+      delete run.stages.last_frame.lastFramePath;
+    }
+    if (run.stages.scene2) run.stages.scene2.status = 'pending';
+    if (run.stages.merge) run.stages.merge.status = 'pending';
+  } else if (targetStage === 'motion') {
+    if (run.stages.review && run.stages.review.status !== 'skipped') run.stages.review = { status: 'pending' };
+    if (run.stages.replace && run.stages.replace.status !== 'skipped') run.stages.replace.status = 'pending';
+    if (run.stages.merge && run.stages.merge.status !== 'skipped') run.stages.merge = { status: 'pending' };
+  } else if (targetStage === 'replace') {
+    if (run.stages.merge && run.stages.merge.status !== 'skipped') run.stages.merge = { status: 'pending' };
+  }
+
+  save();
+  advance(run);
+  return { run, job };
 }
 
 const locks = new Set();
@@ -341,12 +467,13 @@ function makeCtx(run, wf) {
     },
 
     // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) nếu có, tuỳ chọn xoá logo
-    ensureMerge({ jobIds, name, removeWatermark, watermarkMode }) {
+    ensureMerge({ jobIds, name, removeWatermark, watermarkMode, keepOriginalAudio }) {
       const st = this.state;
       let merge = st.mergeId && db.merges.find((m) => m.id === st.mergeId);
       if (!merge) {
         const audio = source ? db.audios.find((a) => a.sourceId === source.id) : null;
         const shouldRemoveWatermark = removeWatermark ?? run.options.removeWatermark ?? db.settings.removeWatermark ?? true;
+        const shouldKeepAudio = keepOriginalAudio ?? run.options.keepAudio !== false;
         merge = createMerge({
           jobIds,
           audioId: audio?.id || null,
@@ -355,6 +482,7 @@ function makeCtx(run, wf) {
           runId: run.id,
           removeWatermark: shouldRemoveWatermark,
           watermarkMode: watermarkMode || 'delogo',
+          keepOriginalAudio: shouldKeepAudio,
         });
         st.mergeId = merge.id;
         save();
@@ -382,8 +510,13 @@ export function viewRun(run) {
     workflowName: wf?.name || run.workflow,
     stageList: (wf?.stages || []).map((s) => {
       const st = run.stages[s.id] || { status: 'pending' };
-      const sj = Object.entries(active).filter(([k]) => k.startsWith(s.id + ':')).map(([, j]) => j);
-      return { id: s.id, label: s.label, status: st.status, done: sj.filter((j) => j.status === 'done').length, total: sj.length };
+      const sj = Object.entries(active).filter(([k]) => k.startsWith(s.id + ':') || k.endsWith(':' + s.id)).map(([, j]) => j);
+      const computedStatus = (run.status === 'failed' && st.status === 'running')
+        ? 'failed'
+        : (run.status === 'cancelled' && st.status === 'running')
+        ? 'cancelled'
+        : st.status;
+      return { id: s.id, label: s.label, status: computedStatus, done: sj.filter((j) => j.status === 'done').length, total: sj.length };
     }),
     // Từng đoạn: video motion (hoặc video nhập thay thế), video đã thay nền, ảnh riêng của đoạn (nếu quy trình có)
     clipRows: run.clipIds.map((cid) => {

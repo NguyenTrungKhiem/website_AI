@@ -4,16 +4,17 @@ import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
 import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage } from './ffmpeg.js';
-import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks } from './queue.js';
+import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks, applyFlowVideoToJob } from './queue.js';
 import { publish } from './social.js';
 import * as zernio from './zernio.js';
 import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
 import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT, DEFAULT_BACK_VIEW_PROMPT } from './prompts.js';
+import { analyzeFashionGarment, generateFashionScenePrompts, DEFAULT_FASHION_SCENE1_TEMPLATE, DEFAULT_FASHION_SCENE2_TEMPLATE } from './geminiFashion.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
-import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob } from './workflows/runner.js';
+import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun } from './workflows/runner.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -267,6 +268,48 @@ app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
   res.json(viewJob(job));
 }));
 
+// Phân tích ảnh mặt trước & mặt sau bằng Gemini -> sinh Mô tả sản phẩm & 2 Prompt cho 2 Phân cảnh
+app.post('/api/fashion/analyze-and-prompt', wrap(async (req, res) => {
+  const { frontAssetId, backAssetId, basePromptScene1, basePromptScene2 } = req.body || {};
+  if (!frontAssetId) throw new Error('Chưa chọn ảnh trang phục mặt trước');
+  if (!backAssetId) throw new Error('Chưa chọn ảnh trang phục mặt sau');
+
+  const frontAsset = db.assets.find((a) => a.id === frontAssetId);
+  const backAsset = db.assets.find((a) => a.id === backAssetId);
+  if (!frontAsset?.path || !fs.existsSync(frontAsset.path)) throw new Error('File ảnh mặt trước không tồn tại');
+  if (!backAsset?.path || !fs.existsSync(backAsset.path)) throw new Error('File ảnh mặt sau không tồn tại');
+
+  const apiKey = db.settings.geminiApiKey || process.env.GEMINI_API_KEY || '';
+  if (!apiKey) throw new Error('Chưa cấu hình Gemini API Key trong Cài đặt');
+  const model = db.settings.geminiModel || 'gemini-2.5-flash';
+
+  // Bước 1: Phân tích 2 ảnh
+  const productData = await analyzeFashionGarment({
+    frontPath: frontAsset.path,
+    backPath: backAsset.path,
+    apiKey,
+    model,
+  });
+
+  // Bước 2: Dựng 2 prompt phân cảnh mới dựa trên base prompt người dùng đã lưu
+  const savedPrompts = db.settings?.workflows?.['video-thoi-trang']?.prompts || {};
+  const scenePrompts = await generateFashionScenePrompts({
+    productData,
+    basePromptScene1: (basePromptScene1 || '').trim() || savedPrompts.case2_scene1 || DEFAULT_FASHION_SCENE1_TEMPLATE,
+    basePromptScene2: (basePromptScene2 || '').trim() || savedPrompts.case2_scene2 || DEFAULT_FASHION_SCENE2_TEMPLATE,
+    apiKey,
+    model,
+  });
+
+  res.json({
+    ok: true,
+    productData,
+    productDescription: productData.summary || '',
+    promptScene1: scenePrompts.promptScene1 || '',
+    promptScene2: scenePrompts.promptScene2 || '',
+  });
+}));
+
 // Cắt một vùng chữ nhật từ ảnh nguồn bằng FFmpeg và lưu thành asset mới
 app.post('/api/assets/crop', wrap(async (req, res) => {
   const { assetId, x = 0, y = 0, width, height, name, kind = 'product' } = req.body || {};
@@ -449,6 +492,14 @@ app.post('/api/jobs/:id/retry', wrap(async (req, res) => {
   res.json(viewJob(retryJob(job, req.body || {})));
 }));
 
+// Tải video mới nhất từ Flow về và gán hoàn thành cho job
+app.post('/api/jobs/:id/import-flow', wrap(async (req, res) => {
+  const job = db.jobs.find((j) => j.id === req.params.id);
+  if (!job) throw new Error('Không tìm thấy job');
+  const updated = await applyFlowVideoToJob(job);
+  res.json(viewJob(updated));
+}));
+
 // Chọn 1 trong các lần tạo làm kết quả chính của job
 app.post('/api/jobs/:id/select', wrap(async (req, res) => {
   const job = db.jobs.find((j) => j.id === req.params.id);
@@ -493,8 +544,8 @@ app.delete('/api/jobs/:id', wrap(async (req, res) => {
 
 // ---------- Ghép video + chèn âm thanh (logic trong merge.js) ----------
 app.post('/api/merges', wrap(async (req, res) => {
-  const { jobIds = [], audioId = null, audioMode = 'match', offset = 0, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId } = req.body;
-  res.json(createMerge({ jobIds, audioId, audioMode, offset, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId }));
+  const { jobIds = [], audioId = null, audioMode = 'match', offset = 0, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId, keepOriginalAudio = true } = req.body;
+  res.json(createMerge({ jobIds, audioId, audioMode, offset, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId, keepOriginalAudio }));
 }));
 
 app.post('/api/merges/:id/delogo', wrap(async (req, res) => {
@@ -549,6 +600,30 @@ app.post('/api/runs/:id/replace', upload.array('files', 50), wrap(async (req, re
   const replaced = await replaceClipVideos(run, req.body.clipId, req.files);
   res.json({ replaced, run: viewRun(run) });
 }));
+
+// Tải video mới nhất từ Google Flow về cho quy trình (để tiếp tục bước tiếp theo)
+app.post('/api/runs/:id/import-flow', wrap(async (req, res) => {
+  const run = findRun(req.params.id);
+  const result = await importFlowVideoToRun(run, req.body || {});
+  res.json({ ok: true, run: viewRun(result.run), job: result.job ? viewJob(result.job) : null });
+}));
+
+// Tải video mới nhất từ Google Flow về máy chủ (thủ công)
+app.post('/api/flow/latest-video', wrap(async (req, res) => {
+  const id = newId();
+  const dest = path.join(DIRS.outputs, `flow-manual-${id}.mp4`);
+  const result = await flow.downloadLatestVideoFromFlow(dest);
+  const thumb = dest.replace(/\.[^.]+$/, '.jpg');
+  await thumbnail(dest, thumb).catch(() => {});
+  res.json({
+    id,
+    url: mediaUrl(dest),
+    thumbUrl: mediaUrl(thumb),
+    path: dest,
+    title: result.title,
+  });
+}));
+
 app.delete('/api/runs/:id', wrap(async (req, res) => {
   deleteRun(findRun(req.params.id), { withJobs: req.query.withJobs !== '0' });
   res.json({ ok: true });

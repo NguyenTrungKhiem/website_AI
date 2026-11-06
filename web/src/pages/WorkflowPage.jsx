@@ -10,12 +10,29 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
     return <FashionSalesView wf={wf} state={state} refresh={refresh} go={go} />;
   }
 
-  const [sourceId, setSourceId] = useState(state.sources[0]?.id || null);
-  const [clipIds, setClipIds] = useState([]);
-  const [inputs, setInputs] = useState({});
-  const [clipInputs, setClipInputs] = useState({}); // ảnh riêng từng đoạn: { [clipId]: { [key]: assetId } }
-  const [options, setOptions] = useState(() => Object.fromEntries(wf.options.map((o) => [o.key, o.default])));
+  const draftKey = `wf_draft_${wf.id}`;
+  const savedWfDraft = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(draftKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }, [draftKey]);
+
+  const [sourceId, setSourceId] = useState(() => savedWfDraft?.sourceId || state.sources[0]?.id || null);
+  const [clipIds, setClipIds] = useState(() => savedWfDraft?.clipIds || []);
+  const [inputs, setInputs] = useState(() => savedWfDraft?.inputs || {});
+  const [clipInputs, setClipInputs] = useState(() => savedWfDraft?.clipInputs || {}); // ảnh riêng từng đoạn: { [clipId]: { [key]: assetId } }
+  const [options, setOptions] = useState(() => savedWfDraft?.options || Object.fromEntries(wf.options.map((o) => [o.key, o.default])));
   const { busy, error, run } = useAction();
+
+  // Tự động lưu nháp dữ liệu vào localStorage khi người dùng chọn/nhập
+  useEffect(() => {
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({ sourceId, clipIds, inputs, clipInputs, options }));
+    } catch {}
+  }, [draftKey, sourceId, clipIds, inputs, clipInputs, options]);
 
   const source = state.sources.find((s) => s.id === sourceId);
   const clips = useMemo(() => state.clips.filter((c) => c.sourceId === sourceId).slice().sort((a, b) => a.start - b.start), [state.clips, sourceId]);
@@ -257,9 +274,24 @@ function PromptEditor({ wf, settings, refresh }) {
       setTimeout(() => setOk(false), 2000);
     });
 
+  const hasCustom = Object.keys(draft).some((k) => (draft[k] || '').trim() && draft[k] !== wf.prompts[k]?.text);
+
   return (
     <div className="stack">
-      <a onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} Prompt mẫu của quy trình ({Object.keys(wf.prompts).length} bước)</a>
+      <div className="row between" style={{ alignItems: 'center' }}>
+        <a onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} Prompt mẫu của quy trình ({Object.keys(wf.prompts).length} bước)</a>
+        {open && hasCustom && (
+          <button
+            type="button"
+            className="small"
+            onClick={() => setDraft({})}
+            style={{ padding: '2px 8px', fontSize: 11 }}
+            title="Khôi phục toàn bộ các bước về prompt mẫu gốc"
+          >
+            🔄 Reset tất cả về prompt gốc
+          </button>
+        )}
+      </div>
       {open && (
         <div className="stack wf-prompts">
           {Object.entries(wf.prompts).map(([key, p]) => {
@@ -268,7 +300,17 @@ function PromptEditor({ wf, settings, refresh }) {
               <label key={key}>
                 <span className="row between">
                   <b>{p.label}</b>
-                  {custom && <a onClick={() => setDraft((d) => ({ ...d, [key]: '' }))}>Khôi phục mặc định</a>}
+                  {custom && (
+                    <button
+                      type="button"
+                      className="small"
+                      onClick={() => setDraft((d) => ({ ...d, [key]: '' }))}
+                      style={{ padding: '2px 8px', fontSize: 11 }}
+                      title="Khôi phục bước này về prompt gốc"
+                    >
+                      🔄 Reset về prompt gốc
+                    </button>
+                  )}
                 </span>
                 <textarea rows={8} className="mono" value={draft[key] || p.text} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} />
               </label>
@@ -326,11 +368,25 @@ function ClipTable({ run: r, jobs, refresh }) {
                         {Object.entries(row.inputs).map(([k, a]) => a && <img key={k} className="mini-thumb" src={a.url} alt="" title={a.name} />)}
                       </div>
                     )}
-                    <FileDrop accept="video/*" multiple onFiles={(files) => replaceWith(row.clipId, files)}>
-                      <button disabled={busy} className="small-btn" title="Thay video motion của đoạn này bằng file từ máy; chọn nhiều file thì các file sau thay các đoạn kế tiếp">
-                        📥 Thay bằng video từ máy
+                    <div className="row gap-xs" style={{ marginTop: 4, flexWrap: 'wrap' }}>
+                      <FileDrop accept="video/*" multiple onFiles={(files) => replaceWith(row.clipId, files)}>
+                        <button disabled={busy} className="small-btn" title="Thay video motion của đoạn này bằng file từ máy; chọn nhiều file thì các file sau thay các đoạn kế tiếp">
+                          📁 Từ máy
+                        </button>
+                      </FileDrop>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        className="small-btn"
+                        title="Lấy video mới nhất vừa render xong trên Google Flow gán cho đoạn này"
+                        onClick={() => act(async () => {
+                          await api.importFlowRun(r.id, { clipId: row.clipId });
+                          await refresh();
+                        })}
+                      >
+                        📥 Lấy từ Flow
                       </button>
-                    </FileDrop>
+                    </div>
                   </td>
                   <td>{cell(row.motion)}</td>
                   {r.options.replaceBackground && <td>{cell(row.replace)}</td>}
@@ -471,7 +527,7 @@ function RunCard({ run: r, state, refresh, go }) {
       {r.clipRows.length > 0 && <ClipTable run={r} jobs={jobs} refresh={refresh} />}
       {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} refresh={refresh} />}
 
-      <div className="row">
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         {r.status === 'paused' && (
           <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>
             {pausedBeforeMotion ? '▶ Tiếp tục: tạo video' : '▶ Tiếp tục: thay bối cảnh'}
@@ -479,6 +535,21 @@ function RunCard({ run: r, state, refresh, go }) {
         )}
         {r.status === 'failed' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục</button>}
         {r.status === 'cancelled' && <button disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Chạy tiếp</button>}
+        {r.status !== 'done' && (
+          <button
+            type="button"
+            className="small-btn"
+            disabled={busy}
+            style={{ background: '#0284c7', color: '#fff', border: 'none', fontWeight: 600, padding: '5px 12px' }}
+            title="Tải video mới nhất vừa render xong trong cửa sổ Chrome Google Flow về để tiếp tục quy trình này"
+            onClick={() => act(async () => {
+              await api.importFlowRun(r.id);
+              await refresh();
+            })}
+          >
+            📥 Tải video từ Google Flow về
+          </button>
+        )}
         {(r.status === 'running' || r.status === 'paused') && <button disabled={busy} onClick={() => act(() => api.cancelRun(r.id))}>⏹ Huỷ</button>}
         {r.merge?.status === 'done' && <button className="primary" onClick={() => go('publish', [r.merge.id])}>🚀 Đăng video →</button>}
         {r.merge?.status === 'done' && <button onClick={() => go('merge')}>Xem ở Ghép video</button>}

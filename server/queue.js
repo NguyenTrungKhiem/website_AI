@@ -98,6 +98,70 @@ export function retryJob(job, { prompt } = {}) {
   return job;
 }
 
+const cancelledJobs = new Set();
+
+export function cancelJob(jobId, reason = 'Đã huỷ') {
+  const job = db.jobs.find((j) => j.id === jobId);
+  if (!job) return null;
+  cancelledJobs.add(jobId);
+  job.status = 'failed';
+  job.error = reason;
+  const last = job.attempts.at(-1);
+  if (last && last.status === 'running') {
+    Object.assign(last, { status: 'failed', error: reason, finishedAt: Date.now() });
+  }
+  running.delete(job.id);
+  save();
+  pump();
+  for (const h of settledHooks) Promise.resolve().then(() => h(job)).catch((err) => console.error(err));
+  return job;
+}
+
+/**
+ * Tải video mới nhất từ Flow về và gán làm kết quả hoàn thành cho 1 job
+ */
+export async function applyFlowVideoToJob(job) {
+  if (running.has(job.id)) {
+    running.delete(job.id);
+  }
+  cancelledJobs.delete(job.id);
+
+  const attemptN = Math.max(0, ...job.attempts.map((a) => a.n)) + 1;
+  const outputFile = path.join(DIRS.outputs, `${job.type}-${job.id}-v${attemptN}.mp4`);
+  let flowSrc = null;
+  const res = await flow.downloadLatestVideoFromFlow(outputFile, (src) => { flowSrc = src; });
+  const thumb = outputFile.replace(/\.[^.]+$/, '.jpg');
+  await thumbnail(outputFile, thumb).catch(() => {});
+
+  const attempt = {
+    n: attemptN,
+    prompt: job.prompt || '',
+    finalPrompt: job.prompt || '',
+    engine: 'flow-import',
+    status: 'done',
+    startedAt: Date.now(),
+    finishedAt: Date.now(),
+    outputPath: outputFile,
+    thumbPath: thumb,
+    flowSrc,
+    flowTitle: res.title,
+    note: `Lấy trực tiếp từ Google Flow: ${res.title || 'video mới nhất'}`
+  };
+
+  job.attempts.push(attempt);
+  job.status = 'done';
+  job.error = null;
+  job.outputPath = outputFile;
+  job.thumbPath = thumb;
+  save();
+  pump();
+
+  for (const h of settledHooks) {
+    Promise.resolve().then(() => h(job)).catch((err) => console.error(err));
+  }
+  return job;
+}
+
 export function engineName() {
   return db.settings.engine === 'mock' ? 'mock' : 'flow';
 }
@@ -178,8 +242,12 @@ async function run(job) {
     ...(job.meta?.aspectRatio ? { aspectRatio: job.meta.aspectRatio } : {}),
     ...(job.meta?.flowVideoModel ? { flowVideoModel: job.meta.flowVideoModel } : {}),
     ...(job.meta?.flowDuration ? { flowDuration: job.meta.flowDuration } : {}),
+    ...(job.meta?.flowResolution ? { flowResolution: job.meta.flowResolution } : {}),
+    ...(job.meta?.flowVideoMode ? { flowVideoMode: job.meta.flowVideoMode } : {}),
+    ...(job.meta?.isFramesMode ? { isFramesMode: job.meta.isFramesMode } : {}),
   };
-  const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult };
+  const isCancelled = () => cancelledJobs.has(job.id);
+  const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult, isCancelled };
   try {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);
@@ -208,6 +276,7 @@ async function run(job) {
     job.status = 'failed';
     job.error = e.message;
   } finally {
+    cancelledJobs.delete(job.id);
     attempt.finishedAt = Date.now();
     running.delete(job.id);
     save();
@@ -235,14 +304,23 @@ async function mockGenerate({ video, images, outputFile, log }, isImage) {
 
 // Khi khởi động lại server: job đang chạy dở coi như lỗi để người dùng bấm thử lại.
 export function recoverJobs() {
+  let changed = false;
   for (const job of db.jobs) {
     if (job.status === 'running') {
       job.status = 'failed';
       job.error = 'Server bị dừng khi đang xử lý — bấm Thử lại.';
       const last = job.attempts.at(-1);
-      if (last?.status === 'running') Object.assign(last, { status: 'failed', error: job.error });
+      if (last?.status === 'running') Object.assign(last, { status: 'failed', error: job.error, finishedAt: Date.now() });
+      changed = true;
     }
   }
-  save();
+  running.clear();
+  cancelledJobs.clear();
+  if (changed) {
+    save();
+    for (const job of db.jobs.filter((j) => j.status === 'failed' && j.runId)) {
+      for (const h of settledHooks) Promise.resolve().then(() => h(job)).catch((err) => console.error(err));
+    }
+  }
   pump();
 }

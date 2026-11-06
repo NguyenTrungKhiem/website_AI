@@ -1,10 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
 import { AssetPicker, ConfirmButton, useAction, Badge } from '../components.jsx';
 import CropModal from '../components/CropModal.jsx';
 
+const FASHION_DRAFT_KEY = 'fashion_sales_draft_v1';
+
+function loadFashionDraft() {
+  try {
+    const raw = localStorage.getItem(FASHION_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeMentions(p, isCase1 = false) {
+  if (!p) return '';
+  let s = p;
+  s = s.replace(/\bth?@+Image(\d+)/gi, 'the @Image$1');
+  s = s.replace(/@+Image(\d+)/gi, '@Image$1');
+  s = s.replace(/([^\s\n])@Image(\d+)/g, '$1 @Image$2');
+  s = s.replace(/@Image(\d+)([a-zA-Z])/g, '@Image$1 $2');
+  s = s.replace(/(holds\s+the)\s+(?!@Image2)(.*?chest)/i, '$1 @Image2 $2');
+  s = s.replace(/(wears\s+the)\s+(?!@Image2)(.*?on\s+bare\s+shoulders|.*?garment|.*?dress|.*?outfit)/i, '$1 @Image2 $2');
+  s = s.replace(/(display\s+the\s+full)\s+(?!@Image2)/i, '$1 @Image2 ');
+  const expectedBgTag = isCase1 ? '@Image6' : '@Image3';
+  if (!s.includes(expectedBgTag)) {
+    s = s.replace(/(Scene:\s*Consistent\s*background\s*using)\s*([^.\n]*)/i, `$1 ${expectedBgTag}.`);
+  }
+  s = s.replace(/[ \t]{2,}/g, ' ');
+  return s.trim();
+}
+
 export default function FashionSalesView({ wf, state, refresh, go }) {
-  const [inputs, setInputs] = useState({
+  const savedDraft = useMemo(() => loadFashionDraft(), []);
+
+  const savedPrompts = state?.settings?.workflows?.[wf.id]?.prompts || {};
+  const baseScene1Prompt = savedPrompts.case2_scene1 || wf.prompts?.case2_scene1?.text || '';
+  const baseScene2Prompt = savedPrompts.case2_scene2 || wf.prompts?.case2_scene2?.text || '';
+  const baseCase1Prompt = savedPrompts.case1 || wf.prompts?.case1?.text || '';
+  const defaultBackPrompt =
+    state?.defaults?.backViewPrompt ||
+    `Create a clean, photorealistic product photo of the BACK VIEW of the exact clothing garment shown in the reference image (front view). Keep the same color, fabric, pattern, texture, neckline style from the back, sleeve length, hemline, and design language. Show the back details naturally (e.g. back zipper, back seams, back cut, back buttons) faithful to the front garment's style. Present the back-view garment cleanly on a plain, neutral, evenly lit white studio background, front-to-back perspective, fully visible, centered, with no person, no mannequin, no hangers, no text or props.`;
+
+  const [inputs, setInputs] = useState(() => savedDraft?.inputs || {
     model: null,
     background: null,
     outfitSheet: null,
@@ -14,19 +53,270 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     bag: null,
   });
 
-  const [caseMode, setCaseMode] = useState('case1'); // 'case1' (Full outfit) | 'case2' (Garment only)
+  const [caseMode, setCaseMode] = useState(() => savedDraft?.caseMode || 'case2'); // 'case1' (Full outfit) | 'case2' (Garment only)
   const [cropTarget, setCropTarget] = useState(null); // { asset, slot }
-  const [backOption, setBackOption] = useState('generate'); // 'cleanFront' | 'cleanBack' | 'generate'
-  const [backPrompt, setBackPrompt] = useState(
-    state?.defaults?.backViewPrompt ||
-      `Create a clean, photorealistic product photo of the BACK VIEW of the exact clothing garment shown in the reference image (front view). Keep the same color, fabric, pattern, texture, neckline style from the back, sleeve length, hemline, and design language. Show the back details naturally (e.g. back zipper, back seams, back cut, back buttons) faithful to the front garment's style. Present the back-view garment cleanly on a plain, neutral, evenly lit white studio background, front-to-back perspective, fully visible, centered, with no person, no mannequin, no hangers, no text or props.`
-  );
+  const [backOption, setBackOption] = useState(() => savedDraft?.backOption || 'generate'); // 'cleanFront' | 'cleanBack' | 'generate'
+  const [backPrompt, setBackPrompt] = useState(() => savedDraft?.backPrompt || defaultBackPrompt);
 
-  const [showPromptEditor, setShowPromptEditor] = useState(false);
-  const [removeWatermark, setRemoveWatermark] = useState(state.settings?.removeWatermark !== false);
-  const [autoPublish, setAutoPublish] = useState(true);
+  const [showPromptEditor, setShowPromptEditor] = useState(() => savedDraft?.showPromptEditor ?? true);
+  const [removeWatermark, setRemoveWatermark] = useState(() => savedDraft?.removeWatermark ?? (state.settings?.removeWatermark !== false));
+  const [autoPublish, setAutoPublish] = useState(() => savedDraft?.autoPublish ?? true);
+  const [keepAudio, setKeepAudio] = useState(() => savedDraft?.keepAudio ?? true);
   const [pendingBackJobId, setPendingBackJobId] = useState(null);
-  const [backMsg, setBackMsg] = useState(null);
+  const [backMsg, setBackMsg] = useState(() => savedDraft?.backMsg || null);
+
+  const [productDescription, setProductDescription] = useState(() => savedDraft?.productDescription || '');
+  const [productDetails, setProductDetails] = useState(() => savedDraft?.productDetails || null);
+  const [scene1FromApi, setScene1FromApi] = useState(() => savedDraft?.scene1FromApi ?? false);
+  const [scene2FromApi, setScene2FromApi] = useState(() => savedDraft?.scene2FromApi ?? false);
+  const [case1FromApi, setCase1FromApi] = useState(() => savedDraft?.case1FromApi ?? false);
+  const [saveNotice, setSaveNotice] = useState(null);
+
+  const [promptScene1, setPromptScene1] = useState(() => sanitizeMentions(savedDraft?.promptScene1 || baseScene1Prompt, false));
+  const [promptScene2, setPromptScene2] = useState(() => {
+    const raw = savedDraft?.promptScene2;
+    if (!raw || (raw.includes('Strictly lock 100% facial identity') && !raw.includes('color grading'))) {
+      return baseScene2Prompt;
+    }
+    return sanitizeMentions(raw, false);
+  });
+  const [customCase1Prompt, setCustomCase1Prompt] = useState(() => sanitizeMentions(savedDraft?.customCase1Prompt || baseCase1Prompt, true));
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeMsg, setAnalyzeMsg] = useState(() => savedDraft?.analyzeMsg || null);
+
+  useEffect(() => {
+    if (!promptScene1 && baseScene1Prompt) {
+      setPromptScene1(baseScene1Prompt);
+    }
+    if ((!promptScene2 || (promptScene2.includes('Strictly lock 100% facial identity') && !promptScene2.includes('color grading'))) && baseScene2Prompt) {
+      setPromptScene2(baseScene2Prompt);
+    }
+    if (!customCase1Prompt && baseCase1Prompt) {
+      setCustomCase1Prompt(baseCase1Prompt);
+    }
+  }, [baseScene1Prompt, baseScene2Prompt, baseCase1Prompt]);
+
+  // Tự động lưu toàn bộ dữ liệu & prompt vào localStorage
+  useEffect(() => {
+    try {
+      const dataToSave = {
+        inputs,
+        caseMode,
+        backOption,
+        backPrompt,
+        showPromptEditor,
+        removeWatermark,
+        autoPublish,
+        keepAudio,
+        scene1FromApi,
+        scene2FromApi,
+        case1FromApi,
+        productDescription,
+        productDetails,
+        promptScene1,
+        promptScene2,
+        customCase1Prompt,
+        analyzeMsg,
+        backMsg,
+      };
+      localStorage.setItem(FASHION_DRAFT_KEY, JSON.stringify(dataToSave));
+    } catch (e) {
+      console.warn('Lỗi lưu nháp FashionSalesView:', e);
+    }
+  }, [
+    inputs,
+    caseMode,
+    backOption,
+    backPrompt,
+    showPromptEditor,
+    removeWatermark,
+    autoPublish,
+    keepAudio,
+    scene1FromApi,
+    scene2FromApi,
+    case1FromApi,
+    productDescription,
+    productDetails,
+    promptScene1,
+    promptScene2,
+    customCase1Prompt,
+    analyzeMsg,
+    backMsg,
+  ]);
+
+  const isScene1Custom = promptScene1.trim() !== baseScene1Prompt.trim();
+  const isScene2Custom = promptScene2.trim() !== baseScene2Prompt.trim();
+  const isCase1Custom = customCase1Prompt.trim() !== baseCase1Prompt.trim();
+  const isBackCustom = backPrompt.trim() !== defaultBackPrompt.trim();
+
+  // Xác định chính xác trạng thái prompt đã render từ AI hay đang ở prompt gốc
+  const isScene1FromApi = scene1FromApi || (!!(productDetails || productDescription || analyzeMsg?.type === 'success') && isScene1Custom);
+  const isScene2FromApi = scene2FromApi || (!!(productDetails || productDescription || analyzeMsg?.type === 'success') && isScene2Custom);
+  const isCase1FromApi = case1FromApi;
+
+  // Reset toàn bộ prompt về gốc
+  const handleResetAllPrompts = () => {
+    setPromptScene1(baseScene1Prompt);
+    setPromptScene2(baseScene2Prompt);
+    setCustomCase1Prompt(baseCase1Prompt);
+    setScene1FromApi(false);
+    setScene2FromApi(false);
+    setCase1FromApi(false);
+    setProductDetails(null);
+    setProductDescription('');
+    setAnalyzeMsg(null);
+  };
+
+  // Reset từng prompt riêng lẻ về prompt gốc
+  const handleResetScene1 = () => {
+    setPromptScene1(baseScene1Prompt);
+    setScene1FromApi(false);
+    if (!scene2FromApi) {
+      setProductDetails(null);
+      setProductDescription('');
+      setAnalyzeMsg(null);
+    }
+  };
+
+  const handleResetScene2 = () => {
+    setPromptScene2(baseScene2Prompt);
+    setScene2FromApi(false);
+    if (!scene1FromApi) {
+      setProductDetails(null);
+      setProductDescription('');
+      setAnalyzeMsg(null);
+    }
+  };
+
+  const handleResetCase1 = () => {
+    setCustomCase1Prompt(baseCase1Prompt);
+    setCase1FromApi(false);
+  };
+
+  // Lưu nội dung prompt đang soạn thành Prompt gốc của hệ thống
+  const handleSaveScene1AsBase = () =>
+    run(async () => {
+      if (!promptScene1?.trim()) throw new Error('Prompt Cảnh 1 không được để trống');
+      const currentSaved = state?.settings?.workflows?.[wf.id]?.prompts || {};
+      await api.saveSettings({
+        workflows: {
+          [wf.id]: {
+            prompts: {
+              ...currentSaved,
+              case2_scene1: promptScene1.trim(),
+            },
+          },
+        },
+      });
+      await refresh();
+      setSaveNotice({ key: 'scene1', text: '✓ Đã lưu thành công làm Prompt gốc mới cho Cảnh 1!' });
+      setTimeout(() => setSaveNotice(null), 3500);
+    });
+
+  const handleSaveScene2AsBase = () =>
+    run(async () => {
+      if (!promptScene2?.trim()) throw new Error('Prompt Cảnh 2 không được để trống');
+      const currentSaved = state?.settings?.workflows?.[wf.id]?.prompts || {};
+      await api.saveSettings({
+        workflows: {
+          [wf.id]: {
+            prompts: {
+              ...currentSaved,
+              case2_scene2: promptScene2.trim(),
+            },
+          },
+        },
+      });
+      await refresh();
+      setSaveNotice({ key: 'scene2', text: '✓ Đã lưu thành công làm Prompt gốc mới cho Cảnh 2!' });
+      setTimeout(() => setSaveNotice(null), 3500);
+    });
+
+  const handleSaveCase1AsBase = () =>
+    run(async () => {
+      if (!customCase1Prompt?.trim()) throw new Error('Prompt TH1 không được để trống');
+      const currentSaved = state?.settings?.workflows?.[wf.id]?.prompts || {};
+      await api.saveSettings({
+        workflows: {
+          [wf.id]: {
+            prompts: {
+              ...currentSaved,
+              case1: customCase1Prompt.trim(),
+            },
+          },
+        },
+      });
+      await refresh();
+      setSaveNotice({ key: 'case1', text: '✓ Đã lưu thành công làm Prompt gốc mới cho TH1!' });
+      setTimeout(() => setSaveNotice(null), 3500);
+    });
+
+  const handleRestoreSystemDefault = (key) =>
+    run(async () => {
+      const currentSaved = { ...(state?.settings?.workflows?.[wf.id]?.prompts || {}) };
+      delete currentSaved[key];
+      await api.saveSettings({
+        workflows: {
+          [wf.id]: {
+            prompts: currentSaved,
+          },
+        },
+      });
+      await refresh();
+      if (key === 'case2_scene1') {
+        const factory = wf.prompts?.case2_scene1?.factoryText || wf.prompts?.case2_scene1?.text;
+        setPromptScene1(factory);
+        setScene1FromApi(false);
+      } else if (key === 'case2_scene2') {
+        const factory = wf.prompts?.case2_scene2?.factoryText || wf.prompts?.case2_scene2?.text;
+        setPromptScene2(factory);
+        setScene2FromApi(false);
+      } else if (key === 'case1') {
+        const factory = wf.prompts?.case1?.factoryText || wf.prompts?.case1?.text;
+        setCustomCase1Prompt(factory);
+        setCase1FromApi(false);
+      }
+      setSaveNotice({ key, text: '✓ Đã khôi phục về prompt mẫu mặc định gốc của hệ thống!' });
+      setTimeout(() => setSaveNotice(null), 3500);
+    });
+
+  const handleResetBackPrompt = () => {
+    setBackPrompt(defaultBackPrompt);
+    setBackMsg({ type: 'ok', text: 'Đã khôi phục Prompt sinh ảnh mặt sau về mẫu gốc.' });
+  };
+
+  const handleClearAnalysis = () => {
+    setProductDescription('');
+    setProductDetails(null);
+    setAnalyzeMsg(null);
+  };
+
+  const handleResetAllDraft = () => {
+    if (window.confirm('Bạn có chắc muốn xoá toàn bộ dữ liệu đang chọn và các prompt đã render để làm mới từ đầu?')) {
+      localStorage.removeItem(FASHION_DRAFT_KEY);
+      setInputs({
+        model: null,
+        background: null,
+        outfitSheet: null,
+        outfitFront: null,
+        outfitBack: null,
+        shoes: null,
+        bag: null,
+      });
+      setProductDescription('');
+      setProductDetails(null);
+      setPromptScene1(baseScene1Prompt);
+      setPromptScene2(baseScene2Prompt);
+      setCustomCase1Prompt(baseCase1Prompt);
+      setBackPrompt(defaultBackPrompt);
+      setKeepAudio(true);
+      setScene1FromApi(false);
+      setScene2FromApi(false);
+      setCase1FromApi(false);
+      setAnalyzeMsg(null);
+      setBackMsg(null);
+    }
+  };
 
   const { busy, error, run } = useAction();
   const runs = state.runs.filter((r) => r.workflow === wf.id);
@@ -114,11 +404,57 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         inputs,
         options: {
           caseMode,
+          promptScene1: !isCase1 ? sanitizeMentions(promptScene1, false) : undefined,
+          promptScene2: !isCase1 ? sanitizeMentions(promptScene2, false) : undefined,
+          customPrompt: isCase1 ? sanitizeMentions(customCase1Prompt, true) : undefined,
           removeWatermark,
           autoPublish,
+          keepAudio,
+        },
+        prompts: {
+          case1: sanitizeMentions(customCase1Prompt, true),
+          case2_scene1: sanitizeMentions(promptScene1, false),
+          case2_scene2: sanitizeMentions(promptScene2, false),
         },
       });
       await refresh();
+    });
+
+  // Phân tích sản phẩm bằng Gemini và tự động dựng 2 prompt phân cảnh
+  const handleAnalyzeAndGeneratePrompts = () =>
+    run(async () => {
+      if (!inputs.outfitFront) throw new Error('Vui lòng chọn ảnh Trang phục – Mặt trước trước khi phân tích');
+      if (!inputs.outfitBack) throw new Error('Vui lòng chọn ảnh Trang phục – Mặt sau trước khi phân tích');
+      setIsAnalyzing(true);
+      setAnalyzeMsg({ type: 'loading', text: '⏳ Đang gọi Gemini AI phân tích 2 ảnh mặt trước/sau và dựng 2 prompt mới...' });
+      try {
+        const res = await api.analyzeFashionGarment({
+          frontAssetId: inputs.outfitFront,
+          backAssetId: inputs.outfitBack,
+          basePromptScene1: promptScene1 || wf.prompts?.case2_scene1?.text,
+          basePromptScene2: promptScene2 || wf.prompts?.case2_scene2?.text,
+        });
+        if (res.productDescription) setProductDescription(res.productDescription);
+        if (res.productData) setProductDetails(res.productData);
+        if (res.promptScene1) {
+          setPromptScene1(sanitizeMentions(res.promptScene1, false));
+          setScene1FromApi(true);
+        }
+        if (res.promptScene2) {
+          setPromptScene2(sanitizeMentions(res.promptScene2, false));
+          setScene2FromApi(true);
+        }
+        setShowPromptEditor(true);
+        setAnalyzeMsg({
+          type: 'success',
+          text: '✨ Đã phân tích sản phẩm và tạo thành công 2 prompt mới! Bạn có thể xem và chỉnh sửa trực tiếp bên dưới.',
+        });
+      } catch (e) {
+        setAnalyzeMsg({ type: 'error', text: `❌ Lỗi phân tích Gemini: ${e.message}` });
+        throw e;
+      } finally {
+        setIsAnalyzing(false);
+      }
     });
 
   // Xử lý tạo ảnh mặt sau từ ảnh mặt trước
@@ -142,12 +478,27 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
 
   return (
     <section className="stack" style={{ gap: 20 }}>
-      <div>
-        <h1>🛍️ {wf.name}</h1>
-        <p className="muted">
-          Tạo video bán hàng thời trang 10 giây phong cách lookbook Hàn Quốc tự động bằng Google Flow (Omni 1.1 Flash).
-          Tự động phối hợp người mẫu, bối cảnh, trang phục, giày, túi và xoá logo Gemini thành phẩm.
-        </p>
+      <div className="row between" style={{ alignItems: 'flex-start' }}>
+        <div>
+          <h1>🛍️ {wf.name}</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            Tạo video bán hàng thời trang 10 giây phong cách lookbook Hàn Quốc tự động bằng Google Flow (Omni 1.1 Flash).
+            Tự động phối hợp người mẫu, bối cảnh, trang phục, giày, túi và xoá logo Gemini thành phẩm.
+          </p>
+        </div>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <span className="small muted" title="Dữ liệu nguyên liệu và prompt mới render được tự động lưu vào bộ nhớ, không lo bị mất khi chuyển qua Cài đặt hoặc module khác">
+            💾 Tự động lưu nháp
+          </span>
+          <button
+            type="button"
+            className="small"
+            onClick={handleResetAllDraft}
+            title="Xoá toàn bộ dữ liệu đang chọn và reset prompt về mặc định ban đầu"
+          >
+            🗑️ Làm mới (Reset nháp)
+          </button>
+        </div>
       </div>
 
       {/* KHỐI 1: NGƯỜI MẪU & BỐI CẢNH (BẮT BUỘC) */}
@@ -348,15 +699,26 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
 
               {backOption === 'generate' && (
                 <div className="stack" style={{ marginTop: 6 }}>
-                  <label className="small">
-                    <span>Prompt sinh ảnh mặt sau (tiếng Anh):</span>
-                    <textarea
-                      rows={3}
-                      className="mono small"
-                      value={backPrompt}
-                      onChange={(e) => setBackPrompt(e.target.value)}
-                    />
-                  </label>
+                  <div className="row between" style={{ alignItems: 'center' }}>
+                    <span className="small"><b>Prompt sinh ảnh mặt sau (tiếng Anh):</b></span>
+                    {isBackCustom && (
+                      <button
+                        type="button"
+                        className="small"
+                        onClick={handleResetBackPrompt}
+                        style={{ padding: '2px 8px', fontSize: 11 }}
+                        title="Khôi phục Prompt mặt sau về mẫu gốc"
+                      >
+                        🔄 Reset prompt mặt sau về gốc
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    rows={3}
+                    className="mono small"
+                    value={backPrompt}
+                    onChange={(e) => setBackPrompt(e.target.value)}
+                  />
                   <button
                     type="button"
                     className="small-btn primary"
@@ -588,19 +950,423 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           </div>
         </div>
 
-        {showPromptEditor && (
-          <div className="stack" style={{ background: 'var(--panel2)', padding: 12, borderRadius: 8 }}>
-            <span className="small muted">
-              Prompt 10s được gửi sang Flow Omni Flash với đầy đủ các phân đoạn 1s và thẻ định vị @Image:
-            </span>
-            <textarea
-              rows={8}
-              className="mono small"
-              readOnly
-              value={isCase1 ? wf.prompts.case1.text : wf.prompts.case2.text}
-            />
+        {/* KHỐI PHÂN TÍCH SẢN PHẨM & DỰNG 2 PROMPT (GEMINI) CHO TRƯỜNG HỢP 2 */}
+        {!isCase1 && (
+          <div className="card" style={{ background: 'var(--panel2)', padding: 14, borderRadius: 8, border: '1px solid var(--border)' }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <b>🤖 Phân tích Sản phẩm & Dựng 2 Prompt bằng Gemini AI</b>
+              <button
+                type="button"
+                className="primary small"
+                disabled={busy || isAnalyzing || !inputs.outfitFront || !inputs.outfitBack}
+                onClick={handleAnalyzeAndGeneratePrompts}
+              >
+                {isAnalyzing ? '⏳ Đang phân tích...' : '✨ Phân tích Sản phẩm & Dựng 2 Prompt'}
+              </button>
+            </div>
+            <div className="small muted" style={{ marginBottom: 10 }}>
+              Gemini sẽ xem cả 2 ảnh Mặt trước & Mặt sau để trích xuất Mô tả sản phẩm, sau đó lấy [Prompt gốc Cảnh 1 & Cảnh 2] + [Mô tả sản phẩm] để tạo ra 2 prompt mới bám sát thực tế, cho phép bạn kiểm tra và chỉnh sửa trước khi render video.
+            </div>
+
+            {analyzeMsg && (
+              <div
+                className={`small ${analyzeMsg.type === 'error' ? 'err' : 'alert'}`}
+                style={{ padding: '8px 12px', borderRadius: 6, marginBottom: 10 }}
+              >
+                {analyzeMsg.text}
+              </div>
+            )}
+
+            {productDescription && (
+              <div className="stack" style={{ background: 'var(--bg)', padding: 12, borderRadius: 6, marginBottom: 10 }}>
+                <div className="row between" style={{ alignItems: 'center', marginBottom: 6 }}>
+                  <div className="row wrap" style={{ gap: 6 }}>
+                    {productDetails?.category && (
+                      <span className="badge" style={{ background: '#0284c7', color: '#fff' }}>
+                        Phân loại: {productDetails.category}
+                      </span>
+                    )}
+                    {productDetails?.color && (
+                      <span className="badge" style={{ background: '#8b5cf6', color: '#fff' }}>
+                        Màu sắc: {productDetails.color}
+                      </span>
+                    )}
+                    {productDetails?.fabric && (
+                      <span className="badge" style={{ background: '#10b981', color: '#fff' }}>
+                        Chất vải: {productDetails.fabric}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="small"
+                    onClick={handleClearAnalysis}
+                    style={{ padding: '2px 8px', fontSize: 11 }}
+                    title="Xoá mô tả phân tích này"
+                  >
+                    ✕ Xoá mô tả
+                  </button>
+                </div>
+                {productDetails?.frontDetails?.length > 0 && (
+                  <div className="small">
+                    <b>Điểm nhấn Mặt trước:</b> {productDetails.frontDetails.join(' • ')}
+                  </div>
+                )}
+                {productDetails?.backDetails?.length > 0 && (
+                  <div className="small">
+                    <b>Điểm nhấn Mặt sau:</b> {productDetails.backDetails.join(' • ')}
+                  </div>
+                )}
+                <div className="small muted" style={{ marginTop: 4 }}>
+                  <b>Mô tả tổng quan:</b> {productDescription}
+                </div>
+              </div>
+            )}
           </div>
         )}
+
+        {/* KHUNG SOẠN THẢO / KIỂM TRA PROMPT TRƯỚC KHI TẠO */}
+        {showPromptEditor && (
+          <div className="stack" style={{ background: 'var(--panel2)', padding: 14, borderRadius: 8 }}>
+            {!isCase1 ? (
+              <>
+                <div className="row between" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <b>📝 Kiểm tra & Chỉnh sửa Prompt 2 Phân cảnh:</b>
+                  <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                    {(isScene1Custom || isScene2Custom || scene1FromApi || scene2FromApi) && (
+                      <button
+                        type="button"
+                        className="small"
+                        onClick={handleResetAllPrompts}
+                        title="Khôi phục toàn bộ 2 prompt phân cảnh về prompt gốc"
+                      >
+                        🔄 Quay lại tất cả về prompt gốc
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {saveNotice && (
+                  <div style={{ background: '#dcfce7', color: '#166534', padding: '8px 12px', borderRadius: 6, fontWeight: 500, fontSize: 12, border: '1px solid #86efac', marginTop: 6 }}>
+                    {saveNotice.text}
+                  </div>
+                )}
+
+                <div className="stack" style={{ marginTop: 8 }}>
+                  <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                    <label className="small" style={{ margin: 0 }}>
+                      <b>🎬 Phân cảnh 1: Mặt trước (10 giây – Chế độ Thành phần)</b>
+                    </label>
+                    <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isScene1FromApi ? (
+                        <>
+                          <span className="badge" style={{ background: '#7c3aed', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }} title="Prompt mới đã render từ Gemini AI cho sản phẩm này (Không có nút lưu prompt để bảo vệ prompt gốc ban đầu)">
+                            ✨ Prompt mới đã render (Gemini AI)
+                          </span>
+                          <button
+                            type="button"
+                            className="small"
+                            onClick={handleResetScene1}
+                            style={{ padding: '2px 8px', fontSize: 11 }}
+                            title="Khôi phục lại prompt gốc ban đầu (sau khi quay lại prompt gốc, bạn có thể chỉnh sửa và lưu prompt gốc mới)"
+                          >
+                            🔄 Quay lại prompt gốc
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {isScene1Custom ? (
+                            <>
+                              <span className="badge" style={{ background: '#f59e0b', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }} title="Bạn vừa chỉnh sửa nội dung prompt gốc">
+                                ✏️ Đã chỉnh sửa prompt gốc
+                              </span>
+                              <button
+                                type="button"
+                                className="small"
+                                disabled={busy || !promptScene1.trim()}
+                                onClick={handleSaveScene1AsBase}
+                                style={{ padding: '4px 12px', fontSize: 11, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 700, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }}
+                                title="Lưu nội dung bạn vừa chỉnh sửa thành Prompt gốc mới của hệ thống. Lần sau hoặc khi bấm 'Quay lại prompt gốc' sẽ dùng prompt này."
+                              >
+                                💾 Lưu lại prompt gốc
+                              </button>
+                              <button
+                                type="button"
+                                className="small"
+                                onClick={handleResetScene1}
+                                style={{ padding: '2px 8px', fontSize: 11 }}
+                                title="Huỷ các thay đổi vừa gõ và khôi phục về prompt gốc hiện hành"
+                              >
+                                🔄 Huỷ thay đổi
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="badge" style={{ background: '#475569', color: '#cbd5e1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                                📄 Đang ở prompt gốc {savedPrompts.case2_scene1 ? '(Riêng)' : '(Mặc định)'}
+                              </span>
+                              {savedPrompts.case2_scene1 && (
+                                <button
+                                  type="button"
+                                  className="small"
+                                  disabled={busy}
+                                  onClick={() => handleRestoreSystemDefault('case2_scene1')}
+                                  style={{ padding: '2px 6px', fontSize: 10, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)' }}
+                                  title="Khôi phục về mẫu gốc ban đầu lúc mới cài đặt của hệ thống"
+                                >
+                                  Khôi phục mặc định hệ thống
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <span className="muted" style={{ display: 'block', fontSize: 11, marginTop: 2 }}>
+                    Người mẫu mặc/giơ áo, giới thiệu chất vải và đường may mặt trước. Sử dụng @Image1 (model), @Image2 (mặt trước), @Image3 (bối cảnh), @Image4 (mặt sau).
+                  </span>
+                  <textarea
+                    rows={7}
+                    className="mono small"
+                    value={promptScene1}
+                    onChange={(e) => setPromptScene1(e.target.value)}
+                    placeholder="Nhập prompt cho Phân cảnh 1..."
+                  />
+
+                  {/* Kiểm tra và hiển thị các thẻ mention @Image */}
+                  <div className="row wrap" style={{ gap: 6, marginTop: 4, alignItems: 'center' }}>
+                    <span className="small muted">Thẻ liên kết Flow:</span>
+                    <span className={`badge ${promptScene1.includes('@Image1') ? 'ok' : 'err'}`} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>
+                      {promptScene1.includes('@Image1') ? '✓ @Image1 (model)' : '⚠️ Thiếu @Image1'}
+                    </span>
+                    <span className={`badge ${promptScene1.includes('@Image2') ? 'ok' : 'err'}`} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>
+                      {promptScene1.includes('@Image2') ? '✓ @Image2 (mặt trước)' : '⚠️ Thiếu @Image2'}
+                    </span>
+                    <span className={`badge ${promptScene1.includes('@Image3') ? 'ok' : 'err'}`} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>
+                      {promptScene1.includes('@Image3') ? '✓ @Image3 (bối cảnh)' : '⚠️ Thiếu @Image3'}
+                    </span>
+                    <span className={`badge ${promptScene1.includes('@Image4') ? 'ok' : 'err'}`} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>
+                      {promptScene1.includes('@Image4') ? '✓ @Image4 (mặt sau)' : '⚠️ Thiếu @Image4'}
+                    </span>
+                    {(promptScene1.includes('@@') || !promptScene1.includes('@Image2') || !promptScene1.includes('@Image3') || promptScene1.includes('t@') || promptScene1.includes('th@')) && (
+                      <button
+                        type="button"
+                        className="small"
+                        style={{ padding: '2px 8px', fontSize: 10, background: '#0284c7', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                        onClick={() => setPromptScene1(sanitizeMentions(promptScene1, false))}
+                        title="Tự động sửa lỗi cú pháp @@ thành @ và chèn lại @Image2 vào đúng vị trí"
+                      >
+                        ⚡ Tự động sửa lỗi cú pháp @Image
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="stack" style={{ marginTop: 8 }}>
+                  <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                    <label className="small" style={{ margin: 0 }}>
+                      <b>🎬 Phân cảnh 2: Mặt sau (6 giây – Chế độ Khung hình với Start Frame)</b>
+                    </label>
+                    <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isScene2FromApi ? (
+                        <>
+                          <span className="badge" style={{ background: '#7c3aed', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }} title="Prompt mới đã render từ Gemini AI cho sản phẩm này (Không có nút lưu prompt để bảo vệ prompt gốc ban đầu)">
+                            ✨ Prompt mới đã render (Gemini AI)
+                          </span>
+                          <button
+                            type="button"
+                            className="small"
+                            onClick={handleResetScene2}
+                            style={{ padding: '2px 8px', fontSize: 11 }}
+                            title="Khôi phục lại prompt gốc ban đầu (sau khi quay lại prompt gốc, bạn có thể chỉnh sửa và lưu prompt gốc mới)"
+                          >
+                            🔄 Quay lại prompt gốc
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {isScene2Custom ? (
+                            <>
+                              <span className="badge" style={{ background: '#f59e0b', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }} title="Bạn vừa chỉnh sửa nội dung prompt gốc">
+                                ✏️ Đã chỉnh sửa prompt gốc
+                              </span>
+                              <button
+                                type="button"
+                                className="small"
+                                disabled={busy || !promptScene2.trim()}
+                                onClick={handleSaveScene2AsBase}
+                                style={{ padding: '4px 12px', fontSize: 11, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 700, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }}
+                                title="Lưu nội dung bạn vừa chỉnh sửa thành Prompt gốc mới của hệ thống. Lần sau hoặc khi bấm 'Quay lại prompt gốc' sẽ dùng prompt này."
+                              >
+                                💾 Lưu lại prompt gốc
+                              </button>
+                              <button
+                                type="button"
+                                className="small"
+                                onClick={handleResetScene2}
+                                style={{ padding: '2px 8px', fontSize: 11 }}
+                                title="Huỷ các thay đổi vừa gõ và khôi phục về prompt gốc hiện hành"
+                              >
+                                🔄 Huỷ thay đổi
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="badge" style={{ background: '#475569', color: '#cbd5e1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                                📄 Đang ở prompt gốc {savedPrompts.case2_scene2 ? '(Riêng)' : '(Mặc định)'}
+                              </span>
+                              {savedPrompts.case2_scene2 && (
+                                <button
+                                  type="button"
+                                  className="small"
+                                  disabled={busy}
+                                  onClick={() => handleRestoreSystemDefault('case2_scene2')}
+                                  style={{ padding: '2px 6px', fontSize: 10, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)' }}
+                                  title="Khôi phục về mẫu gốc ban đầu lúc mới cài đặt của hệ thống"
+                                >
+                                  Khôi phục mặc định hệ thống
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <span className="muted" style={{ display: 'block', fontSize: 11, marginTop: 2 }}>
+                    Tiếp nối liền mạch từ khung hình cuối của Phân cảnh 1 làm Start Frame (Omni 1.1 Flash 720p 6s), xoay người khoe chi tiết lưng và kêu gọi mua hàng.
+                  </span>
+                  <textarea
+                    rows={6}
+                    className="mono small"
+                    value={promptScene2}
+                    onChange={(e) => setPromptScene2(e.target.value)}
+                    placeholder="Nhập prompt cho Phân cảnh 2..."
+                  />
+                  {promptScene2.includes('@@') && (
+                    <div className="row" style={{ marginTop: 4 }}>
+                      <button
+                        type="button"
+                        className="small"
+                        style={{ padding: '2px 8px', fontSize: 10, background: '#0284c7', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                        onClick={() => setPromptScene2(sanitizeMentions(promptScene2, false))}
+                      >
+                        ⚡ Sửa lỗi cú pháp @@ thành @
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="stack">
+                <div className="row between" style={{ alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
+                  <span className="small muted">
+                    Prompt 10s Trường hợp 1 (Đầy đủ Outfit) gửi sang Flow Omni Flash:
+                  </span>
+                  <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {isCase1FromApi ? (
+                      <>
+                        <span className="badge" style={{ background: '#7c3aed', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                          ✨ Prompt mới đã render (Gemini AI)
+                        </span>
+                        <button
+                          type="button"
+                          className="small"
+                          onClick={handleResetCase1}
+                          style={{ padding: '2px 8px', fontSize: 11 }}
+                        >
+                          🔄 Quay lại prompt gốc
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {isCase1Custom ? (
+                          <>
+                            <span className="badge" style={{ background: '#f59e0b', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                              ✏️ Đã chỉnh sửa prompt gốc
+                            </span>
+                            <button
+                              type="button"
+                              className="small"
+                              disabled={busy || !customCase1Prompt.trim()}
+                              onClick={handleSaveCase1AsBase}
+                              style={{ padding: '4px 12px', fontSize: 11, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 700, cursor: 'pointer' }}
+                              title="Lưu nội dung bạn vừa chỉnh sửa thành Prompt gốc mới cho TH1."
+                            >
+                              💾 Lưu lại prompt gốc
+                            </button>
+                            <button
+                              type="button"
+                              className="small"
+                              onClick={handleResetCase1}
+                              style={{ padding: '2px 8px', fontSize: 11 }}
+                            >
+                              🔄 Huỷ thay đổi
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="badge" style={{ background: '#475569', color: '#cbd5e1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                              📄 Đang ở prompt gốc {savedPrompts.case1 ? '(Riêng)' : '(Mặc định)'}
+                            </span>
+                            {savedPrompts.case1 && (
+                              <button
+                                type="button"
+                                className="small"
+                                disabled={busy}
+                                onClick={() => handleRestoreSystemDefault('case1')}
+                                style={{ padding: '2px 6px', fontSize: 10, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)' }}
+                              >
+                                Khôi phục mặc định hệ thống
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <textarea
+                  rows={8}
+                  className="mono small"
+                  value={customCase1Prompt}
+                  onChange={(e) => setCustomCase1Prompt(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tuỳ chọn âm thanh video */}
+        <div className="stack" style={{ background: 'var(--panel)', padding: '12px 14px', borderRadius: 8, gap: 8, border: '1px solid var(--line)' }}>
+          <b style={{ fontSize: 13 }}>🔊 Âm thanh khi ghép video hoàn chỉnh:</b>
+          <div className="row gap-md" style={{ flexWrap: 'wrap' }}>
+            <label className="radio" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="radio"
+                name="fashionKeepAudio"
+                checked={keepAudio === true}
+                onChange={() => setKeepAudio(true)}
+              />
+              <span><b>Giữ âm thanh / Giọng đọc gốc</b> (Nối tiếng Cảnh 1 + Cảnh 2 - Mặc định)</span>
+            </label>
+            <label className="radio" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="radio"
+                name="fashionKeepAudio"
+                checked={keepAudio === false}
+                onChange={() => setKeepAudio(false)}
+              />
+              <span><b>Không dùng âm thanh / Tắt tiếng</b> (Video câm)</span>
+            </label>
+          </div>
+          <small className="muted" style={{ fontSize: 11 }}>
+            {keepAudio
+              ? '✓ Video ghép sẽ giữ trọn vẹn lời thoại tiếng Việt và âm thanh gốc của nhân vật từ Google Flow theo từng phân cảnh.'
+              : '🔇 Video ghép sẽ tắt âm thanh hoàn toàn (video câm, phù hợp khi bạn muốn tự lồng nhạc/voiceover sau).'}
+          </small>
+        </div>
 
         <label className="check">
           <input
@@ -632,7 +1398,11 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           disabled={busy || missing.length > 0}
           onClick={startRun}
         >
-          {busy ? '… Đang xử lý' : '🎬 Tạo Video bán hàng thời trang (10s, Omni Flash)'}
+          {busy
+            ? '… Đang xử lý'
+            : isCase1
+              ? '🎬 Tạo Video thời trang TH1 (10s Full Outfit)'
+              : '🎬 Tạo Video thời trang TH2 (2 Phân cảnh: Cảnh 1 10s + Cảnh 2 6s)'}
         </button>
         {missing.length > 0 && (
           <span className="muted small">Cần chọn thêm: {missing.join(', ')}</span>
@@ -665,7 +1435,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                     <React.Fragment key={s.id}>
                       {idx > 0 && <span className="arrow">→</span>}
                       <span className={'stage ' + s.status} title={s.label}>
-                        {s.status === 'done' ? '✓' : s.status === 'running' ? '⏳' : '○'} {s.label}
+                        {s.status === 'done' ? '✓' : s.status === 'running' ? '⏳' : s.status === 'failed' ? '❌' : '○'} {s.label}
                       </span>
                     </React.Fragment>
                   ))}
@@ -696,11 +1466,81 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                   </div>
                 )}
 
-                {r.error && <div className="err small">{r.error}</div>}
+                {r.error && (
+                  <div className="err small" style={{ marginTop: 6, background: '#fee2e2', color: '#991b1b', padding: '6px 10px', borderRadius: 4 }}>
+                    ❌ {r.error}
+                  </div>
+                )}
 
-                <div className="row between" style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                <div className="row between" style={{ borderTop: '1px solid var(--line)', paddingTop: 8, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div className="row gap-sm" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+                    {r.status === 'running' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => run(async () => { await api.cancelRun(r.id); await refresh(); })}
+                      >
+                        ⏹ Huỷ
+                      </button>
+                    )}
+                    {(r.status === 'failed' || r.status === 'cancelled') && (
+                      <button
+                        type="button"
+                        className="primary small-btn"
+                        disabled={busy}
+                        onClick={() => run(async () => { await api.resumeRun(r.id); await refresh(); })}
+                      >
+                        ▶ Thử lại / Chạy tiếp
+                      </button>
+                    )}
+                    {r.status !== 'done' && (
+                      <button
+                        type="button"
+                        className="small-btn"
+                        disabled={busy}
+                        style={{ background: '#0284c7', color: '#fff', border: 'none', fontWeight: 600, padding: '5px 12px' }}
+                        title="Tải video mới nhất vừa render xong trong cửa sổ Chrome Google Flow về để tiếp tục bước tiếp theo"
+                        onClick={() => run(async () => {
+                          await api.importFlowRun(r.id);
+                          await refresh();
+                        })}
+                      >
+                        📥 Tải video từ Google Flow về {r.stages?.scene1?.status === 'done' ? '(Cảnh 2)' : '(Cảnh 1)'}
+                      </button>
+                    )}
+                    {r.status !== 'done' && (
+                      <div className="row gap-xs" style={{ alignItems: 'center' }}>
+                        <small className="muted">hoặc gán riêng:</small>
+                        <button
+                          type="button"
+                          className="small-btn"
+                          disabled={busy}
+                          style={{ fontSize: 11, padding: '3px 7px' }}
+                          title="Tải video Flow gán cho Cảnh 1 (Mặt trước)"
+                          onClick={() => run(async () => {
+                            await api.importFlowRun(r.id, { stageId: 'scene1' });
+                            await refresh();
+                          })}
+                        >
+                          Cảnh 1
+                        </button>
+                        <button
+                          type="button"
+                          className="small-btn"
+                          disabled={busy}
+                          style={{ fontSize: 11, padding: '3px 7px' }}
+                          title="Tải video Flow gán cho Cảnh 2 (Mặt sau)"
+                          onClick={() => run(async () => {
+                            await api.importFlowRun(r.id, { stageId: 'scene2' });
+                            await refresh();
+                          })}
+                        >
+                          Cảnh 2
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <ConfirmButton
-                    disabled={r.status === 'running'}
                     armedText="Xoá lần chạy này?"
                     onConfirm={() => run(async () => { await api.deleteRun(r.id); await refresh(); })}
                   >

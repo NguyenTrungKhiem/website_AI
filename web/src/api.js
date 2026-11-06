@@ -38,6 +38,7 @@ export const api = {
   motion: (body) => req('POST', '/api/jobs/motion', body),
   background: (body) => req('POST', '/api/jobs/background', body),
   retry: (id, prompt) => req('POST', `/api/jobs/${id}/retry`, { prompt }),
+  importFlowJob: (id) => req('POST', `/api/jobs/${id}/import-flow`),
   selectAttempt: (id, n) => req('POST', `/api/jobs/${id}/select`, { n }),
   deleteJob: (id) => req('DELETE', `/api/jobs/${id}`),
   deleteAttempt: (id, n) => req('DELETE', `/api/jobs/${id}/attempts/${n}`),
@@ -60,7 +61,9 @@ export const api = {
   createRun: (body) => req('POST', '/api/runs', body),
   resumeRun: (id) => req('POST', `/api/runs/${id}/resume`),
   cancelRun: (id) => req('POST', `/api/runs/${id}/cancel`),
+  importFlowRun: (id, body = {}) => req('POST', `/api/runs/${id}/import-flow`, body),
   deleteRun: (id, withJobs = true) => req('DELETE', `/api/runs/${id}?withJobs=${withJobs ? 1 : 0}`),
+  fetchLatestFlowVideo: () => req('POST', '/api/flow/latest-video'),
   flowStatus: () => req('GET', '/api/flow/status'),
   flowLaunch: () => req('POST', '/api/flow/launch'),
   flowPreset: (body) => req('POST', '/api/flow/preset', body),
@@ -76,4 +79,5 @@ export const api = {
   delogoMerge: (id) => req('POST', `/api/merges/${id}/delogo`),
   cropAsset: (body) => req('POST', '/api/assets/crop', body),
   renderBackAsset: (id, prompt) => req('POST', `/api/assets/${id}/render-back`, { prompt }),
+  analyzeFashionGarment: (body) => req('POST', '/api/fashion/analyze-and-prompt', body),
 };

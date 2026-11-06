@@ -99,7 +99,7 @@ export function getWatermarkBox(width, height) {
  * segments: [{ file, duration? }] — có duration thì ép đoạn đó đúng độ dài (cắt bớt hoặc giữ khung cuối)
  * audio: null | { file, ranges: [[start, end], ...] } (ghép từng khúc âm thanh) | { file, offset } (phát liên tục)
  */
-export function mergeVideos({
+export async function mergeVideos({
   segments,
   width,
   height,
@@ -111,6 +111,7 @@ export function mergeVideos({
   watermarkText = '',
   watermarkImagePath = null,
   watermarkFontSize = 20,
+  keepOriginalAudio = true,
 }) {
   const mode = removeWatermark === false ? 'off' : (watermarkMode || 'delogo');
   const args = ['-y'];
@@ -132,9 +133,30 @@ export function mergeVideos({
     filters.push(`${f},setpts=PTS-STARTPTS[v${i}]`);
   });
 
+  // Xác định có giữ và nối âm thanh gốc của các đoạn video hay không
+  let preserveAudio = false;
+  let segProbes = [];
+  if (!audio && keepOriginalAudio !== false) {
+    segProbes = await Promise.all(segments.map((s) => probe(s.file).catch(() => ({ hasAudio: false }))));
+    preserveAudio = segProbes.some((p) => p.hasAudio);
+  }
+
   const needsFilter = mode !== 'off';
   const concatTag = needsFilter ? 'vconcat' : 'v';
-  filters.push(`${segments.map((_, i) => `[v${i}]`).join('')}concat=n=${segments.length}:v=1:a=0[${concatTag}]`);
+
+  if (preserveAudio) {
+    segments.forEach((s, i) => {
+      if (segProbes[i]?.hasAudio) {
+        filters.push(`[${i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,asetpts=PTS-STARTPTS[a${i}]`);
+      } else {
+        const d = s.duration || segProbes[i]?.duration || 10;
+        filters.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${d}[a${i}]`);
+      }
+    });
+    filters.push(`${segments.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${segments.length}:v=1:a=1[${concatTag}][aconcat]`);
+  } else {
+    filters.push(`${segments.map((_, i) => `[v${i}]`).join('')}concat=n=${segments.length}:v=1:a=0[${concatTag}]`);
+  }
 
   if (mode === 'brand') {
     const box = getWatermarkBox(width, height);
@@ -169,6 +191,8 @@ export function mergeVideos({
       filters.push(`[${a}:a]atrim=start=${audio.offset || 0},asetpts=PTS-STARTPTS[a]`);
     }
     maps.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-shortest');
+  } else if (preserveAudio) {
+    maps.push('-map', '[aconcat]', '-c:a', 'aac', '-b:a', '192k');
   }
 
   args.push(
@@ -239,9 +263,34 @@ export function cutClip(src, dest, start, end, { mute = true, fps = 30 } = {}) {
   return run(ffmpegPath, args);
 }
 
-// Lấy 1 khung hình nguyên kích thước tại giây `at` (dùng làm ảnh tham chiếu bối cảnh)
+// Lấy 1 khung hình nguyên kích thước tại giây `at` (dùng làm ảnh tham chiếu bối cảnh / khung hình)
 export function frameAt(src, dest, at = 0.1) {
-  return run(ffmpegPath, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1', '-q:v', '2', dest]);
+  const isPng = dest.toLowerCase().endsWith('.png');
+  const args = ['-y', '-ss', String(at), '-i', src, '-frames:v', '1'];
+  if (isPng) {
+    args.push('-c:v', 'png', '-pix_fmt', 'rgb24');
+  } else {
+    args.push('-q:v', '2');
+  }
+  args.push(dest);
+  return run(ffmpegPath, args);
+}
+
+// Trích xuất khung hình cuối cùng của video ở định dạng PNG chuẩn màu rgb24 nguyên bản (giữ nguyên dải màu gốc, không bị nén mất màu như JPG)
+export async function extractLastFrame(src, dest) {
+  const info = await probe(src);
+  const at = Math.max(0, (info.duration || 1) - 0.08);
+  const targetPath = dest.toLowerCase().endsWith('.png') ? dest : `${dest.replace(/\.[^.]+$/, '')}.png`;
+  await run(ffmpegPath, [
+    '-y',
+    '-ss', String(at),
+    '-i', src,
+    '-frames:v', '1',
+    '-c:v', 'png',
+    '-pix_fmt', 'rgb24',
+    targetPath,
+  ]);
+  return targetPath;
 }
 
 // Cắt một vùng hình chữ nhật từ ảnh nguồn
