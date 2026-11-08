@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fetch } from 'undici';
 import { db, save, DIRS, newId, mediaUrl } from './db.js';
+import { fetchProductWithBrowser, parseBrowserResult } from './browserScraper.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
@@ -379,6 +380,57 @@ function decodeHtmlEntities(str) {
     .replace(/&#x2F;/g, '/');
 }
 
+// Mô tả sản phẩm dạng text thuần (bỏ thẻ HTML, gộp khoảng trắng), cắt ở `max` ký tự — dùng cho Excel DiamondShop
+export const DESCRIPTION_MAX = 600;
+export function plainDescription(str, max = DESCRIPTION_MAX) {
+  if (!str) return '';
+  const text = decodeHtmlEntities(String(str))
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h\d)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s*\n\s*/g, '\n')
+    .trim();
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + '…' : text;
+}
+
+/**
+ * Chuẩn hoá metadata sản phẩm (dữ liệu từ trình duyệt gửi lên — không tin cậy) để gắn vào asset.product
+ * (tên, giá, mô tả, link, shopId/itemId, URL ảnh gốc) -> bảng "Mã & sản phẩm" / Excel cho DiamondShop của quy trình
+ * Ảnh model mặc đồ. Trả về null nếu không có gì đáng lưu.
+ */
+export function normalizeProductMeta(p) {
+  if (!p || typeof p !== 'object') return null;
+  const str = (v, max = 300) => (v == null ? '' : String(v).trim().slice(0, max));
+  // Giá VND là số nguyên: chuỗi "259.000" / "259,000đ" -> 259000 (dấu chấm/phẩy là ngăn hàng nghìn)
+  const num = (v) => {
+    const n = typeof v === 'number' ? Math.round(v) : Number(String(v ?? '').replace(/\D/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const digits = (v) => (v != null && /^\d{1,20}$/.test(String(v).trim()) ? String(v).trim() : null);
+  const ids = p.rawId && typeof p.rawId === 'object' ? p.rawId : {};
+  const images = (Array.isArray(p.images) ? p.images : [])
+    .map((im) => (typeof im === 'string' ? im : im?.url))
+    .filter((u) => typeof u === 'string' && /^https:\/\//i.test(u))
+    .slice(0, 12);
+  const meta = {
+    title: str(p.title),
+    rawTitle: str(p.rawTitle),
+    description: plainDescription(p.description),
+    features: (Array.isArray(p.features) ? p.features : []).map((f) => str(f, 200)).filter(Boolean).slice(0, 10),
+    price: num(p.price),
+    url: /^https?:\/\//i.test(str(p.url, 2000)) ? str(p.url, 2000) : '',
+    platform: str(p.platform, 20) || 'unknown',
+    shopId: digits(p.shopId ?? ids.shopId),
+    itemId: digits(p.itemId ?? ids.itemId ?? ids.productId),
+    images,
+    code: /^[a-zA-Z0-9-_]{1,32}$/.test(str(p.code, 32)) ? str(p.code, 32).toUpperCase() : null,
+  };
+  if (!meta.title && !meta.url && !meta.itemId && !images.length) return null;
+  return meta;
+}
+
 /**
  * ============================================================================
  * BƯỚC 4: Cơ chế dự phòng trích xuất từ Slug URL (Khi sàn chặn bot / SPA)
@@ -651,11 +703,44 @@ export async function searchFallbackImages(query, limit = 6) {
 }
 
 /**
+ * Gộp dữ liệu đọc qua Chrome (browserScraper.parseBrowserResult: { title, description, price, images }) vào kết quả
+ * bóc tách HTML ({ title, description, price, currency, images }): chỉ bù phần HTML thiếu — giá (Shopee giấu giá trong
+ * HTML SSR nên gần như luôn thiếu), tên / mô tả nếu trống, ảnh nếu HTML không có ảnh nào. Không ghi đè dữ liệu HTML đã có.
+ * Hàm thuần, có test (scripts/test-product-scraper.mjs). Trả thêm usedBrowser, priceSource ('html' | 'browser' | null),
+ * imageSource ('html' | 'browser' | 'none').
+ */
+export function mergeBrowserData(extracted, parsed) {
+  const images = Array.isArray(extracted.images) ? extracted.images : [];
+  const out = { ...extracted, images, usedBrowser: false, priceSource: extracted.price > 0 ? 'html' : null, imageSource: images.length ? 'html' : 'none' };
+  if (!parsed) return out;
+  if (!(out.price > 0) && parsed.price > 0) {
+    out.price = Math.round(Number(parsed.price));
+    out.priceSource = 'browser';
+    out.usedBrowser = true;
+  }
+  if (!out.title && parsed.title) {
+    out.title = parsed.title;
+    out.usedBrowser = true;
+  }
+  if (!out.description && parsed.description) {
+    out.description = parsed.description;
+    out.usedBrowser = true;
+  }
+  if (!images.length && parsed.images?.length) {
+    out.images = parsed.images;
+    out.imageSource = 'browser';
+    out.usedBrowser = true;
+  }
+  return out;
+}
+
+/**
  * ============================================================================
- * HÀM ĐIỀU PHỐI CHÍNH: fetchProduct(url)
+ * HÀM ĐIỀU PHỐI CHÍNH: fetchProduct(url, opts)
+ *   opts.browser: hàm thay fetchProductWithBrowser (test), hoặc false = không dùng Chrome
  * ============================================================================
  */
-export async function fetchProduct(inputUrl) {
+export async function fetchProduct(inputUrl, opts = {}) {
   if (!inputUrl?.trim()) throw new Error('Chưa dán đường link sản phẩm');
   const rawInput = inputUrl.trim().match(/^https?:\/\//i) ? inputUrl.trim() : 'https://' + inputUrl.trim();
 
@@ -698,7 +783,23 @@ export async function fetchProduct(inputUrl) {
     } catch {}
   }
 
-  const extracted = extractFromHtml(rawHtml, platform, finalUrl);
+  let extracted = extractFromHtml(rawHtml, platform, finalUrl);
+
+  // Bước 3b: Sàn giấu giá (Shopee: HTML SSR có tên + ảnh nhưng mọi trường giá đều null) hoặc không trả ảnh → đọc qua
+  // Chrome của Flow (browserScraper.js: trang tự gọi API nội bộ của sàn, có giá). Chỉ bù phần HTML thiếu (mergeBrowserData);
+  // Chrome chưa mở thì bỏ qua và báo trong priceNote để người dùng nhập giá tay ngay trong kết quả bóc tách.
+  let usedBrowser = false;
+  let browserNote = '';
+  if (opts.browser !== false && platform !== 'unknown' && (!(extracted.price > 0) || extracted.images.length === 0)) {
+    const r = await (opts.browser || fetchProductWithBrowser)(finalUrl, { timeoutMs: 20_000 }).catch(() => null);
+    if (r) {
+      extracted = mergeBrowserData(extracted, parseBrowserResult(r));
+      usedBrowser = extracted.usedBrowser;
+      if (!(extracted.price > 0)) browserNote = r.blocked ? 'Sàn yêu cầu xác minh trong cửa sổ Chrome — qua bước đó rồi bóc tách lại, hoặc nhập giá tay.' : 'Sàn không trả giá — nhập giá tay bên dưới.';
+    } else {
+      browserNote = 'Mở Chrome cho Flow (Cài đặt → Mở Chrome & đăng nhập) rồi bóc tách lại để lấy giá tự động, hoặc nhập giá tay.';
+    }
+  }
 
   // Bước 4: Cơ chế dự phòng từ Slug nếu tiêu đề bị thiếu hoặc chặn bot
   let rawTitle = extracted.title;
@@ -742,8 +843,12 @@ export async function fetchProduct(inputUrl) {
     platformLabel: getPlatformLabel(platform),
     url: finalUrl,
     rawId: ids,
+    // Mã shop / mã sản phẩm phẳng (Shopee: shopId + itemId; TikTok: productId -> itemId) để dựng link chuẩn cho DiamondShop
+    shopId: ids?.shopId || null,
+    itemId: ids?.itemId || ids?.productId || null,
     title: cleaned.cleanTitle || rawTitle || 'Sản phẩm',
     rawTitle: rawTitle || '',
+    description: plainDescription(extracted.description), // mô tả gốc, text thuần, ≤ 600 ký tự
     brand: cleaned.brand,
     model: cleaned.model,
     features: cleaned.features || [],
@@ -752,8 +857,11 @@ export async function fetchProduct(inputUrl) {
     images,
     usedFallbackImage,
     usedGemini: cleaned.usedGemini,
-    usedBrowser: false,
-    imageSource: extracted.images.length ? 'html' : 'none',
+    usedBrowser,
+    imageSource: usedFallbackImage ? 'fallback' : extracted.imageSource || (extracted.images.length ? 'html' : 'none'),
+    // Nguồn giá: 'html' (trang sản phẩm) | 'browser' (Chrome của Flow) | null (chưa có → người dùng nhập tay, xem priceNote)
+    priceSource: cleaned.price > 0 ? extracted.priceSource || 'html' : null,
+    priceNote: cleaned.price > 0 ? '' : browserNote || 'Sàn không trả giá — nhập giá tay bên dưới.',
     note: images.length === 0 ? 'Không lấy được ảnh nào từ link này.' : '',
   };
 }
@@ -764,9 +872,12 @@ export async function fetchProduct(inputUrl) {
  * ============================================================================
  */
 // staging = ảnh "nháp" (bóc tách để làm sạch / xem thử): không hiện trong thư viện cho tới khi người dùng bấm Dùng
-export async function importImages(kind = 'product', images = [], { staging = false } = {}) {
+// product = kết quả bóc tách (fetchProduct) của sản phẩm chứa các ảnh này -> lưu vào asset.product (tên, giá, mô tả,
+// link, shopId/itemId…) để quy trình Ảnh model mặc đồ xuất Excel cho DiamondShop. Asset cũ không có product vẫn dùng được.
+export async function importImages(kind = 'product', images = [], { staging = false, product = null } = {}) {
   if (!images.length) throw new Error('Chưa chọn ảnh nào để thêm vào thư viện');
   const out = [];
+  const meta = normalizeProductMeta(product);
 
   for (const im of images) {
     const urlStr = im.url;
@@ -810,6 +921,7 @@ export async function importImages(kind = 'product', images = [], { staging = fa
       source: urlStr,
       staging: !!staging,
     };
+    if (meta) asset.product = { ...meta, code: meta.code || null };
 
     db.assets.unshift(asset);
     out.push({ ...asset, url: mediaUrl(dest) });

@@ -307,6 +307,30 @@ export function imageThumb(src, dest) {
   return run(ffmpegPath, ['-y', '-i', src, '-vf', 'scale=320:-2', dest]);
 }
 
+// Tỷ lệ 0–1 -> chuỗi số gọn cho biểu thức ffmpeg (chặn trong [0, 1])
+const badgeRatio = (v, dflt) => {
+  const n = Number(v);
+  return String(Math.min(1, Math.max(0, Number.isFinite(n) ? n : dflt)));
+};
+
+/**
+ * Đè PNG khung mã sản phẩm lên 1 ảnh (ảnh kết quả của quy trình chỉ làm ảnh "Ảnh model mặc đồ") -> file ảnh mới.
+ * x, y = tỷ lệ tâm khung (0–1) so với khung hình; frameWidth = chiều rộng khung hình mà PNG được vẽ cho,
+ * width = chiều rộng ảnh thật -> PNG được scale cho đúng cỡ nếu hai số khác nhau. Hàm thuần (để kiểm thử), overlayBadge chạy ffmpeg.
+ */
+export function buildOverlayBadgeArgs({ src, badge, dest, x = 0.5, y = 0.12, frameWidth, width }) {
+  const fw = Number(frameWidth);
+  const w = Number(width);
+  const prep = fw > 0 && w > 0 && Math.abs(fw - w) > 1
+    ? `[1:v]format=rgba,scale=trunc(iw*${w}/${fw}/2)*2:-2[b]`
+    : '[1:v]format=rgba[b]';
+  const filter = `${prep};[0:v][b]overlay=x=W*${badgeRatio(x, 0.5)}-overlay_w/2:y=H*${badgeRatio(y, 0.12)}-overlay_h/2:format=auto[v]`;
+  return ['-y', '-i', src, '-i', badge, '-filter_complex', filter, '-map', '[v]', '-frames:v', '1', dest];
+}
+export function overlayBadge(opts) {
+  return run(ffmpegPath, buildOverlayBadgeArgs(opts));
+}
+
 export function thumbnail(src, dest, at = 0.5) {
   return run(ffmpegPath, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', dest]);
 }

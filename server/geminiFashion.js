@@ -2,21 +2,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fetch } from 'undici';
 
-export const DEFAULT_FASHION_SCENE1_TEMPLATE = `Setup (10s): Full 10s Korean KOC clip (Part 1), static camera, Vietnamese female voice with lip-sync, small 20pt white serif title "TODAY'S OUTFIT" at top-center fifth. Strictly lock 100% facial features, head-to-body ratio, and physique to @Image1.
+// Prompt gốc mặc định (xem docs/prompt-goc-mau-thoi-trang.md): phần tiếng Anh (Setup, mốc giây, hành động, @Image,
+// TODAY'S OUTFIT, Technical Rule) là chuẩn và KHÔNG bao giờ bị sửa; prompt viết chung chung về trang phục ("the @Image2 outfit")
+// nên dùng được cho mọi sản phẩm. Khi "Phân tích Sản phẩm & Dựng 2 Prompt", Gemini CHỈ viết lại các câu Voice: "..." tiếng Việt
+// cho khớp sản phẩm và hành động của từng mốc; Voice: [Silent] giữ nguyên.
+export const DEFAULT_FASHION_SCENE1_TEMPLATE = `Setup (10s): Full 10s Korean KOC clip (Part 1), static camera, Vietnamese female voice with lip-sync, 20pt white serif title "TODAY'S OUTFIT" at top-center fifth. Strictly lock 100% facial features, head-to-body ratio, and physique to @Image1.
 Scene: Consistent background using @Image3.
-0.0-1.2s: The exact @Image1 model in initial clothes holds the unaltered @Image2 silver-blue satin slip dress at her chest and shakes it once. Voice: "Lên dáng đầm lụa xanh nha!"
-1.2-3.0s: Hard cut outfit change: the exact @Image1 model wears the 1:1 @Image2 slip dress (clean transition with zero garment redesign, preserving exact neckline, straps, and satin sheen), smiling and stroking the fabric. Voice: "Lụa ánh bạc bóng rủ, siêu tôn da."
-3.0-4.8s: Tucks hair behind ear, touches the exact thin straps and cowl neckline of @Image2. Voice: "Hai dây cổ đổ khoe xương quai xanh."
-4.8-6.5s: Faces front, places both hands on the cinched waist and smooths down lightly, maintaining @Image1 exact waist-to-hip ratio. Voice: "Chiết eo ôm dáng, tôn dáng cực kỳ!"
-6.5-8.5s: Stops speaking (mouth closed), pivots 180 degrees to show the exact 1:1 @Image4 back design, glides both hands down over the silhouette of the dress, and tilts her @Image1 face slightly over her shoulder with a closed-lip smile. Voice: [Silent]
-8.5-10.0s: Remains silent, pivots 180 degrees back to face front, standing stably to display the exact @Image2 dress and @Image1 face. Voice: [Silent]
-Technical Rule: 1:1 face and body proportion lock to @Image1 and 1:1 garment fidelity to @Image2 and @Image4 with zero AI morphing. Hard cut at 1.2s, Vietnamese lip-sync from 0.0-6.5s, silent from 6.5-10.0s, sharp front-facing frame at 10.0s.`;
+0.0-1.5s: The @Image1 model in initial clothes holds the @Image2 outfit with both hands, sways it side-to-side once, then presses it flat against her torso. Voice: "Lên dáng bộ đồ hôm nay nha!"
+1.5-3.0s: Instant match-cut transition as the outfit touches her body: the @Image1 model now wears the 1:1 @Image2 outfit (100% initial clothes removed, strictly preserving the exact unaltered design, colors, and fabric from @Image2), smiling and stroking the fabric. Voice: "Chất vải mềm mượt, lên dáng siêu tôn da."
+3.0-4.8s: Tucks hair behind ear and lightly touches the neckline and upper chest details of the @Image2 outfit. Voice: "Phần cổ áo nhìn xinh xỉu luôn á."
+4.8-6.5s: Faces front, places both hands at her waist and smooths downward gently along her sides, maintaining @Image1 exact waist-to-hip ratio. Voice: "Form ôm dáng, tôn eo cực kỳ!"
+6.5-8.5s: Stops speaking (mouth closed), pivots 180 degrees to show the 1:1 @Image4 back view, glides both hands down over the silhouette of the outfit, and tilts her @Image1 face slightly over her shoulder with a closed-lip smile. Voice: [Silent]
+8.5-10.0s: Remains silent, pivots 180 degrees back to face front, standing stably front-and-center to clearly display the full @Image2 outfit and @Image1 face. Voice: [Silent]
+Technical Rule: 1:1 face and body lock to @Image1 and 1:1 garment fidelity to @Image2 and @Image4 with zero morphing or structural alteration. Clean match cut at 1.5s, Vietnamese lip-sync from 0.0-6.5s, silent from 6.5-10.0s, sharp front-facing frame at 10.0s.`;
 
-export const DEFAULT_FASHION_SCENE2_TEMPLATE = `Setup (6s): Seamless continuation from the exact starting front-facing frame, static camera, Vietnamese female voice with lip-sync. Strictly lock 100% color grading, white balance, exposure, contrast, facial identity, body proportions, and dress structure from frame 0.0s.
-0.0-1.8s: Starting from the initial front-facing pose, the model runs her hands down the exact silver-blue satin skirt and side slit while speaking. Voice: "Tà suông xẻ gấu bước đi siêu thanh thoát."
-1.8-4.5s: Faces front, makes a peace sign near her eyes, and kicks one leg to the side while maintaining exact facial features, skin tone, and dress color. Voice: "Đi tiệc hay dạo phố đều xinh. Vào bio nhập mã, mua ủng hộ em nha, em cảm ơn!"
+export const DEFAULT_FASHION_SCENE2_TEMPLATE = `Setup (6s): Seamless continuation from the exact starting front-facing frame, static camera, Vietnamese female voice with lip-sync. Strictly lock 100% color grading, white balance, exposure, contrast, facial identity, body proportions, and unaltered outfit design from frame 0.0s.
+0.0-1.8s: Starting from the initial front-facing pose, the model runs her hands down the lower part of the outfit while speaking. Voice: "Phần dưới rủ nhẹ, đi lại siêu thoải mái."
+1.8-4.5s: Faces front, makes a peace sign near her eyes, and kicks one leg to the side while maintaining exact @Image1 facial features, skin tone, and original outfit colors. Voice: "Đi chơi hay đi làm đều xinh. Vào bio nhập mã mua sản phẩm nha!"
 4.5-6.0s: Stops speaking (mouth closed), smiles brightly, waves goodbye with both hands, and blows a kiss at the camera. Voice: [Silent]
-Technical Rule: Zero camera movement, zero face morphing, and zero garment alteration. Strictly preserve 1:1 color palette, saturation, shadows, highlights, skin tone, and exact silver-blue RGB hue from the attached starting frame with zero color drift, auto-exposure, or contrast shift across all 6.0s. Accurate Vietnamese lip-sync from 0.0-4.5s, silent action from 4.5-6.0s.`;
+Technical Rule: Zero camera movement, zero face morphing, and zero garment alteration. Strictly preserve 1:1 color palette, saturation, shadows, highlights, skin tone, and exact garment RGB hues from the attached starting frame with zero color drift, auto-exposure, or contrast shift across all 6.0s. Accurate Vietnamese lip-sync from 0.0-4.5s, silent action from 4.5-6.0s.`;
+
+// Trường hợp 3: Áo dài (2 phân cảnh 10s + 10s, cùng cơ chế với TH2: Cảnh 1 Thành phần -> khung cuối -> Cảnh 2 Khung hình bắt đầu).
+export const DEFAULT_FASHION_AODAI_SCENE1_TEMPLATE = `Setup (10s): Full 10s Korean KOC clip (Part 1), static camera, Vietnamese female voice with lip-sync, 20pt white serif title "TODAY'S OUTFIT" at top-center fifth. Strictly lock 100% facial features, head-to-body ratio, and physique to @Image1.
+Scene: Consistent background using @Image3.
+0.0-1.5s: The @Image1 model in initial clothes holds a hanger with the @Image2 outfit in her right hand, sways it once, then presses it flat against her torso. Voice: "Lên dáng áo dài lụa đỏ nha!"
+1.5-3.8s: Instant match-cut transition as the outfit touches her body: the @Image1 model now wears the 1:1 @Image2 outfit (100% initial clothes removed, strictly preserving the exact unaltered design from @Image2), smiling and raising one hand to lightly touch her neckline and upper right chest area. Voice: "Lụa đỏ đô bóng mượt, cổ viền trắng đính nút hoa siêu xinh."
+3.8-5.8s: Faces front, places both hands at her waist and smooths downward gently along her sides, maintaining @Image1 waist-to-hip ratio. Voice: "Áo chiết eo ôm sát, tôn dáng truyền thống cực kỳ!"
+5.8-8.8s: Uses one hand to lightly sweep the front outer layer of the @Image2 outfit to one side to reveal the lower part of the outfit underneath, and gently touches the fabric. Voice: "Quần lụa trắng kem ống rộng, cạp cao che khuyết điểm đỉnh luôn."
+8.8-10.0s: Mouth closed, lowers her hand to let the outfit fall back naturally into place, standing stably facing front with a gentle smile. Voice: [Silent]
+Technical Rule: 1:1 face and body lock to @Image1 and 1:1 garment fidelity to @Image2 with zero morphing or structural alteration. Clean match cut at 1.5s, Vietnamese lip-sync from 0.0-8.8s, silent from 8.8-10.0s, sharp front-facing frame at 10.0s.`;
+
+export const DEFAULT_FASHION_AODAI_SCENE2_TEMPLATE = `Setup (10s): Seamless continuation from the exact starting front-facing frame, static camera, Vietnamese female voice with lip-sync. Strictly lock 100% color grading, white balance, exposure, contrast, facial identity, body proportions, and unaltered outfit design from frame 0.0s.
+0.0-3.2s: Starting from the front-facing pose, the model remains silent (mouth closed), pivots 180 degrees to show the 1:1 @Image4 back view, tilts her @Image1 head slightly looking downward with a closed-lip smile, and uses one hand to gently pull the back outer layer of the outfit to one side to reveal the lower part of the outfit and hip/glute silhouette. Voice: [Silent]
+3.2-4.4s: Remains silent, releases her hand to let the outfit fall smoothly back into place, and pivots 180 degrees back to face front stably. Voice: [Silent]
+4.4-7.8s: Faces front, smiles brightly and gestures naturally with her hands while speaking, maintaining exact @Image1 facial features and original outfit appearance. Voice: "Bộ áo dài này đi chơi du xuân là hết ý. Cảm ơn mọi người đã xem, vào bio nhập mã mua sản phẩm nha!"
+7.8-10.0s: Stops speaking (mouth closed), acts playful and lively, blows a kiss with her right hand, then raises both hands to wave goodbye. Voice: [Silent]
+Technical Rule: Zero camera movement, zero face morphing, and zero garment alteration. Strictly preserve 1:1 color palette, saturation, shadows, highlights, skin tone, and exact garment RGB hues from the starting frame and @Image4 across all 10.0s. Silent from 0.0-4.4s, Vietnamese lip-sync from 4.4-7.8s, silent from 7.8-10.0s.`;
 
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -157,13 +178,14 @@ export function sanitizeFlowPromptMentions(p, isCase1 = false) {
   s = s.replace(/@Image(\d+)([a-zA-Z])/g, '@Image$1 $2');
 
   // 5. Khôi phục @Image2 nếu Gemini bị mất ở mốc 0.0-1.2s ("holds the ... garment" hoặc "holds the ... dress/outfit")
-  s = s.replace(/(holds\s+the)\s+(?!@Image2)(.*?chest)/i, '$1 @Image2 $2');
+  //    Chỉ chèn khi cả câu chưa có @Image2 (tránh "wears the @Image2 1:1 @Image2 outfit")
+  s = s.replace(/(holds\s+the)\s+(?![^.\n]*@Image2)(.*?chest)/i, '$1 @Image2 $2');
 
   // 6. Khôi phục @Image2 nếu Gemini bị mất ở mốc 1.2-3.0s ("wears the ... on bare shoulders" hoặc "wears the ... garment")
-  s = s.replace(/(wears\s+the)\s+(?!@Image2)(.*?on\s+bare\s+shoulders|.*?garment|.*?dress|.*?outfit)/i, '$1 @Image2 $2');
+  s = s.replace(/(wears\s+the)\s+(?![^.\n]*@Image2)(.*?on\s+bare\s+shoulders|.*?garment|.*?dress|.*?outfit)/i, '$1 @Image2 $2');
 
   // 7. Khôi phục @Image2 nếu Gemini bị mất ở mốc 8.5-10.0s ("display the full ... garment")
-  s = s.replace(/(display\s+the\s+full)\s+(?!@Image2)/i, '$1 @Image2 ');
+  s = s.replace(/(display\s+the\s+full)\s+(?![^.\n]*@Image2)/i, '$1 @Image2 ');
 
   // 8. Đảm bảo phần Scene luôn có @Image3 (TH2) hoặc @Image6 (TH1)
   const expectedBgTag = isCase1 ? '@Image6' : '@Image3';
@@ -177,8 +199,58 @@ export function sanitizeFlowPromptMentions(p, isCase1 = false) {
   return s.trim();
 }
 
+// Một câu thoại có lời: Voice: "..." (Voice: [Silent] không phải slot và được giữ nguyên)
+const VOICE_RE = /Voice:\s*"([^"\n]*)"/g;
+
 /**
- * Bước 2: Dùng Mô tả sản phẩm + 2 Prompt gốc mẫu gọi Gemini render 2 Prompt mới phù hợp với sản phẩm
+ * Tách các ô lời thoại Voice: "..." của một prompt phân cảnh, kèm mốc giây + hành động tiếng Anh của mốc đó
+ * để Gemini biết nhân vật đang làm gì khi nói câu này.
+ */
+export function extractVoiceSlots(prompt) {
+  const text = String(prompt || '');
+  const slots = [];
+  for (const m of text.matchAll(VOICE_RE)) {
+    const lineStart = text.lastIndexOf('\n', m.index) + 1;
+    const line = text.slice(lineStart, m.index);
+    const t = line.match(/^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*s\s*:/i);
+    const seconds = t ? Math.max(0, +(parseFloat(t[2]) - parseFloat(t[1])).toFixed(1)) : null;
+    slots.push({
+      time: t ? `${t[1]}-${t[2]}s` : '',
+      seconds,
+      action: line.slice(t ? t[0].length : 0).trim(),
+      oldVoice: m[1].trim(),
+    });
+  }
+  return slots;
+}
+
+/**
+ * Thay lần lượt các Voice: "..." trong prompt bằng lời thoại mới; chỉ phần trong ngoặc kép đổi,
+ * toàn bộ phần tiếng Anh còn lại giữ nguyên từng ký tự. Ô nào thiếu/rỗng thì giữ câu cũ.
+ */
+export function applyVoices(prompt, voices = []) {
+  let i = 0;
+  return String(prompt || '').replace(VOICE_RE, (full) => {
+    const v = voices[i++];
+    const clean = typeof v === 'string' ? v.replace(/["\n]/g, '').replace(/\s{2,}/g, ' ').trim() : '';
+    return clean ? `Voice: "${clean}"` : full;
+  });
+}
+
+function describeSlots(slots, label) {
+  if (!slots.length) return `${label}: (không có câu thoại nào cần viết)`;
+  return `${label}:\n` + slots.map((s, i) => {
+    const budget = s.seconds ? `${s.seconds} giây → khoảng ${Math.max(3, Math.round(s.seconds * 3))}-${Math.max(4, Math.round(s.seconds * 4))} tiếng (âm tiết), nên dùng gần hết` : 'không rõ thời lượng → 1 câu vừa phải';
+    return `  [${i + 1}] Mốc ${s.time || '?'} (${budget})
+      Hành động của nhân vật (tiếng Anh, giữ nguyên, chỉ để bạn hiểu ngữ cảnh): ${s.action}
+      Lời thoại cũ (chỉ tham khảo giọng điệu, KHÔNG giữ mô tả sản phẩm cũ): "${s.oldVoice}"`;
+  }).join('\n');
+}
+
+/**
+ * Bước 2: Chỉ viết lại LỜI THOẠI (Voice) cho khớp sản phẩm + hành động từng mốc.
+ * Prompt tiếng Anh của 2 phân cảnh đã chuẩn nên KHÔNG sửa: Gemini chỉ trả về danh sách câu thoại,
+ * server ghép lại vào đúng vị trí Voice: "..." của prompt gốc.
  */
 export async function generateFashionScenePrompts({
   productData,
@@ -189,44 +261,37 @@ export async function generateFashionScenePrompts({
 }) {
   if (!apiKey) throw new Error('Chưa cấu hình Gemini API Key');
 
-  const promptText = `Bạn là chuyên gia Prompt Engineering cho mô hình Google Flow (Omni 1.1 Flash Video AI) chuyên sản xuất video KOC thời trang bán hàng ngắn.
+  const slots1 = extractVoiceSlots(basePromptScene1);
+  const slots2 = extractVoiceSlots(basePromptScene2);
+  if (!slots1.length && !slots2.length) {
+    // Không có Voice: "..." nào để viết lại → trả nguyên prompt gốc
+    return { promptScene1: basePromptScene1, promptScene2: basePromptScene2, voices: { scene1: [], scene2: [] } };
+  }
 
-Dưới đây là thông tin chi tiết về sản phẩm trang phục thực tế vừa được phân tích:
+  const promptText = `Bạn là biên kịch lời thoại cho video KOC bán hàng thời trang ngắn (TikTok/Reels), nhân vật là nữ, nói tiếng Việt tự nhiên như đang tư vấn cho khách: thân thiện, dễ thương nhưng rõ mục đích bán hàng (khiến người xem muốn mặc thử và mua).
+
+SẢN PHẨM THỰC TẾ vừa được phân tích từ ảnh (nguồn duy nhất về tên, màu, chất liệu, chi tiết):
 ${JSON.stringify(productData, null, 2)}
 
-Và đây là 2 PROMPT GỐC DẠNG MẪU:
---- PROMPT GỐC PHÂN CẢNH 1 (10 GIÂY - MẶT TRƯỚC - THÀNH PHẦN) ---
-${basePromptScene1}
+Kịch bản 2 phân cảnh đã được viết sẵn bằng tiếng Anh và ĐÃ CHUẨN, KHÔNG ĐƯỢC SỬA. Bạn CHỈ viết lại lời thoại tiếng Việt (Voice) cho từng mốc dưới đây, sao cho khớp với hành động của nhân vật ở mốc đó và khớp với sản phẩm thực tế.
 
---- PROMPT GỐC PHÂN CẢNH 2 (6 GIÂY - MẶT SAU - KHUNG HÌNH BẮT ĐẦU) ---
-${basePromptScene2}
+${describeSlots(slots1, 'PHÂN CẢNH 1 (mặt trước)')}
 
-ĐẶC BIỆT CHÚ Ý VỀ CÁC THẺ MENTION ẢNH (@Image) TRÊN GOOGLE FLOW:
-Google Flow cần nhận diện chính xác các thẻ @Image để gắp đúng ảnh người mẫu, bối cảnh và trang phục vào video:
-- @Image1: Ảnh người mẫu KOC/KOL
-- @Image2: Ảnh trang phục mặt trước
-- @Image3: Ảnh bối cảnh phòng/studio
-- @Image4: Ảnh trang phục mặt sau
+${describeSlots(slots2, 'PHÂN CẢNH 2 (tiếp nối, có đoạn khoe mặt sau)')}
 
-QUY TẮC CÚ PHÁP BẮT BUỘC (TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM SAI):
-1. CHỈ DÙNG ĐÚNG 1 DẤU @ (Viết là "@Image1", "@Image2", "@Image3", "@Image4"). TUYỆT ĐỐI KHÔNG VIẾT 2 DẤU "@@" (như @@Image1, @@Image3 là SAI).
-2. LUÔN CÓ 1 KHOẢNG CÁCH (dấu cách) trước và sau thẻ @Image. Ví dụ viết: "using @Image3.", "The @Image1 model", "the @Image2 garment", "show the @Image4 back view". Không được viết dính liền chữ (cấm viết "using@Image3", "the@@Image1", "t@@Image4", "full@@Image2").
-3. BẮT BUỘC PHẢI GIỮ LẠI THẺ "@Image2" KHI THAY TÊN TRANG PHỤC:
-   - Ở mốc 0.0-1.2s: Viết "holds the @Image2 [tên trang phục + màu sắc + chất liệu] at her chest and shakes it once."
-   - Ở mốc 1.2-3.0s: Viết "the @Image1 model exclusively wears the @Image2 [tên trang phục] on bare shoulders"
-   - Ở mốc 8.5-10.0s: Viết "standing stably front-and-center to clearly display the full @Image2 [tên trang phục]."
-   TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ SÓT "@Image2", KHÔNG ĐƯỢC VIẾT THIẾU THÀNH "holds the     garment" hay "wears the garment".
-4. Ở mốc 6.5-8.5s: BẮT BUỘC PHẢI CÓ "show the @Image4 back view" (không được viết thành "t@@Image4").
-5. BẮT BUỘC GIỮ NGUYÊN: Setup (10s), các mốc giây chuẩn, text "TODAY'S OUTFIT" (size 20pt) và toàn bộ phần Technical Rule ở cuối của Phân cảnh 1.
-6. Ở PHÂN CẢNH 2 (promptScene2): BẮT BUỘC KHÓA CHẶT MÀU SẮC VÀ ÁNH SÁNG 1:1. Giữ nguyên câu Setup ("Strictly lock 100% color grading, white balance, exposure, contrast, facial identity, body proportions, and dress structure from frame 0.0s.") và toàn bộ Technical Rule ("Strictly preserve 1:1 color palette, saturation, shadows, highlights, skin tone, and exact RGB hue from the attached starting frame with zero color drift, auto-exposure, or contrast shift across all 6.0s.") để màu sắc và phơi sáng giữa 2 cảnh hoàn toàn đồng nhất.
+QUY TẮC VIẾT LỜI THOẠI:
+1. Mỗi câu phải khớp với thứ nhân vật đang làm/chạm/khoe ở mốc đó: đang cầm đồ lên → câu mở đầu giới thiệu sản phẩm, tạo hứng thú; vừa mặc vào / vuốt vải → nói về chất liệu và CẢM GIÁC KHI MẶC; chạm cổ áo/ngực áo → nói về chi tiết đó (cổ, nút, dây, tay áo...) và vì sao nó đẹp/tôn người mặc; vuốt eo/hông → nói về form dáng và cảm giác ôm vừa vặn, tôn dáng; vén/kéo lớp ngoài hay vuốt phần dưới → nói về phần dưới (quần, chân váy, tà, xẻ...) và sự thoải mái khi đi lại; mốc cuối có lời của phân cảnh 2 → gợi ý dịp mặc + GIỮ NGUYÊN lời kêu gọi mua của câu cũ (vd. "Cảm ơn mọi người đã xem, vào bio nhập mã mua sản phẩm nha!"), chỉ đổi phần nói về sản phẩm/dịp mặc.
+2. HƯỚNG BÁN HÀNG, nói LỢI ÍCH cho người mặc chứ không đọc thông số: mỗi câu nên có ít nhất 1 lợi ích cảm nhận được khi mặc vào — mát mẻ/thoáng, mềm nhẹ, không nhăn, không bí, ôm vừa vặn, che khuyết điểm, tôn eo/tôn dáng, lên hình đẹp, đi làm/đi chơi đều hợp... Ví dụ cách nói: "Lụa này mặc vào mát lắm, mềm rủ mà vẫn đứng dáng, lên hình sang cực kỳ." / "Quần ống rộng cạp cao nên đi lại thoải mái, chân nhìn dài hơn hẳn nha." Hạn chế câu khô cứng chỉ liệt kê màu + chất liệu + chi tiết.
+3. Mô tả sản phẩm phải đúng với phần SẢN PHẨM THỰC TẾ (category, color, fabric, frontDetails, backDetails); lợi ích phải hợp lý với chất liệu đó (lụa/satin/voan → mát, mềm, rủ; dạ/tweed → ấm, đứng dáng; cotton → thoáng, dễ chịu; thun → co giãn, thoải mái). Tuyệt đối không nhắc đặc điểm chỉ có ở lời thoại cũ mà sản phẩm mới không có (vd. "lụa đỏ", "nút hoa", "quần trắng kem", "hai dây cổ đổ"... nếu sản phẩm mới không có).
+4. Độ dài: dùng gần hết thời lượng của mốc (đọc khoảng 3-4 tiếng/giây), viết đủ ý, có thể 1-2 vế nối bằng dấu phẩy; không vượt mức tiếng tối đa đã ghi, không liệt kê dài dòng.
+5. Giọng điệu như đang nói chuyện với khách: tự nhiên, có "nha", "luôn", "cực kỳ", "mọi người ơi", "em thấy"... nhưng không lặp lại nguyên văn câu cũ.
+6. Không dùng dấu ngoặc kép bên trong câu, không xuống dòng, không emoji, không ghi chú tiếng Anh. Mỗi câu chỉ chứa lời nói.
+7. Trả về ĐÚNG SỐ LƯỢNG câu: scene1 có ${slots1.length} câu, scene2 có ${slots2.length} câu, theo đúng thứ tự mốc.
 
-NHIỆM VỤ:
-Tái cấu trúc và tạo ra 2 PROMPT MỚI bám sát các chi tiết thực tế của sản phẩm đã phân tích (chất vải, form dáng, chi tiết mặt trước/sau) và lời thoại Voice tiếng Việt tương ứng:
-
-Trả về định dạng JSON thuần theo cấu trúc:
+Trả về JSON thuần:
 {
-  "promptScene1": "Nội dung prompt tiếng Anh hoàn chỉnh cho Phân cảnh 1 (10s)",
-  "promptScene2": "Nội dung prompt tiếng Anh hoàn chỉnh cho Phân cảnh 2 (6s)"
+  "scene1": [${slots1.map((_, i) => `"câu thoại mốc ${i + 1}"`).join(', ')}],
+  "scene2": [${slots2.map((_, i) => `"câu thoại mốc ${i + 1}"`).join(', ')}]
 }`;
 
   const res = await callGeminiWithFallback({
@@ -237,8 +302,16 @@ Trả về định dạng JSON thuần theo cấu trúc:
     timeoutMs: 12000,
   });
 
+  const asList = (v) => (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).map((x) => (typeof x === 'string' ? x : String(x?.voice || x?.text || '')));
+  const voices1 = asList(res?.scene1);
+  const voices2 = asList(res?.scene2);
+  if (voices1.length !== slots1.length || voices2.length !== slots2.length) {
+    console.warn(`[Gemini API] Số câu thoại trả về lệch: cảnh 1 ${voices1.length}/${slots1.length}, cảnh 2 ${voices2.length}/${slots2.length} (ô thiếu giữ lời thoại cũ)`);
+  }
+
   return {
-    promptScene1: sanitizeFlowPromptMentions(res.promptScene1, false),
-    promptScene2: sanitizeFlowPromptMentions(res.promptScene2, false),
+    promptScene1: applyVoices(basePromptScene1, voices1),
+    promptScene2: applyVoices(basePromptScene2, voices2),
+    voices: { scene1: voices1, scene2: voices2 },
   };
 }

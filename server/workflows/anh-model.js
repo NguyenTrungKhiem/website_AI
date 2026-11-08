@@ -1,7 +1,11 @@
 // Quy trình "Ảnh model mặc đồ" (chỉ làm ảnh, không có video): 1 ảnh model toàn thân + NHIỀU ảnh trang phục
 // + 1 ảnh bối cảnh (có thể dính người) -> làm sạch bối cảnh (bỏ người) -> với MỖI trang phục render 1 ảnh
 // model mặc đúng bộ đó đứng trong bối cảnh đã làm sạch. Toàn bộ là sinh ảnh Nano Banana trên Flow (0 credit).
-// Ảnh kết quả được lưu vào thư viện (loại "lookbook"), có nút lưu thành ảnh model để dùng cho các quy trình video.
+// Ảnh kết quả được tải về ở bản 2K (menu Download "2K Upscaled" của Flow) và lưu vào thư viện (loại "lookbook"),
+// có nút lưu thành ảnh model để dùng cho các quy trình video.
+// Mỗi ảnh trang phục = 1 sản phẩm: metadata Shopee (tên, giá, link) đi theo asset.product -> bảng "Mã & sản phẩm" trên thẻ
+// lần chạy + xuất Excel cho DiamondShop (productExport.js); đặt mã xong thì bước 'badge' in mã lên từng ảnh kết quả.
+import { codedImagesOf, codedImagesStale, ensureCodedImages, productMetaOf } from '../productExport.js';
 
 const CLEAN_BACKGROUND_PROMPT = `Remove every person from this photo, including any body parts, hair, clothing, accessories, shadows and reflections of people.
 Keep everything else exactly as it is: the same place, walls, floor, furniture, objects, decorations, colors, lighting, camera angle, perspective and framing. Do not redesign, restyle or recolor the scene.
@@ -99,20 +103,49 @@ export default {
             imagePaths: [model, outfit, bg],
             template: ctx.prompt('render'),
             videoLabel: `${ctx.assetName(outfitId)} – ${ctx.assetName(ctx.inputs.model)}`,
-            meta: { outfitId, kind: 'lookbook', aspectRatio: '9:16' },
+            // imageQuality '2K': Flow tạo xong thì tải bản "2K Upscaled" (≈1536×2752) thay vì ảnh gốc 1K
+            meta: { outfitId, kind: 'lookbook', aspectRatio: '9:16', imageQuality: '2K' },
           });
         });
-        // Lưu ảnh kết quả vào thư viện ngay khi từng job xong (kể cả khi job khác còn chạy / lỗi)
+        // Lưu ảnh kết quả vào thư viện ngay khi từng job xong (kể cả khi job khác còn chạy / lỗi).
+        // Ảnh kết quả mang theo metadata sản phẩm (tên, giá, link Shopee) của ảnh trang phục -> dùng lại / xuất Excel sau này.
         const saveKind = ctx.run.options.saveAsModel ? 'model' : 'lookbook';
         for (const job of jobs) {
           if (job.status !== 'done' || !job.outputPath) continue;
           if (job.meta?.assetFrom === job.outputPath) continue; // đã lưu bản này (thử lại ra bản mới thì lưu thêm)
           const att = job.attempts.find((a) => a.outputPath === job.outputPath);
-          const a = ctx.registerAsset(saveKind, job.outputPath, job.videoLabel, { flowTitle: att?.flowTitle || null, fromJobId: job.id });
+          const outfitAsset = ctx.asset(job.meta?.outfitId);
+          const product = outfitAsset ? productMetaOf(outfitAsset) : null;
+          const a = ctx.registerAsset(saveKind, job.outputPath, job.videoLabel, {
+            flowTitle: att?.flowTitle || null,
+            fromJobId: job.id,
+            outfitId: job.meta?.outfitId || null,
+            ...(product ? { product } : {}),
+          });
           job.meta = { ...(job.meta || {}), assetId: a.id, assetFrom: job.outputPath };
         }
         return ctx.waitAll(jobs);
       },
     },
+    {
+      id: 'badge',
+      label: 'In mã lên ảnh',
+      // Chỉ có việc khi đã đặt mã trong bảng "Mã & sản phẩm" (hoặc còn ảnh có mã cũ cần dọn); đặt / đổi mã sau khi lần chạy
+      // xong thì sync() bên dưới mở lại bước này. Ảnh có mã là file riêng (coded-<run>-<ảnh>.png), ảnh render gốc giữ nguyên.
+      when: (run) => codedImagesOf(run).some((c) => c.wanted || c.stale),
+      async run(ctx) {
+        await ensureCodedImages(ctx.run);
+        return 'done';
+      },
+    },
   ],
+
+  // Mã / vị trí khung / ảnh render đổi so với ảnh có mã đã in -> in lại (runner gọi sau mỗi lần job đổi kết quả hoặc lưu mã)
+  sync(run) {
+    const st = run.stages?.badge;
+    if (!st || st.status === 'pending' || st.status === 'running') return false;
+    if (!codedImagesStale(run)) return false;
+    st.status = 'pending';
+    return true;
+  },
 };

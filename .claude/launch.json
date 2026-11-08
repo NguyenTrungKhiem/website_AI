@@ -9,6 +9,15 @@
         "start"
       ],
       "port": 3001
+    },
+    {
+      "name": "mock",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "cd /d C:Workweb-video&& set DATA_DIR=data/mock&& set PORT=3099&& node server/index.js"
+      ],
+      "port": 3099
     }
   ]
 }

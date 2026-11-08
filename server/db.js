@@ -21,8 +21,9 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const DEFAULT_SETTINGS = {
   engine: 'flow', // flow = tự động hoá Google Flow (dùng credit Flow) | mock = engine giả để thử quy trình
   flowResolution: '720p', // 360p rẻ hơn 1 nửa credit
-  flowVideoModel: 'Omni 1.1 Flash', // 'Omni 1.1 Flash' | 'Veo 3.1 - Fast' | 'Veo 3.1 - Quality' | 'Veo 3.1 - Lite'
-  flowDuration: '10s', // '10s' | '8s' | '6s' | '4s'
+  flowVideoModel: 'Omni 1.1 Flash', // 'Omni 1.2 Flash' | 'Omni 1.1 Flash' | 'Veo 3.1 - Fast' | 'Veo 3.1 - Quality' | 'Veo 3.1 - Lite'
+  flowDuration: '10s',
+  flowVideoAudio: 'flow', // công tắc "Trả về video không có âm thanh" của Flow: 'flow' = để nguyên | 'mute' = bật (video câm) | 'sound' = tắt (có âm thanh) // '10s' | '8s' | '6s' | '4s'
   flowProjectUrl: '', // dự án Flow dùng chung, tự tạo lần đầu
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
   aspectRatio: '9:16',
@@ -54,7 +55,8 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-const EMPTY = { settings: DEFAULT_SETTINGS, sources: [], clips: [], assets: [], jobs: [], audios: [], merges: [], posts: [], runs: [] };
+// codes: sổ mã sản phẩm (VAY_01, AO_02…) đã cấp cho ảnh mặt trước hoặc nhập từ file .txt (xem productCodes.js)
+const EMPTY = { settings: DEFAULT_SETTINGS, sources: [], clips: [], assets: [], jobs: [], audios: [], merges: [], posts: [], runs: [], codes: [] };
 
 // Cài đặt của Gemini API cũ (đã bỏ) -> xoá khỏi db.json cũ
 const REMOVED_SETTINGS = ['resolution', 'task', 'imageModel', 'concurrency'];
@@ -94,6 +96,10 @@ export function updateSettings(patch) {
   save();
   return db.settings;
 }
+
+// Model Omni dùng cho quy trình cần Omni (vd. Video bán hàng thời trang: thời lượng 10s/6s của Omni):
+// theo "Mô hình video trên Flow" trong Cài đặt nếu đó là Omni (1.1 / 1.2…), còn Cài đặt chọn Veo thì dùng Omni 1.1 Flash
+export const omniModel = () => (/omni/i.test(db.settings.flowVideoModel || '') ? db.settings.flowVideoModel : 'Omni 1.1 Flash');
 
 export const newId = () => crypto.randomBytes(6).toString('hex');
 

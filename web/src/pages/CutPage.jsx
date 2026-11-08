@@ -61,7 +61,7 @@ export default function CutPage({ state, refresh, go }) {
 
       {src && (
         <div className="card stack">
-          <CutEditor key={src.id} src={src} busy={busy} onExport={exportClips} />
+          <CutEditor key={src.id} src={src} busy={busy} onExport={exportClips} defaultSec={parseFloat(state.settings.flowDuration) || 10} />
           <div className="row between">
             <SourceAudio src={src} audios={state.audios} refresh={refresh} />
             <ConfirmButton

@@ -107,8 +107,8 @@ export default function SettingsPage({ state, refresh }) {
             {...f}
             path="flowVideoModel"
             label="Mô hình video trên Flow"
-            options={['Omni 1.1 Flash', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite']}
-            hint="Omni 1.1 Flash tạo video 10s phân đoạn ổn định (15 credits)"
+            options={['Omni 1.2 Flash', 'Omni 1.1 Flash', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite']}
+            hint="Omni 1.2 Flash là bản mới nhất trên Flow; Omni 1.1 Flash tạo video 10s phân đoạn ổn định (15 credits)"
           />
           <Field
             {...f}
@@ -120,6 +120,15 @@ export default function SettingsPage({ state, refresh }) {
           <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Dành cho Omni Flash: 720p ≈ 15-20 credit, 360p ≈ 10 credit / video" />
           <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />
           <Field {...f} path="flowProjectUrl" label="Dự án Flow dùng chung" hint="Để trống thì tự tạo dự án mới lần đầu" />
+          <label>
+            Âm thanh của video Flow tạo ra
+            <select value={s.flowVideoAudio || 'flow'} onChange={(e) => set({ ...s, flowVideoAudio: e.target.value })}>
+              <option value="flow">Để nguyên theo Flow</option>
+              <option value="mute">Không có âm thanh (bật "Trả về video không có âm thanh")</option>
+              <option value="sound">Có âm thanh (tắt "Trả về video không có âm thanh")</option>
+            </select>
+            <small className="muted">Trước mỗi lần tạo video, web tự bật/tắt công tắc này trong bảng cài đặt ⚙️ của dự án Flow</small>
+          </label>
         </div>
         <label className="check">
           <input type="checkbox" checked={!!s.flowAutoAgree} onChange={(e) => set({ ...s, flowAutoAgree: e.target.checked })} />

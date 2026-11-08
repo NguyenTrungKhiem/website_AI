@@ -6,6 +6,7 @@ import { createJob, createImportJob, retryJob, cancelJob, applyFlowVideoToJob, s
 import { createMerge, mergeSettledHooks } from '../merge.js';
 import { frameAt } from '../ffmpeg.js';
 import { WORKFLOWS } from './index.js';
+import { runHasProducts, productInputsOf, productItemsOf, codedImagesOf } from '../productExport.js';
 import fs from 'node:fs';
 
 export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, clipInputs = {}, options = {}, prompts = {} }) {
@@ -344,7 +345,24 @@ function syncRun(run) {
     const same = merge.inputPaths && current.every((p, i) => p && p === merge.inputPaths[i]);
     if (!same) { run.stages.merge = { status: 'pending' }; stale = true; }
   }
+  // Quy trình có luật phụ thuộc riêng (vd. Ảnh model mặc đồ: in lại mã khi mã / ảnh render đổi) tự đồng bộ thêm
+  const wf = WORKFLOWS[run.workflow];
+  if (wf?.sync && wf.sync(run)) stale = true;
   if (stale) save();
+  return stale;
+}
+
+// Đồng bộ lại lần chạy sau khi đầu vào của một bước đổi (kết quả job, mã sản phẩm / khung mã…): có bước phải làm lại
+// mà lần chạy đã xong/lỗi thì chạy tiếp. Trả về true nếu có bước bị đặt lại.
+export function resyncRun(run) {
+  const stale = syncRun(run);
+  if (stale && (run.status === 'done' || run.status === 'failed')) {
+    run.status = 'running';
+    run.error = null;
+    run.finishedAt = null;
+    save();
+  }
+  advance(run); // đang dừng chờ kiểm tra thì vẫn dừng (advance bỏ qua)
   return stale;
 }
 
@@ -353,13 +371,7 @@ export function touchJob(jobId) {
   const job = db.jobs.find((j) => j.id === jobId);
   const run = job?.runId && db.runs.find((r) => r.id === job.runId);
   if (!run) return;
-  if (syncRun(run) && (run.status === 'done' || run.status === 'failed')) {
-    run.status = 'running';
-    run.error = null;
-    run.finishedAt = null;
-    save();
-  }
-  advance(run); // đang dừng chờ kiểm tra thì vẫn dừng (advance bỏ qua)
+  resyncRun(run);
 }
 
 // Chạy tiếp quy trình từ bước đang dở. Gọi lại bao nhiêu lần cũng được.
@@ -414,6 +426,7 @@ function makeCtx(run, wf) {
     state: null, // trạng thái riêng của bước đang chạy (được lưu)
     prompt: (key) => run.prompts[key] || wf.prompts[key]?.text || '',
     assetPath: (id) => (id ? db.assets.find((a) => a.id === id)?.path || null : null),
+    asset: (id) => (id ? db.assets.find((a) => a.id === id) || null : null),
 
     // Lấy 1 khung hình của video gốc
     async frame(at) {
@@ -505,6 +518,8 @@ export function viewRun(run) {
   const merge = run.stages.merge?.mergeId && db.merges.find((m) => m.id === run.stages.merge.mergeId);
   const bgAsset = run.stages.background?.assetId && db.assets.find((a) => a.id === run.stages.background.assetId);
   const brief = (j) => j && { id: j.id, type: j.type, status: j.status, thumbUrl: mediaUrl(j.thumbPath), outputUrl: mediaUrl(j.outputPath), label: j.videoLabel, imported: j.type === 'import' };
+  // Quy trình chỉ làm ảnh: ảnh có mã đã in cho từng ảnh trang phục (key = id ảnh trang phục), xem productExport.codedImagesOf
+  const coded = Object.fromEntries(codedImagesOf(run).map((c) => [c.key, c]));
   return {
     ...run,
     workflowName: wf?.name || run.workflow,
@@ -529,13 +544,31 @@ export function viewRun(run) {
       );
       return { clipId: cid, name: clip?.name || cid, inputs, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
     }),
+    // Quy trình có bảng "Mã & sản phẩm" (Ảnh model mặc đồ: mỗi ảnh trang phục 1 dòng, xem productExport.js).
+    // productMode: 'input' | null; productItemCount: số dòng; productCount: số dòng đã lưu mã
+    hasProductInputs: runHasProducts(run),
+    productMode: productInputsOf(run.workflow)?.mode || null,
+    productItemCount: productItemsOf(run).filter((i) => i.assetId).length,
+    productCount: Object.values(run.products || {}).filter((p) => p?.code).length,
     anchorUrl: mediaUrl(run.stages.motion?.anchorPath), // khung mặt đã render của đoạn 1 (Thay trang phục)
-    // Ảnh kết quả của quy trình chỉ làm ảnh (key "render:…"): job + ảnh đã lưu vào thư viện (nếu có)
+    // Ảnh kết quả của quy trình chỉ làm ảnh (key "render:…"): job + ảnh đã lưu vào thư viện (nếu có) + mã sản phẩm và
+    // bản đã in mã (codedUrl; codedStale = mã / vị trí đổi, chưa in lại)
     outputs: Object.entries(active)
       .filter(([k]) => k.startsWith('render:'))
       .map(([k, j]) => {
         const a = j.meta?.assetId && db.assets.find((x) => x.id === j.meta.assetId);
-        return { key: k, ...brief(j), label: j.videoLabel, assetId: a?.id || null, assetUrl: a ? mediaUrl(a.path) : null };
+        const c = coded[j.meta?.outfitId];
+        return {
+          key: k,
+          ...brief(j),
+          label: j.videoLabel,
+          assetId: a?.id || null,
+          assetUrl: a ? mediaUrl(a.path) : null,
+          outfitId: j.meta?.outfitId || null,
+          code: c?.code || null,
+          codedUrl: c?.current?.path ? mediaUrl(c.current.path) : null,
+          codedStale: !!c?.stale,
+        };
       }),
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,

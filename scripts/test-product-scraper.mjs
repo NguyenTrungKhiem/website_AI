@@ -9,6 +9,7 @@ import {
   formatVND,
   searchFallbackImages,
   fetchProduct,
+  mergeBrowserData,
 } from '../server/productScraper.js';
 
 async function runTests() {
@@ -185,7 +186,29 @@ async function runTests() {
   console.log(`     - Số lượng ảnh sản phẩm: ${affiliateResult.images.length}`);
   console.log(`     - Ảnh đầu tiên: ${affiliateResult.images[0].url}`);
 
-  console.log('\n🎉 TẤT CẢ 8 BÀI TEST ĐÃ VƯỢT QUA 100%!');
+  // 9. Gộp dữ liệu đọc qua Chrome của Flow (Shopee giấu giá trong HTML) — hàm thuần, không cần Chrome
+  console.log('\n▶ Test 9: mergeBrowserData — bù giá / ảnh từ Chrome, giữ phần HTML đã có');
+  const htmlPart = { title: 'Áo dài', description: 'mô tả html', price: null, currency: 'VND', images: [{ url: 'https://down-vn.img.susercontent.com/file/a' }] };
+  const m1 = mergeBrowserData(htmlPart, { title: 'Áo dài (api)', description: 'mô tả api', price: 259000, images: [{ url: 'https://down-vn.img.susercontent.com/file/b' }] });
+  assert.equal(m1.price, 259000);
+  assert.equal(m1.priceSource, 'browser');
+  assert.equal(m1.usedBrowser, true);
+  assert.equal(m1.title, 'Áo dài', 'tên HTML giữ nguyên');
+  assert.equal(m1.images.length, 1, 'ảnh HTML giữ nguyên');
+  assert.equal(m1.imageSource, 'html');
+  const m2 = mergeBrowserData({ title: '', description: '', price: 199000, currency: 'VND', images: [] }, { title: 'Váy', description: '', price: 1, images: [{ url: 'https://down-vn.img.susercontent.com/file/c' }] });
+  assert.equal(m2.price, 199000, 'HTML đã có giá thì không ghi đè');
+  assert.equal(m2.priceSource, 'html');
+  assert.equal(m2.title, 'Váy');
+  assert.equal(m2.images.length, 1);
+  assert.equal(m2.imageSource, 'browser');
+  const m3 = mergeBrowserData(htmlPart, null);
+  assert.equal(m3.price, null);
+  assert.equal(m3.usedBrowser, false);
+  assert.equal(m3.priceSource, null);
+  console.log('  ✔ Giá lấy từ Chrome khi HTML thiếu, không ghi đè dữ liệu HTML đã có, null an toàn');
+
+  console.log('\n🎉 TẤT CẢ 9 BÀI TEST ĐÃ VƯỢT QUA 100%!');
 }
 
 runTests().catch((err) => {

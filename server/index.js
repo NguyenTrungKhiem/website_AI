@@ -11,17 +11,20 @@ import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
 import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT, DEFAULT_BACK_VIEW_PROMPT } from './prompts.js';
-import { analyzeFashionGarment, generateFashionScenePrompts, DEFAULT_FASHION_SCENE1_TEMPLATE, DEFAULT_FASHION_SCENE2_TEMPLATE } from './geminiFashion.js';
+import { analyzeFashionGarment, generateFashionScenePrompts, DEFAULT_FASHION_SCENE1_TEMPLATE, DEFAULT_FASHION_SCENE2_TEMPLATE, DEFAULT_FASHION_AODAI_SCENE1_TEMPLATE, DEFAULT_FASHION_AODAI_SCENE2_TEMPLATE } from './geminiFashion.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
-import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun } from './workflows/runner.js';
+import { setWorkflowPrompts, listPromptVersions, rollbackPrompt, currentPrompt } from './promptVersions.js';
+import { assignCode, codeOfAsset, normalizeCode, isValidCode, listCodes, exportText, importText } from './productCodes.js';
+import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
+import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_CLIP = 10; // Omni Flash chỉ nhận video đầu vào tối đa 10 giây
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '20mb' })); // PUT /api/runs/:id/products gửi kèm PNG khung mã (data URL) của từng ảnh
 app.use('/media', express.static(DATA_DIR));
 
 const upload = multer({
@@ -85,11 +88,34 @@ app.get('/api/state', (req, res) => {
   });
 });
 
-app.put('/api/settings', (req, res) => {
-  const s = updateSettings(req.body || {});
+app.put('/api/settings', wrap(async (req, res) => {
+  const patch = { ...(req.body || {}) };
+  // Prompt gốc của quy trình: thay cả bản trong hệ thống, bản cũ được lưu ra file phiên bản (xem promptVersions.js).
+  // `prompts` gửi lên là toàn bộ các bước đã sửa (thiếu / rỗng = về mặc định) nên không deep-merge như cài đặt khác.
+  if (patch.workflows && typeof patch.workflows === 'object') {
+    const rest = {};
+    for (const [wfId, w] of Object.entries(patch.workflows)) {
+      if (w && typeof w === 'object' && 'prompts' in w) {
+        setWorkflowPrompts(wfId, w.prompts || {});
+        const { prompts, ...other } = w;
+        if (Object.keys(other).length) rest[wfId] = other;
+      } else rest[wfId] = w;
+    }
+    if (Object.keys(rest).length) patch.workflows = rest;
+    else delete patch.workflows;
+  }
+  const s = updateSettings(patch);
   pump();
   res.json(s);
-});
+}));
+// Lịch sử prompt gốc của 1 bước + quay lại phiên bản cũ
+app.get('/api/workflows/:id/prompts/:key/versions', wrap(async (req, res) => {
+  res.json({ versions: listPromptVersions(req.params.id, req.params.key), current: currentPrompt(req.params.id, req.params.key) });
+}));
+app.post('/api/workflows/:id/prompts/:key/rollback', wrap(async (req, res) => {
+  const text = rollbackPrompt(req.params.id, req.params.key, String(req.body?.file || ''));
+  res.json({ text, versions: listPromptVersions(req.params.id, req.params.key) });
+}));
 
 // ---------- Google Flow (Playwright) ----------
 app.get('/api/flow/status', wrap(async (req, res) => res.json(await flow.status())));
@@ -189,7 +215,9 @@ app.post('/api/sources/:id/cut', wrap(async (req, res) => {
   const src = db.sources.find((s) => s.id === req.params.id);
   if (!src) throw new Error('Không tìm thấy video gốc');
   const { segment, ranges: manual, mute = true } = req.body;
-  let ranges = manual?.length ? manual.map(([a, b]) => [Number(a), Number(b)]) : splitRanges(src.duration, Number(segment) || 8);
+  // Không chỉ định -> chia theo "Thời lượng video" trong Cài đặt (video-to-video ra dài đúng bằng đoạn cắt)
+  const defaultSeg = Math.min(MAX_CLIP, parseFloat(db.settings.flowDuration) || 10);
+  let ranges = manual?.length ? manual.map(([a, b]) => [Number(a), Number(b)]) : splitRanges(src.duration, Number(segment) || defaultSeg);
   for (const [a, b] of ranges) {
     if (!(b > a) || a < 0 || b > src.duration + 0.1) throw new Error(`Đoạn ${a}–${b}s không hợp lệ`);
     if (b - a > MAX_CLIP + 0.01) throw new Error(`Đoạn ${a}–${b}s dài hơn ${MAX_CLIP}s (giới hạn của Omni Flash)`);
@@ -270,7 +298,8 @@ app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
 
 // Phân tích ảnh mặt trước & mặt sau bằng Gemini -> sinh Mô tả sản phẩm & 2 Prompt cho 2 Phân cảnh
 app.post('/api/fashion/analyze-and-prompt', wrap(async (req, res) => {
-  const { frontAssetId, backAssetId, basePromptScene1, basePromptScene2 } = req.body || {};
+  const { frontAssetId, backAssetId, basePromptScene1, basePromptScene2, caseMode } = req.body || {};
+  const isAoDai = caseMode === 'case3'; // TH3 Áo dài: prompt gốc riêng
   if (!frontAssetId) throw new Error('Chưa chọn ảnh trang phục mặt trước');
   if (!backAssetId) throw new Error('Chưa chọn ảnh trang phục mặt sau');
 
@@ -291,12 +320,12 @@ app.post('/api/fashion/analyze-and-prompt', wrap(async (req, res) => {
     model,
   });
 
-  // Bước 2: Dựng 2 prompt phân cảnh mới dựa trên base prompt người dùng đã lưu
+  // Bước 2: Chỉ viết lại lời thoại Voice của 2 prompt gốc (phần tiếng Anh giữ nguyên) cho khớp sản phẩm
   const savedPrompts = db.settings?.workflows?.['video-thoi-trang']?.prompts || {};
   const scenePrompts = await generateFashionScenePrompts({
     productData,
-    basePromptScene1: (basePromptScene1 || '').trim() || savedPrompts.case2_scene1 || DEFAULT_FASHION_SCENE1_TEMPLATE,
-    basePromptScene2: (basePromptScene2 || '').trim() || savedPrompts.case2_scene2 || DEFAULT_FASHION_SCENE2_TEMPLATE,
+    basePromptScene1: (basePromptScene1 || '').trim() || (isAoDai ? savedPrompts.case3_scene1 || DEFAULT_FASHION_AODAI_SCENE1_TEMPLATE : savedPrompts.case2_scene1 || DEFAULT_FASHION_SCENE1_TEMPLATE),
+    basePromptScene2: (basePromptScene2 || '').trim() || (isAoDai ? savedPrompts.case3_scene2 || DEFAULT_FASHION_AODAI_SCENE2_TEMPLATE : savedPrompts.case2_scene2 || DEFAULT_FASHION_SCENE2_TEMPLATE),
     apiKey,
     model,
   });
@@ -307,6 +336,7 @@ app.post('/api/fashion/analyze-and-prompt', wrap(async (req, res) => {
     productDescription: productData.summary || '',
     promptScene1: scenePrompts.promptScene1 || '',
     promptScene2: scenePrompts.promptScene2 || '',
+    voices: scenePrompts.voices,
   });
 }));
 
@@ -349,6 +379,8 @@ settledHooks.push((job) => {
   const n = db.assets.filter((x) => x.fromAssetId === refId).length + 1;
   const flowTitle = job.attempts.find((a) => a.outputPath === job.outputPath)?.flowTitle || null;
   const suffix = isBack ? ' (Mặt sau Flow)' : ' (Flow)';
+  // product = metadata sản phẩm (tên, giá, link Shopee…) đi theo ảnh gốc -> ảnh làm sạch / mặt sau vẫn xuất Excel được cho DiamondShop
+  const product = src?.product ? structuredClone(src.product) : undefined;
   db.assets.unshift({
     id,
     kind: job.meta.kind || 'product',
@@ -360,6 +392,7 @@ settledHooks.push((job) => {
     staging: isBack ? false : true,
     isBackView: isBack,
     flowTitle,
+    product,
   });
   job.meta.assetId = id;
   job.meta.assetFrom = job.outputPath;
@@ -375,6 +408,21 @@ app.post('/api/assets/:id/use', wrap(async (req, res) => {
   res.json({ ...a, url: mediaUrl(a.path) });
 }));
 
+// ---------- Mã sản phẩm (in lên video thời trang thay "TODAY'S OUTFIT") ----------
+// Cấp mã cho ảnh (tự động, dùng lại mã của ảnh gốc nếu là ảnh sạch/cắt/mặt sau) hoặc đổi sang mã gõ tay
+app.post('/api/assets/:id/code', wrap(async (req, res) => {
+  const a = assignCode(req.params.id, req.body?.code);
+  res.json({ ...a, url: mediaUrl(a.path) });
+}));
+app.get('/api/codes', (req, res) => res.json(listCodes()));
+// Xuất mọi mã đã dùng ra file .txt (cách nhau dấu ",") để máy khác nhập vào, tránh cấp trùng
+app.get('/api/codes/export', (req, res) => {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="ma-san-pham.txt"');
+  res.send(exportText());
+});
+app.post('/api/codes/import', wrap(async (req, res) => res.json(importText(req.body?.text || ''))));
+
 // Sao chép 1 ảnh sang loại khác (vd. ảnh kết quả "lookbook" -> ảnh model để dùng cho quy trình video)
 app.post('/api/assets/:id/copy', wrap(async (req, res) => {
   const a = db.assets.find((x) => x.id === req.params.id);
@@ -384,7 +432,8 @@ app.post('/api/assets/:id/copy', wrap(async (req, res) => {
   const id = newId();
   const dest = path.join(DIRS.assets, id + path.extname(a.path));
   fs.copyFileSync(a.path, dest);
-  const copy = { id, kind, name: a.name, path: dest, createdAt: Date.now(), fromAssetId: a.id, flowTitle: a.flowTitle || null };
+  // Giữ metadata sản phẩm (nếu có) để ảnh sao chép vẫn mang tên / giá / link Shopee
+  const copy = { id, kind, name: a.name, path: dest, createdAt: Date.now(), fromAssetId: a.id, flowTitle: a.flowTitle || null, product: a.product ? structuredClone(a.product) : undefined };
   db.assets.unshift(copy);
   save();
   res.json({ ...copy, url: mediaUrl(dest) });
@@ -402,19 +451,25 @@ app.delete('/api/assets/:id', (req, res) => {
 
 // ---------- Dữ liệu & Ảnh sản phẩm từ link sàn TMĐT (Shopee, Lazada, TikTok Shop) ----------
 app.post('/api/product/fetch', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
+// product = kết quả bóc tách (found) của sản phẩm chứa các ảnh -> lưu vào asset.product (tên, giá, mô tả, link, shopId/itemId)
 app.post('/api/product/import', wrap(async (req, res) => {
-  const { kind = 'product', images = [], staging = false } = req.body || {};
+  const { kind = 'product', images = [], staging = false, product = null } = req.body || {};
   if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
   if (!images.length) throw new Error('Chưa chọn ảnh');
-  res.json(await productScraper.importImages(kind, images, { staging: !!staging }));
+  res.json(await productScraper.importImages(kind, images, { staging: !!staging, product }));
 }));
 // Tương thích ngược với các gọi cũ
 app.post('/api/shopee/product', wrap(async (req, res) => res.json(await productScraper.fetchProduct(req.body?.url || ''))));
 app.post('/api/shopee/import', wrap(async (req, res) => {
-  const { kind = 'product', images = [] } = req.body || {};
+  const { kind = 'product', images = [], product = null } = req.body || {};
   if (!['model', 'product', 'background'].includes(kind)) throw new Error('kind không hợp lệ');
   if (!images.length) throw new Error('Chưa chọn ảnh');
-  res.json(await productScraper.importImages(kind, images));
+  res.json(await productScraper.importImages(kind, images, { product }));
+}));
+// Gợi ý mã sản phẩm từ tên theo sổ mã chung (VAY_01…); taken = các mã đang đặt trên giao diện để không gợi ý trùng
+app.get('/api/products/suggest-code', wrap(async (req, res) => {
+  const taken = new Set(String(req.query.taken || '').split(',').map((s) => normalizeCode(s)).filter(Boolean));
+  res.json({ code: suggestProductCode(String(req.query.title || ''), { taken }) });
 }));
 
 // ---------- Job tạo video ----------
@@ -590,7 +645,20 @@ const findRun = (id) => {
   return r;
 };
 app.get('/api/workflows', (req, res) => res.json(listWorkflows()));
-app.post('/api/runs', wrap(async (req, res) => res.json(viewRun(createRun(req.body || {})))));
+app.post('/api/runs', wrap(async (req, res) => {
+  const body = req.body || {};
+  // Video thời trang: cần mã sản phẩm để in lên video (thay "TODAY'S OUTFIT"); thiếu thì lấy/cấp theo ảnh mặt trước
+  if (body.workflowId === 'video-thoi-trang') {
+    const o = (body.options ||= {});
+    let code = normalizeCode(o.productCode || '');
+    const frontId = body.inputs?.outfitFront;
+    if (!code && frontId) code = codeOfAsset(frontId) || assignCode(frontId).productCode;
+    if (!isValidCode(code)) throw new Error('Chưa có mã sản phẩm hợp lệ để in lên video (dạng LOAI_SO, vd. VAY_01)');
+    if (frontId && codeOfAsset(frontId) !== code) assignCode(frontId, code); // người dùng sửa mã trong ô -> lưu lên ảnh
+    o.productCode = code;
+  }
+  res.json(viewRun(createRun(body)));
+}));
 app.post('/api/runs/:id/resume', wrap(async (req, res) => res.json(viewRun(resumeRun(findRun(req.params.id))))));
 app.post('/api/runs/:id/cancel', wrap(async (req, res) => res.json(viewRun(cancelRun(findRun(req.params.id))))));
 // Thay video motion của đoạn clipId (và các đoạn kế tiếp nếu nhiều file) bằng video nhập từ máy
@@ -627,6 +695,37 @@ app.post('/api/flow/latest-video', wrap(async (req, res) => {
 app.delete('/api/runs/:id', wrap(async (req, res) => {
   deleteRun(findRun(req.params.id), { withJobs: req.query.withJobs !== '0' });
   res.json({ ok: true });
+}));
+
+// ---------- Mã sản phẩm trên ảnh kết quả & Excel cho DiamondShop — Ảnh model mặc đồ (server/productExport.js) ----------
+const findProductRun = (id) => {
+  const run = findRun(id);
+  if (!runHasProducts(run)) throw new Error('Quy trình này không có bảng Mã & sản phẩm');
+  return run;
+};
+// Dòng sản phẩm từng ảnh trang phục + kích thước ảnh kết quả (để trình duyệt vẽ PNG khung mã đúng độ phân giải)
+app.get('/api/runs/:id/products', wrap(async (req, res) => {
+  const run = findProductRun(req.params.id);
+  res.json({ mode: productInputsOf(run.workflow).mode, rows: buildProductRows(run), frame: await frameSizeOf(run), products: run.products || {} });
+}));
+// Lưu mã / tên / giá / mô tả / ảnh chính / khung mã (PNG data URL) -> mã hoặc vị trí đổi so với ảnh đã in thì in lại
+// (anh-model.js stage 'badge'); remerge = true khi có bước phải làm lại
+app.put('/api/runs/:id/products', wrap(async (req, res) => {
+  const run = findProductRun(req.params.id);
+  const rows = saveRunProducts(run, req.body?.products);
+  const remerge = resyncRun(run);
+  res.json({ rows, remerge, run: viewRun(run) });
+}));
+// Excel theo hợp đồng DiamondShop; body { products } (tuỳ chọn) = dữ liệu đang sửa trên giao diện để xuất thử mà chưa lưu
+app.post('/api/runs/:id/products.xlsx', wrap(async (req, res) => {
+  const run = findProductRun(req.params.id);
+  const override = req.body?.products && typeof req.body.products === 'object' ? req.body.products : null;
+  const rows = buildProductRows(run, { override });
+  const wb = await buildWorkbook(rows);
+  res.attachment(exportFilename(run));
+  res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  await wb.xlsx.write(res);
+  res.end();
 }));
 
 // ---------- Zernio API ----------

@@ -171,6 +171,7 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
             <img src={a.url} alt={a.name} />
             {multiple && isSelected(a.id) && <span className="order-badge">{selectedIds.indexOf(a.id) + 1}</span>}
             {a.fromJobId && <span className="flow-mark" title="Ảnh do Flow tạo lại">✨</span>}
+            {a.productCode && <span className="code-mark" title={`Mã sản phẩm: ${a.productCode}`}>{a.productCode}</span>}
             <button className="zoom-btn" title="Xem ảnh to" onClick={(e) => { e.stopPropagation(); setViewing(a.id); }}>🔍</button>
             <ConfirmButton
               className="x"
@@ -204,6 +205,7 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
           busyOuter={busy}
           onUse={use}
           onClose={() => setSlider(null)}
+          product={found && slider.images === found.images ? productMeta(found) : null}
         />
       )}
     </div>
@@ -359,6 +361,29 @@ export function CompareModal({ job, refresh, onClose }) {
 }
 
 // Phóng to 1 ảnh trong thư viện: chỉ ảnh + nút Dùng / "Thử ảnh khác" (mở popup trượt để chọn ảnh khác và làm sạch lại).
+// Phóng to 1 ảnh bất kỳ (ảnh kết quả của quy trình…): url + tên, nút tải về; Esc / bấm nền để đóng
+export function ImageZoom({ url, name, downloadUrl, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="lightbox" onClick={onClose}>
+      <div className="zoom-body" onClick={(e) => e.stopPropagation()}>
+        <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
+        <img src={url} alt={name || ''} />
+        <div className="zoom-bar">
+          <span className="zoom-name" title={name}>{name}</span>
+          <span className="grow" />
+          {children}
+          {downloadUrl && <a className="small" href={downloadUrl} download>⬇ Tải về</a>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -381,6 +406,24 @@ function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
   );
 }
 
+// Metadata sản phẩm gửi kèm khi tải ảnh về thư viện (server lưu vào asset.product -> bảng "Mã & sản phẩm" / Excel cho
+// DiamondShop của quy trình Ảnh model mặc đồ): bỏ danh sách ảnh đầy đủ, chỉ giữ URL
+export const productMeta = (found) =>
+  found
+    ? {
+        title: found.title,
+        rawTitle: found.rawTitle,
+        description: found.description,
+        features: found.features,
+        price: found.price,
+        url: found.url,
+        platform: found.platform,
+        shopId: found.shopId ?? found.rawId?.shopId ?? null,
+        itemId: found.itemId ?? found.rawId?.itemId ?? found.rawId?.productId ?? null,
+        images: (found.images || []).map((im) => im.url).slice(0, 12),
+      }
+    : null;
+
 // Bóc tách dữ liệu & ảnh sản phẩm đa sàn (Shopee, Lazada, TikTok Shop) với AI làm sạch và Fallback tìm kiếm ảnh.
 // Kết quả bóc tách (found) do AssetPicker giữ, nên vẫn còn sau khi chọn ảnh. Chế độ 1 ảnh (AI Dancing): bấm 1 ảnh
 // -> onOpen(i) mở popup trượt (xem to, làm sạch bằng Flow, chọn dùng). Module nào cần nhiều ảnh thì truyền
@@ -402,13 +445,13 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
   const toggle = (id) =>
     setPicked((s) => (s.includes(id) ? s.filter((x) => x !== id) : multiple ? [...s, id] : [id]));
 
-  // Chế độ nhiều ảnh: chỉ thêm vào thư viện
+  // Chế độ nhiều ảnh: chỉ thêm vào thư viện (kèm metadata sản phẩm để xuất Excel cho DiamondShop sau này)
   const importPicked = () =>
     run(async () => {
       const images = found.images
         .filter((im) => picked.includes(im.id))
         .map((im) => ({ url: im.url, name: `${found.title} – ${im.name || 'ảnh'}` }));
-      const added = await api.importProduct(kind, images);
+      const added = await api.importProduct(kind, images, false, productMeta(found));
       await refresh?.();
       setFound(null);
       setUrl('');
@@ -444,9 +487,26 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
                   🔍 Tìm ảnh ngoài (có thể sai sản phẩm)
                 </span>
               )}
-              {found.priceFormatted && (
-                <span className="product-price">{found.priceFormatted}</span>
-              )}
+              {/* Giá: lấy tự động (trang sản phẩm / Chrome của Flow), sửa được; sàn không trả giá thì nhập tay.
+                  Giá đi theo ảnh (asset.product.price) → bảng Mã & sản phẩm + cột "Giá (đ)" trong Excel DiamondShop. */}
+              <label
+                className="product-price-edit"
+                title={found.priceSource === 'browser' ? 'Giá đọc qua Chrome của Flow' : found.priceSource === 'html' ? 'Giá lấy từ trang sản phẩm' : found.priceSource === 'manual' ? 'Giá nhập tay' : 'Sàn không trả giá — nhập tay'}
+              >
+                <span>Giá</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1000"
+                  value={found.price ?? ''}
+                  placeholder="nhập giá"
+                  onChange={(e) => {
+                    const n = e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value)));
+                    setFound({ ...found, price: n, priceFormatted: n ? `${n.toLocaleString('vi-VN')}đ` : '', priceSource: n ? 'manual' : null });
+                  }}
+                />
+                <span>đ{found.priceSource === 'browser' ? ' · Chrome' : found.priceSource === 'html' ? ' · trang SP' : ''}</span>
+              </label>
               <button
                 type="button"
                 className="btn-link small"
@@ -457,6 +517,8 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
                 ✕ Đóng kết quả
               </button>
             </div>
+
+            {!(found.price > 0) && found.priceNote && <small className="warn-text">⚠ Chưa có giá: {found.priceNote}</small>}
 
             <div className="product-title-block">
               <div className="product-title">
@@ -538,7 +600,7 @@ export const ShopeeImport = ProductImport;
 // - Dưới: mọi kết quả đã làm sạch của các ảnh này, xếp cạnh nhau theo thứ tự tạo. Kết quả nằm trên server
 //   (ảnh nháp, nhận lại theo URL ảnh gốc) nên đóng/mở lại popup, bóc tách lại hay khởi động lại server vẫn còn.
 //   Rê chuột vào kết quả: 👁 Xem to · 🔄 Thử lại · ✓ Dùng · 🗑 Xoá (bấm 2 lần).
-function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse, onClose }) {
+function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse, onClose, product = null }) {
   const defaults = state?.defaults || {};
   const settings = state?.settings || {};
   const [idx, setIdx] = useState(startIdx);
@@ -557,7 +619,7 @@ function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse
   const ensureAsset = async (im) => {
     const have = assetIdOf(im);
     if (have) return have;
-    const [added] = await api.importProduct(kind, [{ url: im.url, name: im.name || 'Ảnh sản phẩm' }], true);
+    const [added] = await api.importProduct(kind, [{ url: im.url, name: im.name || 'Ảnh sản phẩm' }], true, product);
     await refresh();
     return added.id;
   };
@@ -872,5 +934,39 @@ export function JobList({ jobs, refresh, selected, setSelected }) {
         ))}
       </div>
     </>
+  );
+}
+
+// Chọn phiên bản cũ của prompt gốc để quay lại (rollback). Mỗi lần "Lưu lại prompt gốc", bản đang dùng được
+// server lưu thành version_old_<ngày giờ>; chọn 1 bản rồi bấm Khôi phục -> bản đó thành prompt gốc, bản hiện tại
+// lại được lưu thành phiên bản mới. `reload` đổi -> tải lại danh sách (vd. sau khi lưu).
+export function PromptVersionPicker({ wfId, promptKey, reload, onRestored }) {
+  const [versions, setVersions] = useState([]);
+  const [sel, setSel] = useState('');
+  const { busy, error, run } = useAction();
+  const load = () => api.promptVersions(wfId, promptKey).then((r) => setVersions(r.versions || [])).catch(() => setVersions([]));
+  useEffect(() => { load(); }, [wfId, promptKey, reload]);
+  if (!versions.length) return null;
+  const chosen = versions.find((v) => v.file === sel);
+  const restore = () =>
+    run(async () => {
+      const r = await api.rollbackPrompt(wfId, promptKey, sel);
+      setSel('');
+      setVersions(r.versions || []);
+      onRestored?.(r.text);
+    });
+  return (
+    <span className="row prompt-versions" style={{ gap: 6 }}>
+      <select value={sel} onChange={(e) => setSel(e.target.value)} title="Các bản prompt gốc trước đây (mới nhất trước)" style={{ fontSize: 11, padding: '3px 6px' }}>
+        <option value="">⏪ Rollback về bản cũ… ({versions.length})</option>
+        {versions.map((v) => <option key={v.file} value={v.file}>{v.label} · {v.preview.slice(0, 40)}…</option>)}
+      </select>
+      {chosen && (
+        <button type="button" className="small" disabled={busy} onClick={restore} style={{ padding: '3px 8px', fontSize: 11 }} title={`Thay prompt gốc bằng bản ${chosen.label} (bản hiện tại được lưu lại thành phiên bản mới)`}>
+          ↩ Khôi phục bản {chosen.label}
+        </button>
+      )}
+      {error && <span className="err small">{error}</span>}
+    </span>
   );
 }

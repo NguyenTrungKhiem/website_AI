@@ -99,19 +99,83 @@ export async function status() {
  */
 export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // Sinh ảnh (Nano Banana) từ ảnh tham chiếu + prompt, vd. tạo bối cảnh mới từ khung hình video gốc
+// imageQuality: '2K' | '4K' -> tải bản Flow phóng to (menu Download) thay vì ảnh gốc 1K
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
-// Gõ prompt và kích hoạt popup @ để gắn thẻ mention-chip chính thức của Google Flow
+// Ô prompt của Flow là trình soạn thảo ProseMirror; thẻ mention là <span class="mention-chip" contenteditable="false">tên ảnh</span>
+const PROMPT_BOX = 'What do you want to create?';
+const CHIP_SEL = 'span.mention-chip';
+const squash = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+// Đọc ô prompt: chữ thường (mỗi chip thay bằng ký hiệu \u0001) + danh sách tên chip theo thứ tự
+async function readPromptBox(page) {
+  const box = page.getByRole('textbox', { name: PROMPT_BOX });
+  return box.evaluate((el, sel) => {
+    const clone = el.cloneNode(true);
+    const chips = [...clone.querySelectorAll(sel)].map((c) => (c.textContent || '').trim());
+    for (const c of clone.querySelectorAll(sel)) c.replaceWith('\u0001');
+    return { text: clone.textContent || '', chips };
+  }, CHIP_SEL).catch(() => ({ text: '', chips: [] }));
+}
+
+// Gõ "@" mở popup chọn ảnh và bấm đúng ảnh `key`; thử lại tối đa 3 lần, dọn dấu "@" thừa nếu popup không mở.
+// Trả về true khi ô prompt có thêm đúng 1 chip; ném lỗi nếu không gắn được (không chèn chữ "@ImageN" thường
+// vì Flow không hiểu, video sẽ sai và tốn credit).
+async function insertMentionChip(page, key, part, log) {
+  const popover = page.locator('flow-add-menu-popover-content');
+  const chipCount = async () => (await readPromptBox(page)).chips.length;
+  const removeStrayAt = async () => {
+    const { text } = await readPromptBox(page);
+    if (/@\s*$/.test(text)) await page.keyboard.press('Backspace');
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const before = await chipCount();
+    await sleep(150); // để ProseMirror xử lý xong chữ vừa chèn, nếu không popup @ thỉnh thoảng không mở
+    await page.keyboard.type('@');
+    const open = await popover.isVisible({ timeout: 3000 }).catch(() => false);
+    if (!open) {
+      log(`Popup @ không mở (lần ${attempt}) cho ${part}, thử lại`);
+      await removeStrayAt();
+      await sleep(800);
+      continue;
+    }
+    const search = popover.locator('input.search-input');
+    if (await search.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await search.fill(key);
+      await sleep(600);
+    }
+    // Ưu tiên ô ảnh có đúng tên; nếu popup không lọc theo tên thì lấy ô đầu tiên
+    let itemBtn = popover.locator('button.asset-item', { hasText: key }).first();
+    if (!(await itemBtn.isVisible({ timeout: 5000 }).catch(() => false))) itemBtn = popover.locator('button.asset-item').first();
+    if (await itemBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await itemBtn.click();
+      await sleep(500);
+      const addBtn = popover.getByRole('button', { name: 'Add to prompt' });
+      if (await addBtn.isVisible().catch(() => false)) {
+        await addBtn.click();
+        await sleep(300);
+      }
+      if (await popover.isVisible().catch(() => false)) {
+        await page.keyboard.press('Escape');
+        await sleep(200);
+      }
+      if ((await chipCount()) === before + 1) return true;
+      log(`Bấm ảnh "${key}" nhưng chip chưa vào ô prompt (lần ${attempt}), thử lại`);
+    } else {
+      log(`Không thấy ảnh "${key}" trong popup @ (lần ${attempt}), thử lại`);
+      await page.keyboard.press('Escape');
+      await sleep(200);
+    }
+    await removeStrayAt();
+    await sleep(600);
+  }
+  throw new Error(`Không gắn được thẻ ${part} ("${key}") vào ô prompt Flow`);
+}
+
+// Gõ prompt và kích hoạt popup @ để gắn thẻ mention-chip chính thức của Google Flow.
+// Sau khi gõ xong đối chiếu lại nội dung ô prompt với prompt gốc (chữ + số chip + tên chip); lệch thì xoá và gõ lại
+// (tối đa 2 lần) — không bao giờ bấm tạo với prompt bị thiếu chip hay mất chữ.
 async function fillPromptWithMentions(page, prompt, items, log) {
-  await dismissOverlays(page);
-  const clear = page.getByRole('button', { name: 'Clear prompt' });
-  if (await clear.isVisible().catch(() => false)) await clear.click();
-  await sleep(400);
-
-  const box = page.getByRole('textbox', { name: 'What do you want to create?' });
-  await box.click();
-  await sleep(300);
-
   // Chuẩn hoá các thẻ mention để Flow nhận diện chính xác 100%
   const normalized = (prompt || '')
     .replace(/\bth?@+Image(\d+)/gi, 'the @Image$1')
@@ -122,54 +186,89 @@ async function fillPromptWithMentions(page, prompt, items, log) {
     .trim();
 
   const parts = normalized.split(/(@Image\d+)/g);
-  for (const part of parts) {
-    const match = part.match(/^@Image(\d+)$/);
-    if (match) {
-      const idx = parseInt(match[1], 10) - 1;
-      const target = items[idx];
-      const key = target ? (target.title || path.parse(target.file || target.src).name) : null;
+  const keyFor = (part) => {
+    const m = part.match(/^@Image(\d+)$/);
+    if (!m) return null;
+    const target = items[parseInt(m[1], 10) - 1];
+    return target ? (target.title || path.parse(target.file || target.src).name) : null;
+  };
+  // Thẻ không ứng với ảnh nào (vd. @Image5 mà chỉ có 4 ảnh) -> giữ chữ thường.
+  // Flow tự thêm dấu cách sau chip, xuống dòng (<br>) không có trong textContent -> so sánh bỏ hết khoảng trắng
+  const norm = (s) => String(s || '').replace(/\s+/g, '');
+  const expectedText = norm(parts.map((p) => (keyFor(p) ? '\u0001' : p)).join(''));
+  const expectedKeys = parts.map(keyFor).filter(Boolean);
+  // ProseMirror của Flow: insertText một đoạn CÓ xuống dòng thì ký tự cuối bị đẩy ra cuối tài liệu và con trỏ lệch
+  // ("Th[chip] model" ... "toege" ở cuối), còn insertText("\n") riêng thì bị bỏ qua -> xuống dòng bằng Shift+Enter,
+  // mỗi dòng chèn phần chữ rồi gõ khoảng trắng cuối bằng phím để con trỏ chắc chắn nằm sau nó (dấu "@" gõ tiếp
+  // phải đứng sau dấu cách thì Flow mới mở popup chọn ảnh).
+  const insertText = async (text) => {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) await page.keyboard.press('Shift+Enter');
+      const m = lines[i].match(/^([\s\S]*?)([ \t]*)$/);
+      if (m[1]) await page.keyboard.insertText(m[1]);
+      if (m[2]) await page.keyboard.type(m[2]);
+    }
+  };
+
+  let lastDiff = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await dismissOverlays(page);
+    const clear = page.getByRole('button', { name: 'Clear prompt' });
+    if (await clear.isVisible().catch(() => false)) await clear.click();
+    await sleep(400);
+
+    const box = page.getByRole('textbox', { name: PROMPT_BOX });
+    await box.click();
+    await sleep(300);
+
+    let afterChip = false;
+    for (const part of parts) {
+      const key = keyFor(part);
       if (key) {
         log(`Gắn mention: ${part} → "${key}"`);
-        await page.keyboard.type('@');
-        await sleep(500);
-
-        const popover = page.locator('flow-add-menu-popover-content');
-        const search = popover.locator('input.search-input');
-        if (await search.isVisible({ timeout: 2500 }).catch(() => false)) {
-          await search.fill(key);
-          await sleep(500);
-        }
-
-        const itemBtn = popover.locator('button.asset-item').first();
-        if (await itemBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
-          await itemBtn.click();
-          await sleep(500);
-          const addBtn = popover.getByRole('button', { name: 'Add to prompt' });
-          if (await addBtn.isVisible().catch(() => false)) await addBtn.click();
-          await sleep(300);
-        } else {
-          // Nếu không thấy nút ảnh trong popup, đóng popup và chèn text thường
-          await page.keyboard.press('Escape');
-          await sleep(200);
-          await page.keyboard.insertText(part);
-        }
-      } else {
-        await page.keyboard.insertText(part);
+        await insertMentionChip(page, key, part, log);
+        afterChip = true;
+      } else if (part) {
+        // Flow đã tự thêm 1 dấu cách sau chip -> bỏ dấu cách đầu của đoạn chữ kế tiếp
+        await insertText(afterChip ? part.replace(/^ /, '') : part);
+        afterChip = false;
       }
-    } else if (part) {
-      await page.keyboard.insertText(part);
     }
+    await sleep(500);
+
+    const got = await readPromptBox(page);
+    const gotText = norm(got.text);
+    const chipOk = got.chips.length === expectedKeys.length
+      && got.chips.every((c, i) => c.toLowerCase().startsWith(expectedKeys[i].toLowerCase()));
+    if (gotText === expectedText && chipOk) {
+      log(`Đã gõ prompt vào Flow, ${got.chips.length} thẻ @Image khớp ảnh`);
+      return;
+    }
+    if (!chipOk) lastDiff = `chip: có ${got.chips.length}/${expectedKeys.length} (${got.chips.join(', ')})`;
+    else {
+      let i = 0;
+      while (i < gotText.length && i < expectedText.length && gotText[i] === expectedText[i]) i++;
+      lastDiff = `chữ lệch từ vị trí ${i}: "...${expectedText.slice(Math.max(0, i - 15), i + 25)}" nhưng Flow có "...${gotText.slice(Math.max(0, i - 15), i + 25)}"`;
+    }
+    log(`Prompt trên Flow không khớp prompt gốc (lần ${attempt}): ${lastDiff.replace(/\u0001/g, '[chip]')}`);
   }
+  throw new Error(`Prompt gõ vào Flow bị lệch sau 2 lần thử (${lastDiff.replace(/\u0001/g, '[chip]')}) — không bấm tạo để khỏi tốn credit`);
 }
 
 // flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
-async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled }) {
+async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled, imageQuality = null }) {
   const page = await flowPage();
   await page.bringToFront();
   if (page.url().includes('/about') || page.url().includes('accounts.google.com')) {
     throw new Error('Chưa đăng nhập Flow — mở cửa sổ Chrome của Flow và đăng nhập trước.');
   }
   await openProject(page, settings);
+  if (kind === 'video' && !dryRun) {
+    // Công tắc "Trả về video không có âm thanh" theo Cài đặt; lỗi ở đây chỉ ghi cảnh báo, không làm hỏng job
+    const audio = await applyAudioPref(page, settings).catch((e) => `chưa chỉnh được (${e.message})`);
+    if (audio) log(`Âm thanh video: ${audio}`);
+  }
 
   // Mỗi nguyên liệu: file tải lên (tên = mã băm nội dung -> cùng 1 ảnh/video thì luôn cùng tên trên Flow,
   // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại), hoặc ảnh do Flow tạo (title)
@@ -189,6 +288,9 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
   try {
     const clear = page.getByRole('button', { name: 'Clear prompt' });
     if (await clear.isVisible().catch(() => false)) await clear.click();
+
+    // Ô prompt còn ở chế độ Frames từ lần trước thì không có nút mở thư viện -> về Ingredients trước
+    await ensureIngredientsButton(page);
 
     // Ảnh Flow tạo mà không còn trong dự án (đã xoá / dự án khác) -> tải lên như file thường
     for (const it of items) {
@@ -225,7 +327,7 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
     const videoModelName = settings.flowVideoModel || 'Omni 1.1 Flash';
     const durLabel = settings.flowDuration ? ` · ${settings.flowDuration}` : '';
     log(kind === 'image' ? 'Chọn Ảnh · Nano Banana' : `Chọn Video · ${videoModelName}${durLabel}`);
-    const credits = await configure(page, settings, kind);
+    const credits = await configure(page, settings, kind, { hasVideo: !!video });
 
     if (hasMentions) {
       log('Chèn prompt và liên kết thẻ mention @Image vào ảnh');
@@ -248,8 +350,8 @@ async function generate({ settings, prompt, video, images = [], flowRefs = {}, o
     const tile = await waitForResult(page, before, log, names, kind, isCancelled);
     // Tên Flow đặt cho kết quả -> ảnh này về sau dùng lại được làm nguyên liệu (không tải lên lại)
     const title = (await tile.getAttribute('aria-label').catch(() => '')) || '';
-    log(kind === 'image' ? 'Tải ảnh về' : 'Tải video về');
-    await downloadTile(page, tile, outputFile, kind, (src) => onResult(src, { title }));
+    log(kind === 'image' ? (imageQuality ? `Tải ảnh ${imageQuality} về (Flow phóng to, mất ~15-30s)` : 'Tải ảnh về') : 'Tải video về');
+    await downloadTile(page, tile, outputFile, kind, (src) => onResult(src, { title }), { imageQuality, log });
     return { id: tag, outputFile, text: `Google Flow · ${credits}`, title };
   } finally {
     for (const it of items) if (it.file) fs.rm(it.file, { force: true }, () => {});
@@ -296,6 +398,33 @@ async function openProject(page, settings) {
       if (lang && !/^en/.test(lang)) await page.goto(withEn(page.url()), { waitUntil: 'domcontentloaded' }).catch(() => {});
       else await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
+  }
+}
+
+// Ô prompt đang ở chế độ Frames (còn lại từ lần tạo "Khung hình bắt đầu" trước: nút Start/End thay cho nút nguyên liệu)
+// -> không có nút "Add ingredients to the prompt box" để mở thư viện tải file. Chuyển về Video · Ingredients trước;
+// configure() sẽ đặt lại đúng chế độ (Frames nếu cần) sau khi file đã có trên Flow.
+async function ensureIngredientsButton(page) {
+  const btn = page.getByRole('button', { name: 'Add ingredients to the prompt box' });
+  if (await btn.isVisible().catch(() => false)) return;
+  if (await page.getByRole('textbox', { name: 'Search assets' }).isVisible().catch(() => false)) return;
+  await dismissOverlays(page);
+  const agent = page.locator('button.agent-mode-chip-checked');
+  if (await agent.count()) {
+    await agent.click();
+    await sleep(800);
+  }
+  if (await btn.isVisible().catch(() => false)) return;
+  await page.getByRole('button', { name: 'Settings trigger' }).click();
+  await page.getByRole('radio', { name: 'Video', exact: true }).click().catch(() => {});
+  await sleep(300);
+  const ing = page.getByRole('radio', { name: /^(ingredients|thành phần)$/i });
+  if (await ing.isVisible().catch(() => false)) await ing.click().catch(() => {});
+  await sleep(300);
+  await page.keyboard.press('Escape');
+  await sleep(400);
+  if (!(await btn.isVisible({ timeout: 10_000 }).catch(() => false))) {
+    throw new Error('Không thấy nút thêm nguyên liệu trong ô prompt Flow (ô prompt không ở chế độ Ingredients)');
   }
 }
 
@@ -443,9 +572,9 @@ async function addIngredient(page, name, isFrames = false) {
   if (!isFrames && (await ingredientCount(page)) <= n) throw new Error(`Không thêm được ${name} vào prompt`);
 }
 
-// Video: Video / Ingredients (hoặc Frames) / tỉ lệ / Omni 1.1 Flash / độ phân giải / x1.
+// Video: Video / Ingredients (hoặc Frames) / tỉ lệ / model (Omni 1.1 / 1.2 Flash, Veo 3.1…) / độ phân giải / x1.
 // Ảnh: Image / tỉ lệ / Nano Banana / x1. Trả về số credit sẽ tốn.
-async function configure(page, settings, kind = 'video') {
+async function configure(page, settings, kind = 'video', { hasVideo = false } = {}) {
   // Chế độ "Agent" của Flow (dự án mới mặc định bật) ẩn nút cài đặt model -> tắt đi
   const agent = page.locator('button.agent-mode-chip-checked');
   if (await agent.count()) {
@@ -460,6 +589,26 @@ async function configure(page, settings, kind = 'video') {
     if (re.test(await family.innerText())) return;
     await family.click();
     await page.getByRole('menuitem', { name: re }).first().click();
+  };
+  // Omni có nhiều phiên bản (1.1 Flash, 1.2 Flash…) -> chọn đúng số phiên bản, chấp nhận cả "Omni 1.2 Flash" và
+  // "Omni Flash 1.2". Không thấy thì báo lỗi kèm danh sách model Flow đang có (thay vì lặng lẽ chọn bản khác).
+  // So đúng số phiên bản trong tên (1.2 không khớp nhầm 1.12 hay 11.2)
+  const isOmni = (t, version) => /omni/i.test(t) && (String(t).match(/\d+(?:\.\d+)+/g) || []).includes(version);
+  const familyText = async () => (await family.innerText().catch(() => '')).replace(/arrow_drop_down/g, '').replace(/\s+/g, ' ').trim();
+  const pickOmni = async (version) => {
+    const isWanted = (t) => isOmni(t, version);
+    if (isWanted(await familyText())) return;
+    await family.click();
+    const items = page.getByRole('menuitem');
+    await items.first().waitFor({ timeout: 5000 }).catch(() => {});
+    const texts = await items.allInnerTexts();
+    const idx = texts.findIndex(isWanted);
+    if (idx < 0) {
+      await page.keyboard.press('Escape');
+      const list = texts.map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ');
+      throw new Error(`Flow không có model Omni ${version} Flash (đang có: ${list || 'không đọc được menu'}) — đổi "Mô hình video trên Flow" trong Cài đặt.`);
+    }
+    await items.nth(idx).click();
   };
   if (kind === 'image') {
     await radio('Image').click();
@@ -485,25 +634,68 @@ async function configure(page, settings, kind = 'video') {
       await pickFamily(/Veo 3\.1.*Fast/i);
     } else if (/veo 3\.1.*lite/i.test(model)) {
       await pickFamily(/Veo 3\.1.*Lite/i);
-    } else {
-      await pickFamily(/Omni/i);
     }
+    const omniVersion = /omni/i.test(model) || !/veo/i.test(model) ? model.match(/\d+\.\d+/)?.[0] || '1.1' : null; // 'Omni 1.2 Flash' -> 1.2
+    if (omniVersion) await pickOmni(omniVersion);
     const resRadio = page.getByRole('radio', { name: settings.flowResolution === '360p' ? /^360p/ : /^720p/ });
     if (await resRadio.isVisible().catch(() => false)) {
       await resRadio.click().catch(() => {});
     }
+    // Thời lượng: nút radio có tên truy cập bắt đầu bằng "10s" / "10 s" / "10 sec" / "10 seconds" / "10 giây"
+    // (tên có thể kèm chữ phía sau, vd. số credit). Nút chỉ hiện sau khi chọn model -> chờ một nhịp.
+    // Video-to-video (có video gốc) thì Flow tạo dài bằng video gốc, không có nút này -> bỏ qua.
     const duration = settings.flowDuration || '10s';
-    const durNameRegex = new RegExp(`^(${duration}|${duration.replace('s', ' giây')})$`, 'i');
-    const durRadio = page.getByRole('radio', { name: durNameRegex });
-    if (await durRadio.isVisible().catch(() => false)) {
-      await durRadio.click().catch(() => {});
+    const wantSec = parseFloat(duration);
+    const durRadio = page.getByRole('radio', { name: new RegExp(`^\\s*${wantSec}(\\.0+)?\\s*(s|secs?|seconds?|giây)\\b`, 'i') }).first();
+    const summaryDur = async () => {
+      const t = await page.getByRole('button', { name: 'Settings trigger' }).innerText().catch(() => '');
+      const m = t.match(/(\d+(?:\.\d+)?)\s*s\b/i);
+      return m ? parseFloat(m[1]) : null;
+    };
+    const clickDur = async () => {
+      await durRadio.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+      if (!(await durRadio.isVisible().catch(() => false))) return false;
+      if ((await durRadio.getAttribute('aria-checked').catch(() => null)) !== 'true') await durRadio.click().catch(() => {});
+      await sleep(400);
+      return true;
+    };
+    let hadDur = await clickDur();
+    if (!hasVideo && hadDur && (await summaryDur()) !== wantSec) hadDur = await clickDur(); // bấm lại 1 lần nếu Flow chưa nhận
+    // Chọn độ phân giải / thời lượng có thể làm Flow tự đổi về model mặc định (vd. Omni 1.1) -> đọc lại model
+    // thật sự đang chọn, sai thì chọn lại; vẫn sai thì dừng (không bấm tạo bằng model khác, tránh tốn credit)
+    if (omniVersion) {
+      await sleep(300);
+      if (!isOmni(await familyText(), omniVersion)) {
+        await pickOmni(omniVersion);
+        await sleep(300);
+        await clickDur();
+        const now = await familyText();
+        if (!isOmni(now, omniVersion)) throw new Error(`Flow không giữ được model Omni ${omniVersion} Flash (đang là "${now}") — có thể bản này chưa hỗ trợ ${duration}/${settings.flowResolution || '720p'}.`);
+      }
+    }
+    // Text/image-to-video: thời lượng phải đúng như đã chọn, sai thì dừng trước khi bấm tạo (khỏi tốn credit cho video ngắn hơn)
+    if (!hasVideo) {
+      const got = await summaryDur();
+      if (got !== null && got !== wantSec) {
+        await page.keyboard.press('Escape').catch(() => {});
+        throw new Error(`Flow đang để thời lượng ${got}s thay vì ${duration}${hadDur ? '' : ' (không thấy nút ' + duration + ' — model này có thể không hỗ trợ)'} — chọn thời lượng khác hoặc model khác rồi Thử lại.`);
+      }
     }
   }
   await radio('x1').click();
   await sleep(500);
   const credits = await page.getByRole('link', { name: /credits/ }).innerText().catch(() => '? credits');
+  const chosen = await familyText(); // model Flow thật sự đang chọn -> ghi vào thẻ video để kiểm tra
   await page.keyboard.press('Escape');
-  return credits;
+  const parts = [credits, chosen];
+  if (kind !== 'image') {
+    // Dòng tóm tắt của Flow (vd. "Video · 720p · 10s crop_9_16 x1") -> thời lượng Flow thật sự đang để
+    const summary = await page.getByRole('button', { name: 'Settings trigger' }).innerText().catch(() => '');
+    const flowDur = summary.match(/(\d+(?:\.\d+)?)\s*s\b/i)?.[1];
+    const want = settings.flowDuration || '10s';
+    if (flowDur) parts.push(parseFloat(flowDur) === parseFloat(want) ? `${flowDur}s` : `${flowDur}s (Cài đặt: ${want})`);
+  }
+  return parts.filter(Boolean).join(' · ');
 }
 
 // Cấu hình trước Flow (ví dụ khi người dùng mở trang module video thời trang)
@@ -523,6 +715,78 @@ export async function preset({ model = 'Omni 1.1 Flash', duration = '10s', resol
     return { ok: true, credits };
   } catch (e) {
     return { ok: false, error: e.message };
+  }
+}
+
+// Bật/tắt công tắc "Return videos without audio" / "Trả về video không có âm thanh" trong bảng cài đặt dự án
+// (nút bánh răng ⚙️ góc trên phải của Flow) theo settings.flowVideoAudio: 'mute' = bật, 'sound' = tắt, khác = để nguyên.
+// Trả về mô tả kết quả (để ghi lên thẻ video) hoặc null khi để nguyên.
+const AUDIO_SWITCH = 'without audio|no audio|without sound|không có âm thanh|không âm thanh';
+async function applyAudioPref(page, settings) {
+  const pref = settings.flowVideoAudio;
+  if (pref !== 'mute' && pref !== 'sound') return null;
+  const want = pref === 'mute';
+  const label = want ? 'không có âm thanh' : 'có âm thanh';
+  // Đánh dấu công tắc bằng data-vs-audio để bấm đúng nó; trả về trạng thái hiện tại (true = đang bật) hoặc null nếu không thấy
+  const findSwitch = () =>
+    page.evaluate((src) => {
+      const re = new RegExp(src, 'i');
+      const txt = (e) => (e?.innerText || e?.textContent || '').replace(/\s+/g, ' ').trim();
+      for (const e of document.querySelectorAll('[data-vs-audio]')) e.removeAttribute('data-vs-audio');
+      const SEL = '[role="switch"], input[type="checkbox"], button[aria-checked], button[aria-pressed]';
+      const cands = [...document.querySelectorAll(SEL)];
+      for (const e of cands) {
+        const by = e.getAttribute('aria-labelledby');
+        let name = e.getAttribute('aria-label') || (by && txt(document.getElementById(by))) || '';
+        // không có tên riêng -> lấy chữ của hàng chứa công tắc (đi lên tối đa 4 cấp), dừng khi khung đó
+        // chứa cả công tắc khác (không lấy nhầm chữ của hàng bên cạnh)
+        for (let p = e.parentElement, i = 0; !re.test(name) && p && i < 4; p = p.parentElement, i++) {
+          if (p.querySelectorAll(SEL).length > 1) break;
+          const t = txt(p);
+          if (t.length < 160) name = t;
+        }
+        if (!re.test(name)) continue;
+        e.setAttribute('data-vs-audio', '1');
+        return e.getAttribute('aria-checked') === 'true' || e.getAttribute('aria-pressed') === 'true' || e.checked === true;
+      }
+      return null;
+    }, AUDIO_SWITCH);
+
+  let state = await findSwitch();
+  let opened = false;
+  if (state === null) {
+    await dismissOverlays(page);
+    // Nút bánh răng: aria-label Settings / Cài đặt (không phải "Settings trigger" ở ô prompt) hoặc icon "settings"
+    const gearIdx = await page.locator('button').evaluateAll((els) =>
+      els.findIndex((e) => {
+        const a = (e.getAttribute('aria-label') || '').trim();
+        const t = (e.innerText || '').trim();
+        return !/trigger/i.test(a) && (/^(settings|project settings|view settings|cài đặt)$/i.test(a) || /^settings$/i.test(t));
+      }),
+    );
+    if (gearIdx < 0) throw new Error('không thấy nút cài đặt ⚙️ của Flow');
+    await page.locator('button').nth(gearIdx).click();
+    opened = true;
+    for (let i = 0; i < 10 && state === null; i++) {
+      await sleep(300);
+      state = await findSwitch();
+    }
+  }
+  try {
+    if (state === null) throw new Error('không thấy công tắc "Trả về video không có âm thanh"');
+    if (state !== want) {
+      await page.locator('[data-vs-audio="1"]').click();
+      await sleep(500);
+      state = await findSwitch();
+      if (state !== want) throw new Error('Flow không nhận thao tác bật/tắt');
+      return `${label} (đã ${want ? 'bật' : 'tắt'} công tắc trên Flow)`;
+    }
+    return `${label} (Flow đã đúng sẵn)`;
+  } finally {
+    if (opened) {
+      await page.keyboard.press('Escape').catch(() => {});
+      await sleep(300);
+    }
   }
 }
 
@@ -744,11 +1008,23 @@ export async function fetchToFile(src, outputFile) {
   fs.writeFileSync(outputFile, body);
 }
 
-async function downloadTile(page, tile, outputFile, kind = 'video', onResult = () => {}) {
+async function downloadTile(page, tile, outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, log = () => {} } = {}) {
   // Cách 1: lấy thẳng file từ thẻ <video>/<img>
   const src = await tileMediaSrc(page, tile, kind);
+  if (src) onResult(src); // ghi nhớ để lần Thử lại sau có thể lấy lại mà không tạo mới
+  // Ảnh: menu Download của Flow có "1K Original size" / "2K Upscaled" / "4K Upscaled" -> lấy bản phóng to nếu được yêu cầu
+  // (Flow upscale rồi mới tải, ~15-30s; file trả về là JPG). Lỗi thì rơi về ảnh gốc 1K như thường.
+  if (kind === 'image' && imageQuality) {
+    try {
+      await downloadViaMenu(page, tile, outputFile, new RegExp('^' + imageQuality, 'i'), 180_000);
+      return;
+    } catch (e) {
+      console.error(`Tải ảnh ${imageQuality} từ Flow lỗi, dùng ảnh gốc:`, e.message);
+      log(`Không tải được bản ${imageQuality} (${e.message.slice(0, 80)}), dùng ảnh gốc 1K`);
+      await dismissOverlays(page);
+    }
+  }
   if (src) {
-    onResult(src); // ghi nhớ để lần Thử lại sau có thể lấy lại mà không tạo mới
     try {
       await fetchToFile(src, outputFile);
       return;
@@ -757,15 +1033,21 @@ async function downloadTile(page, tile, outputFile, kind = 'video', onResult = (
     }
   }
   // Cách 2: menu "More options" -> Download
+  await downloadViaMenu(page, tile, outputFile, /720p|Original|1080p/i, 120_000);
+}
+
+// Menu "More options" -> Download (-> mục chất lượng nếu có) của 1 ô kết quả, lưu file tải về vào outputFile
+export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout) {
   await dismissOverlays(page);
   await tile.hover({ timeout: 5000 }).catch(() => {});
   await tile.getByRole('button', { name: 'More options' }).click();
   const [dl] = await Promise.all([
-    page.waitForEvent('download', { timeout: 120_000 }),
+    page.waitForEvent('download', { timeout }),
     (async () => {
       await page.getByRole('menuitem', { name: /Download/i }).first().click();
-      const quality = page.getByRole('menuitem', { name: /720p|Original|1080p/i }).first();
+      const quality = page.getByRole('menuitem', { name: qualityRe }).first();
       if (await quality.isVisible({ timeout: 2000 }).catch(() => false)) await quality.click();
+      else if (qualityRe.source.startsWith('^')) throw new Error(`Flow không có mục tải ${qualityRe.source.slice(1)} cho ảnh này`);
     })(),
   ]);
   await dl.saveAs(outputFile);

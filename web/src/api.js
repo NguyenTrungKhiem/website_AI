@@ -13,6 +13,8 @@ async function req(method, url, body) {
 export const api = {
   state: () => req('GET', '/api/state'),
   saveSettings: (s) => req('PUT', '/api/settings', s),
+  promptVersions: (wfId, key) => req('GET', `/api/workflows/${wfId}/prompts/${key}/versions`), // lịch sử prompt gốc của 1 bước
+  rollbackPrompt: (wfId, key, file) => req('POST', `/api/workflows/${wfId}/prompts/${key}/rollback`, { file }),
   uploadSource: (file) => {
     const f = new FormData();
     f.append('file', file);
@@ -31,8 +33,13 @@ export const api = {
   cleanAsset: (id, prompt) => req('POST', `/api/assets/${id}/clean`, { prompt }),
   copyAsset: (id, kind) => req('POST', `/api/assets/${id}/copy`, { kind }),
   fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
-  importProduct: (kind, images, staging = false) => req('POST', '/api/product/import', { kind, images, staging }),
+  // product = kết quả bóc tách (found) để server lưu metadata (tên, giá, mô tả, link…) vào asset.product
+  importProduct: (kind, images, staging = false, product = null) => req('POST', '/api/product/import', { kind, images, staging, product }),
   useAsset: (id) => req('POST', `/api/assets/${id}/use`),
+  // Mã sản phẩm in lên video thời trang (VAY_01…): cấp / đổi mã cho ảnh, sổ mã, nhập từ file .txt
+  assignCode: (id, code) => req('POST', `/api/assets/${id}/code`, { code: code || undefined }),
+  codes: () => req('GET', '/api/codes'),
+  importCodes: (text) => req('POST', '/api/codes/import', { text }),
   shopeeProduct: (url) => req('POST', '/api/product/fetch', { url }),
   shopeeImport: (kind, images) => req('POST', '/api/product/import', { kind, images }),
   motion: (body) => req('POST', '/api/jobs/motion', body),
@@ -60,6 +67,25 @@ export const api = {
   },
   createRun: (body) => req('POST', '/api/runs', body),
   resumeRun: (id) => req('POST', `/api/runs/${id}/resume`),
+  // Mã sản phẩm trên ảnh kết quả & Excel cho DiamondShop (Ảnh model mặc đồ)
+  runProducts: (id) => req('GET', `/api/runs/${id}/products`), // { mode: 'input', rows, frame: { width, height }, products }
+  saveRunProducts: (id, body) => req('PUT', `/api/runs/${id}/products`, body), // { products: { [assetId]: {...} } } -> { rows, remerge, run }
+  suggestProductCode: (title, taken = []) =>
+    req('GET', `/api/products/suggest-code?title=${encodeURIComponent(title || '')}&taken=${encodeURIComponent(taken.join(','))}`),
+  // Tải file Excel (blob). body.products (tuỳ chọn) = dữ liệu đang sửa để xuất thử chưa cần lưu
+  exportRunProducts: async (id, body = null) => {
+    const res = await fetch(`/api/runs/${id}/products.xlsx`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Lỗi ${res.status}`);
+    }
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)/i.exec(res.headers.get('content-disposition') || '');
+    return { blob: await res.blob(), filename: m ? decodeURIComponent(m[1]) : 'san-pham.xlsx' };
+  },
   cancelRun: (id) => req('POST', `/api/runs/${id}/cancel`),
   importFlowRun: (id, body = {}) => req('POST', `/api/runs/${id}/import-flow`, body),
   deleteRun: (id, withJobs = true) => req('DELETE', `/api/runs/${id}?withJobs=${withJobs ? 1 : 0}`),

@@ -20,7 +20,9 @@ const loadSaved = (id) => {
   }
 };
 
-export default function CutEditor({ src, onExport, busy }) {
+// defaultSec = "Thời lượng video" trong Cài đặt: video-to-video (AI Dancing…) ra dài đúng bằng đoạn cắt,
+// nên mặc định tự chia theo thời lượng này
+export default function CutEditor({ src, onExport, busy, defaultSec = 10 }) {
   const fps = src.fps || 30;
   const totalFrames = Math.max(1, Math.round(src.duration * fps));
   const videoRef = useRef();
@@ -34,7 +36,8 @@ export default function CutEditor({ src, onExport, busy }) {
   const [excluded, setExcluded] = useState(() => loadSaved(src.id)?.excluded || []);
   const [selected, setSelected] = useState(null); // frame bắt đầu của đoạn đang chọn
   const [history, setHistory] = useState([]);
-  const [autoSec, setAutoSec] = useState(8);
+  const [autoSec, setAutoSec] = useState(() => Math.min(MAX_CLIP, defaultSec));
+  useEffect(() => setAutoSec(Math.min(MAX_CLIP, defaultSec)), [defaultSec]); // đổi Cài đặt -> cập nhật theo
   const [mute, setMute] = useState(true);
   const [tcInput, setTcInput] = useState(null);
 

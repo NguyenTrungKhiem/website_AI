@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
-import { AssetPicker, ConfirmButton, useAction, Badge } from '../components.jsx';
+import { AssetPicker, ConfirmButton, useAction, Badge, PromptVersionPicker } from '../components.jsx';
 import CropModal from '../components/CropModal.jsx';
 
 const FASHION_DRAFT_KEY = 'fashion_sales_draft_v1';
@@ -21,9 +21,10 @@ function sanitizeMentions(p, isCase1 = false) {
   s = s.replace(/@+Image(\d+)/gi, '@Image$1');
   s = s.replace(/([^\s\n])@Image(\d+)/g, '$1 @Image$2');
   s = s.replace(/@Image(\d+)([a-zA-Z])/g, '@Image$1 $2');
-  s = s.replace(/(holds\s+the)\s+(?!@Image2)(.*?chest)/i, '$1 @Image2 $2');
-  s = s.replace(/(wears\s+the)\s+(?!@Image2)(.*?on\s+bare\s+shoulders|.*?garment|.*?dress|.*?outfit)/i, '$1 @Image2 $2');
-  s = s.replace(/(display\s+the\s+full)\s+(?!@Image2)/i, '$1 @Image2 ');
+  // Chỉ chèn @Image2 khi cả câu đó chưa có @Image2 (tránh "wears the @Image2 1:1 @Image2 outfit")
+  s = s.replace(/(holds\s+the)\s+(?![^.\n]*@Image2)(.*?chest)/i, '$1 @Image2 $2');
+  s = s.replace(/(wears\s+the)\s+(?![^.\n]*@Image2)(.*?on\s+bare\s+shoulders|.*?garment|.*?dress|.*?outfit)/i, '$1 @Image2 $2');
+  s = s.replace(/(display\s+the\s+full)\s+(?![^.\n]*@Image2)/i, '$1 @Image2 ');
   const expectedBgTag = isCase1 ? '@Image6' : '@Image3';
   if (!s.includes(expectedBgTag)) {
     s = s.replace(/(Scene:\s*Consistent\s*background\s*using)\s*([^.\n]*)/i, `$1 ${expectedBgTag}.`);
@@ -32,13 +33,43 @@ function sanitizeMentions(p, isCase1 = false) {
   return s.trim();
 }
 
+// Model + thời lượng Flow chọn riêng cho từng phân cảnh (giống danh sách FASHION_MODELS / FASHION_DURATIONS ở server)
+const FLOW_MODELS = ['Omni 1.2 Flash', 'Omni 1.1 Flash', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite'];
+const FLOW_DURATIONS = ['10s', '8s', '6s', '4s'];
+function SceneFlowOptions({ model, duration, onModel, onDuration }) {
+  const sel = { fontSize: 11, padding: '3px 6px' };
+  return (
+    <span className="row" style={{ gap: 6, alignItems: 'center' }} title="Mô hình video và thời lượng trên Flow cho riêng phân cảnh này (không theo Cài đặt chung)">
+      <span className="small muted">Flow:</span>
+      <select value={model} onChange={(e) => onModel(e.target.value)} style={sel} title="Mô hình video trên Flow">
+        {FLOW_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+      </select>
+      <select value={duration} onChange={(e) => onDuration(e.target.value)} style={sel} title="Thời lượng video (Omni Flash)">
+        {FLOW_DURATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+      </select>
+    </span>
+  );
+}
+
 export default function FashionSalesView({ wf, state, refresh, go }) {
   const savedDraft = useMemo(() => loadFashionDraft(), []);
 
   const savedPrompts = state?.settings?.workflows?.[wf.id]?.prompts || {};
-  const baseScene1Prompt = savedPrompts.case2_scene1 || wf.prompts?.case2_scene1?.text || '';
-  const baseScene2Prompt = savedPrompts.case2_scene2 || wf.prompts?.case2_scene2?.text || '';
+  // 'case1' (Full outfit) | 'case2' (Chỉ trang phục) | 'case3' (Áo dài: như TH2 nhưng prompt gốc riêng, cảnh 2 10s)
+  const [caseMode, setCaseMode] = useState(() => savedDraft?.caseMode || 'case2');
+  const isAoDai = caseMode === 'case3';
+  const keyScene1 = isAoDai ? 'case3_scene1' : 'case2_scene1';
+  const keyScene2 = isAoDai ? 'case3_scene2' : 'case2_scene2';
+  const sceneKeysOf = (mode) => (mode === 'case3' ? ['case3_scene1', 'case3_scene2'] : ['case2_scene1', 'case2_scene2']);
+  const basePromptOf = (key) => savedPrompts[key] || wf.prompts?.[key]?.text || '';
+  const baseScene1Prompt = basePromptOf(keyScene1);
+  const baseScene2Prompt = basePromptOf(keyScene2);
   const baseCase1Prompt = savedPrompts.case1 || wf.prompts?.case1?.text || '';
+  // Model + thời lượng Flow cho từng phân cảnh, chọn ngay trong module (không theo Cài đặt chung). TH1 dùng của cảnh 1.
+  const [scene1Model, setScene1Model] = useState(() => savedDraft?.scene1Model || FLOW_MODELS[0]);
+  const [scene1Duration, setScene1Duration] = useState(() => savedDraft?.scene1Duration || '10s');
+  const [scene2Model, setScene2Model] = useState(() => savedDraft?.scene2Model || FLOW_MODELS[0]);
+  const [scene2Duration, setScene2Duration] = useState(() => savedDraft?.scene2Duration || (savedDraft?.caseMode === 'case3' ? '10s' : '6s'));
   const defaultBackPrompt =
     state?.defaults?.backViewPrompt ||
     `Create a clean, photorealistic product photo of the BACK VIEW of the exact clothing garment shown in the reference image (front view). Keep the same color, fabric, pattern, texture, neckline style from the back, sleeve length, hemline, and design language. Show the back details naturally (e.g. back zipper, back seams, back cut, back buttons) faithful to the front garment's style. Present the back-view garment cleanly on a plain, neutral, evenly lit white studio background, front-to-back perspective, fully visible, centered, with no person, no mannequin, no hangers, no text or props.`;
@@ -53,7 +84,6 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     bag: null,
   });
 
-  const [caseMode, setCaseMode] = useState(() => savedDraft?.caseMode || 'case2'); // 'case1' (Full outfit) | 'case2' (Garment only)
   const [cropTarget, setCropTarget] = useState(null); // { asset, slot }
   const [backOption, setBackOption] = useState(() => savedDraft?.backOption || 'generate'); // 'cleanFront' | 'cleanBack' | 'generate'
   const [backPrompt, setBackPrompt] = useState(() => savedDraft?.backPrompt || defaultBackPrompt);
@@ -65,6 +95,10 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
   const [pendingBackJobId, setPendingBackJobId] = useState(null);
   const [backMsg, setBackMsg] = useState(() => savedDraft?.backMsg || null);
 
+  // Mã sản phẩm in lên video (thay "TODAY'S OUTFIT"): theo ảnh mặt trước, server cấp VAY_01, VAY_02… và lưu lên ảnh
+  const [productCode, setProductCode] = useState(() => savedDraft?.productCode || '');
+  const [codeMsg, setCodeMsg] = useState(null);
+  const [codeList, setCodeList] = useState(null); // { codes, text } khi bấm "Xem danh sách mã"
   const [productDescription, setProductDescription] = useState(() => savedDraft?.productDescription || '');
   const [productDetails, setProductDetails] = useState(() => savedDraft?.productDetails || null);
   const [scene1FromApi, setScene1FromApi] = useState(() => savedDraft?.scene1FromApi ?? false);
@@ -118,6 +152,11 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         customCase1Prompt,
         analyzeMsg,
         backMsg,
+        scene1Model,
+        scene1Duration,
+        scene2Model,
+        scene2Duration,
+        productCode,
       };
       localStorage.setItem(FASHION_DRAFT_KEY, JSON.stringify(dataToSave));
     } catch (e) {
@@ -142,6 +181,11 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     customCase1Prompt,
     analyzeMsg,
     backMsg,
+    scene1Model,
+    scene1Duration,
+    scene2Model,
+    scene2Duration,
+    productCode,
   ]);
 
   const isScene1Custom = promptScene1.trim() !== baseScene1Prompt.trim();
@@ -153,6 +197,24 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
   const isScene1FromApi = scene1FromApi || (!!(productDetails || productDescription || analyzeMsg?.type === 'success') && isScene1Custom);
   const isScene2FromApi = scene2FromApi || (!!(productDetails || productDescription || analyzeMsg?.type === 'success') && isScene2Custom);
   const isCase1FromApi = case1FromApi;
+
+  // Đổi trường hợp: TH2 <-> TH3 có bộ prompt gốc riêng -> nạp prompt gốc của TH mới vào 2 ô soạn
+  // (hỏi trước nếu đang có prompt sửa dở / prompt do Gemini render), và đặt thời lượng cảnh 2 mặc định (TH2 6s, TH3 10s)
+  const switchCase = (next) => {
+    if (next === caseMode) return;
+    const twoScenes = (m) => m === 'case2' || m === 'case3';
+    if (twoScenes(caseMode) && twoScenes(next)) {
+      const dirty = isScene1Custom || isScene2Custom || scene1FromApi || scene2FromApi;
+      if (dirty && !window.confirm('Chuyển trường hợp sẽ thay 2 prompt phân cảnh đang soạn bằng prompt gốc của trường hợp mới (nội dung chưa lưu sẽ mất). Tiếp tục?')) return;
+      const [k1, k2] = sceneKeysOf(next);
+      setPromptScene1(basePromptOf(k1));
+      setPromptScene2(basePromptOf(k2));
+      setScene1FromApi(false);
+      setScene2FromApi(false);
+      setScene2Duration(next === 'case3' ? '10s' : '6s');
+    }
+    setCaseMode(next);
+  };
 
   // Reset toàn bộ prompt về gốc
   const handleResetAllPrompts = () => {
@@ -203,7 +265,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           [wf.id]: {
             prompts: {
               ...currentSaved,
-              case2_scene1: promptScene1.trim(),
+              [keyScene1]: promptScene1.trim(),
             },
           },
         },
@@ -222,7 +284,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           [wf.id]: {
             prompts: {
               ...currentSaved,
-              case2_scene2: promptScene2.trim(),
+              [keyScene2]: promptScene2.trim(),
             },
           },
         },
@@ -263,12 +325,12 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         },
       });
       await refresh();
-      if (key === 'case2_scene1') {
-        const factory = wf.prompts?.case2_scene1?.factoryText || wf.prompts?.case2_scene1?.text;
+      if (key === keyScene1) {
+        const factory = wf.prompts?.[keyScene1]?.factoryText || wf.prompts?.[keyScene1]?.text;
         setPromptScene1(factory);
         setScene1FromApi(false);
-      } else if (key === 'case2_scene2') {
-        const factory = wf.prompts?.case2_scene2?.factoryText || wf.prompts?.case2_scene2?.text;
+      } else if (key === keyScene2) {
+        const factory = wf.prompts?.[keyScene2]?.factoryText || wf.prompts?.[keyScene2]?.text;
         setPromptScene2(factory);
         setScene2FromApi(false);
       } else if (key === 'case1') {
@@ -305,6 +367,8 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       });
       setProductDescription('');
       setProductDetails(null);
+      setProductCode('');
+      setCodeMsg(null);
       setPromptScene1(baseScene1Prompt);
       setPromptScene2(baseScene2Prompt);
       setCustomCase1Prompt(baseCase1Prompt);
@@ -334,10 +398,10 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       (a.isBackView || a.name?.includes('Mặt sau Flow'))
   );
 
-  // Tự động đảm bảo Flow ở chế độ Omni Flash 10s khi vào module Video bán hàng thời trang
+  // Cấu hình sẵn Flow theo model / thời lượng của cảnh 1 khi vào module (và khi người dùng đổi lựa chọn)
   useEffect(() => {
-    api.flowPreset({ model: 'Omni 1.1 Flash', duration: '10s' }).catch(() => {});
-  }, []);
+    api.flowPreset({ model: scene1Model, duration: scene1Duration }).catch(() => {});
+  }, [scene1Model, scene1Duration]);
 
   // Khi chọn ảnh mặt trước mới: nếu đã có sẵn ảnh mặt sau của nó mà ô mặt sau đang trống thì tự động gắn luôn
   useEffect(() => {
@@ -346,6 +410,74 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       setBackMsg({ type: 'ok', text: `Đã tự động gắn ảnh mặt sau đã tạo trước đó: "${generatedBacks[0].name}"` });
     }
   }, [inputs.outfitFront, generatedBacks.length]);
+
+  // Mã sản phẩm theo ảnh mặt trước: ảnh đã có mã -> lấy mã đó; chưa có -> server cấp mã mới (VAY_01, VAY_02…)
+  const normalizeCodeInput = (v) =>
+    String(v || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+      .toUpperCase()
+      .replace(/[\s.]+/g, '_')
+      .replace(/[^A-Z0-9_-]/g, '');
+  const isValidCode = (c) => /^[A-Z0-9]+(?:_[A-Z0-9-]+)+$/.test(c || '');
+  useEffect(() => {
+    if (!inputs.outfitFront) return;
+    const a = assetOf(inputs.outfitFront);
+    if (!a) return;
+    if (a.productCode) {
+      setProductCode(a.productCode);
+      return;
+    }
+    let cancelled = false;
+    api.assignCode(a.id)
+      .then((res) => {
+        if (cancelled) return;
+        setProductCode(res.productCode || '');
+        setCodeMsg({ type: 'ok', text: `Đã cấp mã ${res.productCode} cho ảnh "${a.name}"` });
+        refresh();
+      })
+      .catch((e) => !cancelled && setCodeMsg({ type: 'err', text: `Không cấp được mã: ${e.message}` }));
+    return () => { cancelled = true; };
+  }, [inputs.outfitFront]);
+
+  // Người dùng sửa mã trong ô -> lưu lên ảnh mặt trước (mã trùng ảnh khác thì báo lỗi, giữ mã cũ)
+  const commitCode = () =>
+    run(async () => {
+      const c = normalizeCodeInput(productCode);
+      setProductCode(c);
+      if (!inputs.outfitFront) return;
+      if (!isValidCode(c)) {
+        setCodeMsg({ type: 'err', text: 'Mã phải có dạng LOAI_SO, vd. VAY_01 (không dấu, in hoa)' });
+        return;
+      }
+      const a = assetOf(inputs.outfitFront);
+      if (a?.productCode === c) return;
+      try {
+        const res = await api.assignCode(inputs.outfitFront, c);
+        setProductCode(res.productCode);
+        setCodeMsg({ type: 'ok', text: `Đã lưu mã ${res.productCode} cho ảnh mặt trước` });
+        await refresh();
+      } catch (e) {
+        setCodeMsg({ type: 'err', text: e.message });
+        if (a?.productCode) setProductCode(a.productCode);
+      }
+    });
+
+  const handleImportCodes = (file) =>
+    run(async () => {
+      if (!file) return;
+      const text = await file.text();
+      const r = await api.importCodes(text);
+      const inv = r.invalid?.length ? ` Bỏ qua ${r.invalid.length} mã sai dạng (${r.invalid.slice(0, 3).join(', ')}${r.invalid.length > 3 ? '…' : ''}).` : '';
+      setCodeMsg({ type: 'ok', text: `Đã nhập ${r.added} mã mới, ${r.skipped} mã đã có sẵn. Sổ hiện có ${r.total} mã.${inv}` });
+      if (codeList) setCodeList(await api.codes());
+    });
+
+  const toggleCodeList = () =>
+    run(async () => {
+      if (codeList) { setCodeList(null); return; }
+      setCodeList(await api.codes());
+    });
 
   // Polling nhanh khi đang tạo ảnh mặt sau để cập nhật state.assets và state.jobs ngay lập tức
   useEffect(() => {
@@ -395,6 +527,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     if (!inputs.shoes) missing.push('Ảnh giày');
     if (!inputs.bag) missing.push('Ảnh túi xách');
   }
+  if (!isValidCode(normalizeCodeInput(productCode))) missing.push('Mã sản phẩm (dạng VAY_01)');
 
   // Khởi tạo chạy workflow
   const startRun = () =>
@@ -407,14 +540,19 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           promptScene1: !isCase1 ? sanitizeMentions(promptScene1, false) : undefined,
           promptScene2: !isCase1 ? sanitizeMentions(promptScene2, false) : undefined,
           customPrompt: isCase1 ? sanitizeMentions(customCase1Prompt, true) : undefined,
+          scene1Model,
+          scene1Duration,
+          scene2Model,
+          scene2Duration,
+          productCode: normalizeCodeInput(productCode),
           removeWatermark,
           autoPublish,
           keepAudio,
         },
         prompts: {
           case1: sanitizeMentions(customCase1Prompt, true),
-          case2_scene1: sanitizeMentions(promptScene1, false),
-          case2_scene2: sanitizeMentions(promptScene2, false),
+          [keyScene1]: sanitizeMentions(promptScene1, false),
+          [keyScene2]: sanitizeMentions(promptScene2, false),
         },
       });
       await refresh();
@@ -426,13 +564,16 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       if (!inputs.outfitFront) throw new Error('Vui lòng chọn ảnh Trang phục – Mặt trước trước khi phân tích');
       if (!inputs.outfitBack) throw new Error('Vui lòng chọn ảnh Trang phục – Mặt sau trước khi phân tích');
       setIsAnalyzing(true);
-      setAnalyzeMsg({ type: 'loading', text: '⏳ Đang gọi Gemini AI phân tích 2 ảnh mặt trước/sau và dựng 2 prompt mới...' });
+      setAnalyzeMsg({ type: 'loading', text: '⏳ Đang gọi Gemini AI phân tích 2 ảnh mặt trước/sau và viết lại lời thoại (Voice) cho 2 phân cảnh...' });
       try {
         const res = await api.analyzeFashionGarment({
           frontAssetId: inputs.outfitFront,
           backAssetId: inputs.outfitBack,
-          basePromptScene1: promptScene1 || wf.prompts?.case2_scene1?.text,
-          basePromptScene2: promptScene2 || wf.prompts?.case2_scene2?.text,
+          // Luôn dựng từ PROMPT GỐC (bản đã lưu / mặc định), không từ ô đang soạn: ô soạn thường còn prompt của sản phẩm
+          // trước (Gemini render lần trước) nên nếu đưa vào sẽ "dính" mô tả bộ đồ cũ. Muốn đổi mẫu thì Lưu lại prompt gốc trước.
+          basePromptScene1: baseScene1Prompt,
+          basePromptScene2: baseScene2Prompt,
+          caseMode,
         });
         if (res.productDescription) setProductDescription(res.productDescription);
         if (res.productData) setProductDetails(res.productData);
@@ -447,7 +588,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         setShowPromptEditor(true);
         setAnalyzeMsg({
           type: 'success',
-          text: '✨ Đã phân tích sản phẩm và tạo thành công 2 prompt mới! Bạn có thể xem và chỉnh sửa trực tiếp bên dưới.',
+          text: '✨ Đã phân tích sản phẩm và viết lại lời thoại cho 2 phân cảnh (phần tiếng Anh giữ nguyên prompt gốc). Bạn có thể xem và chỉnh sửa trực tiếp bên dưới.',
         });
       } catch (e) {
         setAnalyzeMsg({ type: 'error', text: `❌ Lỗi phân tích Gemini: ${e.message}` });
@@ -482,7 +623,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         <div>
           <h1>🛍️ {wf.name}</h1>
           <p className="muted" style={{ margin: 0 }}>
-            Tạo video bán hàng thời trang 10 giây phong cách lookbook Hàn Quốc tự động bằng Google Flow (Omni 1.1 Flash).
+            Tạo video bán hàng thời trang phong cách lookbook Hàn Quốc tự động bằng Google Flow (model và thời lượng chọn riêng cho từng phân cảnh).
             Tự động phối hợp người mẫu, bối cảnh, trang phục, giày, túi và xoá logo Gemini thành phẩm.
           </p>
         </div>
@@ -548,7 +689,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                 type="radio"
                 name="caseMode"
                 checked={caseMode === 'case1'}
-                onChange={() => setCaseMode('case1')}
+                onChange={() => switchCase('case1')}
               />
               <span>
                 <b>Trường hợp 1: Đầy đủ Outfit</b> (Trang phục + Giày + Túi xách, có pop-up mã sản phẩm)
@@ -559,10 +700,21 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                 type="radio"
                 name="caseMode"
                 checked={caseMode === 'case2'}
-                onChange={() => setCaseMode('case2')}
+                onChange={() => switchCase('case2')}
               />
               <span>
                 <b>Trường hợp 2: Chỉ Trang phục</b> (Mặt trước + Mặt sau)
+              </span>
+            </label>
+            <label className="check">
+              <input
+                type="radio"
+                name="caseMode"
+                checked={caseMode === 'case3'}
+                onChange={() => switchCase('case3')}
+              />
+              <span>
+                <b>Trường hợp 3: Áo dài</b> (như TH2, prompt riêng cho áo dài, 2 cảnh 10s + 10s)
               </span>
             </label>
           </div>
@@ -902,6 +1054,71 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         </div>
       </div>
 
+      {/* KHỐI MÃ SẢN PHẨM: in lên video thay chữ "TODAY'S OUTFIT" */}
+      <div className="card stack">
+        <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <b>🏷️ Mã sản phẩm in trên video</b>
+          <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <a className="small" href="/api/codes/export" download="ma-san-pham.txt" title="Tải file .txt chứa mọi mã đã dùng trên máy này (cách nhau dấu phẩy) để đưa cho người khác nhập vào">
+              📤 Xuất mã (.txt)
+            </a>
+            <label className="small" style={{ cursor: 'pointer' }} title="Nhập file .txt mã của máy khác: các mã đó được coi là đã dùng, mã cấp mới sẽ nhảy qua để không trùng">
+              📥 Nhập mã (.txt)
+              <input type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={(e) => { handleImportCodes(e.target.files?.[0]); e.target.value = ''; }} />
+            </label>
+            <a className="small" onClick={toggleCodeList}>{codeList ? 'Ẩn danh sách mã' : 'Xem danh sách mã'}</a>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            className="mono"
+            style={{ width: 200, fontWeight: 700, letterSpacing: 1 }}
+            placeholder="VAY_01"
+            value={productCode}
+            disabled={!inputs.outfitFront}
+            onChange={(e) => setProductCode(normalizeCodeInput(e.target.value))}
+            onBlur={commitCode}
+            onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+            title="Mã của ảnh mặt trước đang chọn. Sửa được (không dấu, in hoa, dạng LOAI_SO); rời ô để lưu lên ảnh."
+          />
+          <span className="small muted">
+            {inputs.outfitFront
+              ? <>Mã gắn với ảnh mặt trước <b>{frontAsset?.name}</b>. Chữ <code>"TODAY'S OUTFIT"</code> trong prompt sẽ được thay bằng mã này khi gửi Flow. Chọn ảnh mặt trước khác → mã khác; ảnh mới chưa có mã → tự cấp số tiếp theo.</>
+              : 'Chọn ảnh Trang phục – Mặt trước ở trên, app sẽ tự cấp mã (VAY_01, VAY_02…) hoặc lấy lại mã đã cấp cho ảnh đó.'}
+          </span>
+        </div>
+        {codeMsg && (
+          <div
+            className="small"
+            style={{
+              padding: '6px 10px',
+              borderRadius: 6,
+              background: codeMsg.type === 'err' ? 'rgba(239, 93, 93, 0.15)' : 'rgba(63, 191, 127, 0.15)',
+              border: `1px solid ${codeMsg.type === 'err' ? 'var(--red)' : 'var(--green)'}`,
+              color: codeMsg.type === 'err' ? 'var(--red)' : 'var(--green)',
+            }}
+          >
+            {codeMsg.text}
+          </div>
+        )}
+        {codeList && (
+          <div className="stack gap-xs" style={{ background: 'var(--panel2)', padding: 10, borderRadius: 6 }}>
+            <span className="small muted"><b>Sổ mã trên máy này ({codeList.codes.length}):</b> mã đã cấp cho ảnh, mã sửa tay và mã nhập từ file .txt</span>
+            <textarea className="mono small" rows={3} readOnly value={codeList.text} onFocus={(e) => e.target.select()} />
+            {codeList.codes.length > 0 && (
+              <div className="row wrap" style={{ gap: 6 }}>
+                {codeList.codes.map((c) => (
+                  <span key={c.code} className="badge" title={c.assetName ? `Ảnh: ${c.assetName}` : c.source === 'import' ? 'Nhập từ file .txt' : ''}
+                    style={{ background: c.source === 'import' ? '#475569' : '#059669', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
+                    {c.code}{c.source === 'import' ? ' (nhập)' : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* KHỐI 3: KỊCH BẢN PROMPT & TUỲ CHỌN XUẤT VIDEO */}
       <div className="card stack">
         <div className="row between">
@@ -965,7 +1182,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
               </button>
             </div>
             <div className="small muted" style={{ marginBottom: 10 }}>
-              Gemini sẽ xem cả 2 ảnh Mặt trước & Mặt sau để trích xuất Mô tả sản phẩm, sau đó lấy [Prompt gốc Cảnh 1 & Cảnh 2] + [Mô tả sản phẩm] để tạo ra 2 prompt mới bám sát thực tế, cho phép bạn kiểm tra và chỉnh sửa trước khi render video.
+              Gemini sẽ xem cả 2 ảnh Mặt trước & Mặt sau để trích xuất Mô tả sản phẩm, sau đó CHỈ viết lại các câu lời thoại <code>Voice: "..."</code> trong [Prompt gốc Cảnh 1 & Cảnh 2] cho khớp sản phẩm và hành động của từng mốc giây. Phần tiếng Anh (Setup, mốc giây, hành động, @Image, Technical Rule) giữ nguyên 100% prompt gốc; <code>Voice: [Silent]</code> không đổi.
             </div>
 
             {analyzeMsg && (
@@ -1055,8 +1272,9 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                 <div className="stack" style={{ marginTop: 8 }}>
                   <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                     <label className="small" style={{ margin: 0 }}>
-                      <b>🎬 Phân cảnh 1: Mặt trước (10 giây – Chế độ Thành phần)</b>
+                      <b>🎬 Phân cảnh 1: Mặt trước ({scene1Duration.replace('s', ' giây')} – Chế độ Thành phần{isAoDai ? ' – Áo dài' : ''})</b>
                     </label>
+                    <SceneFlowOptions model={scene1Model} duration={scene1Duration} onModel={setScene1Model} onDuration={setScene1Duration} />
                     <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {isScene1FromApi ? (
                         <>
@@ -1103,14 +1321,14 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                           ) : (
                             <>
                               <span className="badge" style={{ background: '#475569', color: '#cbd5e1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
-                                📄 Đang ở prompt gốc {savedPrompts.case2_scene1 ? '(Riêng)' : '(Mặc định)'}
+                                📄 Đang ở prompt gốc {savedPrompts[keyScene1] ? '(Riêng)' : '(Mặc định)'}
                               </span>
-                              {savedPrompts.case2_scene1 && (
+                              {savedPrompts[keyScene1] && (
                                 <button
                                   type="button"
                                   className="small"
                                   disabled={busy}
-                                  onClick={() => handleRestoreSystemDefault('case2_scene1')}
+                                  onClick={() => handleRestoreSystemDefault(keyScene1)}
                                   style={{ padding: '2px 6px', fontSize: 10, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)' }}
                                   title="Khôi phục về mẫu gốc ban đầu lúc mới cài đặt của hệ thống"
                                 >
@@ -1121,6 +1339,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                           )}
                         </>
                       )}
+                      <PromptVersionPicker wfId={wf.id} promptKey={keyScene1} reload={savedPrompts[keyScene1] || ''} onRestored={(t) => { setPromptScene1(t); setScene1FromApi(false); refresh(); setSaveNotice({ key: 'scene1', text: '✓ Đã quay lại phiên bản prompt cũ cho Cảnh 1 (bản vừa rồi đã được lưu thành phiên bản).' }); setTimeout(() => setSaveNotice(null), 3500); }} />
                     </div>
                   </div>
                   <span className="muted" style={{ display: 'block', fontSize: 11, marginTop: 2 }}>
@@ -1166,8 +1385,9 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                 <div className="stack" style={{ marginTop: 8 }}>
                   <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                     <label className="small" style={{ margin: 0 }}>
-                      <b>🎬 Phân cảnh 2: Mặt sau (6 giây – Chế độ Khung hình với Start Frame)</b>
+                      <b>🎬 Phân cảnh 2: Mặt sau ({scene2Duration.replace('s', ' giây')} – Chế độ Khung hình với Start Frame{isAoDai ? ' – Áo dài' : ''})</b>
                     </label>
+                    <SceneFlowOptions model={scene2Model} duration={scene2Duration} onModel={setScene2Model} onDuration={setScene2Duration} />
                     <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {isScene2FromApi ? (
                         <>
@@ -1214,14 +1434,14 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                           ) : (
                             <>
                               <span className="badge" style={{ background: '#475569', color: '#cbd5e1', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
-                                📄 Đang ở prompt gốc {savedPrompts.case2_scene2 ? '(Riêng)' : '(Mặc định)'}
+                                📄 Đang ở prompt gốc {savedPrompts[keyScene2] ? '(Riêng)' : '(Mặc định)'}
                               </span>
-                              {savedPrompts.case2_scene2 && (
+                              {savedPrompts[keyScene2] && (
                                 <button
                                   type="button"
                                   className="small"
                                   disabled={busy}
-                                  onClick={() => handleRestoreSystemDefault('case2_scene2')}
+                                  onClick={() => handleRestoreSystemDefault(keyScene2)}
                                   style={{ padding: '2px 6px', fontSize: 10, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)' }}
                                   title="Khôi phục về mẫu gốc ban đầu lúc mới cài đặt của hệ thống"
                                 >
@@ -1232,10 +1452,11 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                           )}
                         </>
                       )}
+                      <PromptVersionPicker wfId={wf.id} promptKey={keyScene2} reload={savedPrompts[keyScene2] || ''} onRestored={(t) => { setPromptScene2(t); setScene2FromApi(false); refresh(); setSaveNotice({ key: 'scene2', text: '✓ Đã quay lại phiên bản prompt cũ cho Cảnh 2 (bản vừa rồi đã được lưu thành phiên bản).' }); setTimeout(() => setSaveNotice(null), 3500); }} />
                     </div>
                   </div>
                   <span className="muted" style={{ display: 'block', fontSize: 11, marginTop: 2 }}>
-                    Tiếp nối liền mạch từ khung hình cuối của Phân cảnh 1 làm Start Frame (Omni 1.1 Flash 720p 6s), xoay người khoe chi tiết lưng và kêu gọi mua hàng.
+                    Tiếp nối liền mạch từ khung hình cuối của Phân cảnh 1 làm Start Frame ({scene2Model} 720p {scene2Duration}), xoay người khoe chi tiết lưng và kêu gọi mua hàng.
                   </span>
                   <textarea
                     rows={6}
@@ -1261,8 +1482,9 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
             ) : (
               <div className="stack">
                 <div className="row between" style={{ alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
-                  <span className="small muted">
-                    Prompt 10s Trường hợp 1 (Đầy đủ Outfit) gửi sang Flow Omni Flash:
+                  <span className="small muted row" style={{ gap: 8, alignItems: 'center' }}>
+                    Prompt {scene1Duration} Trường hợp 1 (Đầy đủ Outfit) gửi sang Flow:
+                    <SceneFlowOptions model={scene1Model} duration={scene1Duration} onModel={setScene1Model} onDuration={setScene1Duration} />
                   </span>
                   <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     {isCase1FromApi ? (
@@ -1325,6 +1547,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
                         )}
                       </>
                     )}
+                    <PromptVersionPicker wfId={wf.id} promptKey="case1" reload={savedPrompts.case1 || ''} onRestored={(t) => { setCustomCase1Prompt(t); setCase1FromApi(false); refresh(); setSaveNotice({ key: 'case1', text: '✓ Đã quay lại phiên bản prompt cũ cho TH1 (bản vừa rồi đã được lưu thành phiên bản).' }); setTimeout(() => setSaveNotice(null), 3500); }} />
                   </div>
                 </div>
                 <textarea
@@ -1401,8 +1624,10 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           {busy
             ? '… Đang xử lý'
             : isCase1
-              ? '🎬 Tạo Video thời trang TH1 (10s Full Outfit)'
-              : '🎬 Tạo Video thời trang TH2 (2 Phân cảnh: Cảnh 1 10s + Cảnh 2 6s)'}
+              ? `🎬 Tạo Video thời trang TH1 (${scene1Duration} Full Outfit · ${scene1Model})`
+              : isAoDai
+                ? `🎬 Tạo Video áo dài TH3 (2 Phân cảnh: Cảnh 1 ${scene1Duration} + Cảnh 2 ${scene2Duration})`
+                : `🎬 Tạo Video thời trang TH2 (2 Phân cảnh: Cảnh 1 ${scene1Duration} + Cảnh 2 ${scene2Duration})`}
         </button>
         {missing.length > 0 && (
           <span className="muted small">Cần chọn thêm: {missing.join(', ')}</span>

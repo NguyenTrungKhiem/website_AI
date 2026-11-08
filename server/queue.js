@@ -247,7 +247,8 @@ async function run(job) {
     ...(job.meta?.isFramesMode ? { isFramesMode: job.meta.isFramesMode } : {}),
   };
   const isCancelled = () => cancelledJobs.has(job.id);
-  const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult, isCancelled };
+  // meta.imageQuality ('2K' | '4K'): job ảnh tải bản Flow phóng to thay vì ảnh gốc 1K (vd. quy trình Ảnh model mặc đồ)
+  const input = { settings, prompt: finalPrompt, video: job.videoPath, images, flowRefs, outputFile, log, onResult, isCancelled, imageQuality: job.meta?.imageQuality || null };
   try {
     let result;
     const prev = job.attempts.filter((a) => a !== attempt).at(-1);

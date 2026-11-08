@@ -29,6 +29,14 @@ Menu **AI Dancing** chạy trọn gói cho 1 video gốc đã cắt: cắt khung
 - Trang **Ghép video** có ô **📥 Thêm video từ máy**; với video nhập, chọn "khớp đoạn gốc" để chèn đúng khúc âm thanh.
 - Bối cảnh mới được lưu vào thư viện ảnh (loại "bối cảnh") để dùng lại. Trên Flow, bước sinh ảnh dùng Nano Banana và hiện không tốn credit; 2 bước video tốn credit như thường (≈20 credit/đoạn ở 720p, ≈10 ở 360p).
 
+## Mã sản phẩm in trên video thời trang
+
+Module **🛍️ Video bán hàng thời trang** in mã sản phẩm lên đầu video thay cho chữ `"TODAY'S OUTFIT"` trong prompt gốc (`server/productCodes.js`):
+
+- Mỗi **ảnh trang phục mặt trước** có đúng 1 mã dạng `LOAI_SO` (không dấu, in hoa): chọn ảnh → app lấy mã đã cấp cho ảnh đó, ảnh mới thì cấp số tiếp theo (`VAY_01`, `VAY_02`…; tiền tố đoán theo tên ảnh: váy/đầm → `VAY`, áo dài → `AODAI`, áo → `AO`, quần → `QUAN`, set → `SET`, không rõ → `SP`). Ảnh làm sạch / cắt / mặt sau sinh từ ảnh đó dùng lại mã của ảnh gốc. Sửa mã tay ngay trong ô (lưu lên ảnh; mã đã thuộc ảnh khác thì bị từ chối).
+- 2 người làm trên 2 máy: **📤 Xuất mã (.txt)** (các mã cách nhau dấu phẩy) → đưa cho người kia **📥 Nhập mã (.txt)**; mã đã nhập được coi là đã dùng nên số mới cấp sẽ nhảy qua, không trùng. Nên nhập mã của nhau trước mỗi đợt làm.
+- Quy trình **Ảnh model mặc đồ** dùng chung sổ mã này (bảng **🏷️ Mã & sản phẩm** trên thẻ lần chạy: mã in lên ảnh kết quả + Excel cho DiamondShop — xem mục quy trình đó), nên một trang phục chỉ có một mã dù lên video hay lên ảnh.
+
 ## Quy trình Thay trang phục
 
 Menu **👗 Thay trang phục** (`server/workflows/thay-trang-phuc.js`): dùng khi video gốc có nhiều cảnh, mỗi cảnh một bộ đồ. Các bước giống AI Dancing (bối cảnh mới → thay mặt + trang phục → kiểm tra → thay nền → ghép), khác ở chỗ:
@@ -47,7 +55,31 @@ Menu **🎬 Fashion V2V** (`server/workflows/fashion-v2v.js`): không tạo bố
 
 ## Quy trình Ảnh model mặc đồ (chỉ ảnh, 0 credit)
 
-Menu **📸 Ảnh model mặc đồ** (`server/workflows/anh-model.js`, quy trình `noVideo`): 1 ảnh model toàn thân + **nhiều** ảnh trang phục (chọn nhiều trong thư viện, có số thứ tự) + 1 ảnh bối cảnh. Bước 1 làm sạch bối cảnh (bỏ người, giữ nguyên khung cảnh; tắt được nếu ảnh đã sạch), bước 2 render mỗi trang phục thành 1 ảnh model mặc bộ đó trong bối cảnh (ảnh 1 = model, 2 = trang phục, 3 = bối cảnh; Nano Banana). Ảnh kết quả hiện ở thẻ lần chạy (Thử lại / chọn lần tạo / tải về) và tự lưu vào thư viện loại `lookbook`; nút **Lưu làm ảnh model** (hoặc bật tuỳ chọn "Lưu luôn thành ảnh model") sao chép sang thư viện ảnh model để dùng cho AI Dancing / Thay trang phục.
+Menu **📸 Ảnh model mặc đồ** (`server/workflows/anh-model.js`, quy trình `noVideo`): 1 ảnh model toàn thân + **nhiều** ảnh trang phục (chọn nhiều trong thư viện, có số thứ tự) + 1 ảnh bối cảnh. Bước 1 làm sạch bối cảnh (bỏ người, giữ nguyên khung cảnh; tắt được nếu ảnh đã sạch), bước 2 render mỗi trang phục thành 1 ảnh model mặc bộ đó trong bối cảnh (ảnh 1 = model, 2 = trang phục, 3 = bối cảnh; Nano Banana). Ảnh kết quả hiện ở thẻ lần chạy (Thử lại / chọn lần tạo / tải về) và tự lưu vào thư viện loại `lookbook` (mang theo metadata sản phẩm của trang phục); nút **Lưu làm ảnh model** (hoặc bật tuỳ chọn "Lưu luôn thành ảnh model") sao chép sang thư viện ảnh model để dùng cho AI Dancing / Thay trang phục.
+
+### Mã sản phẩm & Excel cho DiamondShop (mỗi ảnh trang phục = 1 sản phẩm)
+
+Khách xem ảnh / video trên TikTok gõ **mã sản phẩm** vào web DiamondShop để mở đúng sản phẩm và mua qua link affiliate. Luồng trong module này (`server/productExport.js`, chỉ áp cho quy trình có ô ảnh sản phẩm chọn nhiều — các quy trình video không đổi):
+
+- **Lấy ảnh trang phục qua link Shopee** ở ô *Ảnh trang phục* → chọn ảnh → (tuỳ chọn) **✨ Làm sạch bằng Flow** → Dùng. Tên, giá, mô tả gốc (≤ 600 ký tự), URL ảnh gốc, `shopId`/`itemId` lấy được lúc bóc link được lưu vào `asset.product` khi tải ảnh về thư viện và **đi theo ảnh suốt luồng**: ảnh làm sạch / mặt sau / cắt / sao chép kế thừa `product` của ảnh gốc theo chuỗi `fromAssetId`, ảnh kết quả `lookbook` cũng mang theo. Ảnh tải từ máy (không bóc link) thì chỉ có tên ảnh, link trống → DiamondShop sẽ báo lỗi dòng đó.
+- Render xong, bấm **🏷️ Mã & sản phẩm** trên thẻ lần chạy: bảng mỗi ảnh trang phục một dòng (ảnh trang phục → ảnh model đã render), tên / giá / mô tả / link Shopee / ảnh chính điền sẵn (sửa tay được). **Mã** dùng chung **sổ mã** với video thời trang (`server/productCodes.js`, dạng `VAY_01`): ảnh đã có mã thì hiện mã đó (kể cả mã của ảnh gốc khi đây là ảnh làm sạch), chưa có thì gợi ý số kế tiếp theo tên (**Gợi ý lại** để đổi); lưu thì cấp mã cho ảnh trang phục (`asset.productCode`, mã đã thuộc ảnh khác bị từ chối) và ghi ngược metadata để lần chạy sau dùng lại. Khung mã xem trước ngay trên ảnh kết quả: kéo thả đổi vị trí, thanh chỉnh cỡ, **Áp vị trí cho mọi ảnh**; mặc định tâm khung ở giữa, 12% chiều cao từ trên (phía trên đầu nhân vật).
+- **💾 Lưu & in mã lên ảnh** → bước **In mã lên ảnh** của lần chạy chạy ffmpeg đè khung mã (PNG vẽ ở trình duyệt bằng Canvas: bo góc nhẹ, nền đen mờ 55%, chữ trắng đậm, đúng độ phân giải ảnh) lên từng ảnh kết quả thành file riêng `data/outputs/coded-<run>-<ảnh>.png` — ảnh render gốc giữ nguyên. Ở mục *Ảnh kết quả* mỗi ảnh có nhãn mã và link **🏷️ Tải ảnh có mã**. Đổi mã / vị trí, Thử lại render ra ảnh mới, hay bỏ mã → web tự in lại / dọn (bước hiện ⏳ rồi ✓, nhãn "⚠ chưa in mã mới" trong lúc chờ). Có thể đặt mã / tải Excel ngay cả khi chưa render xong.
+- **📊 Tải Excel**: `san-pham-<yyyymmdd>-<runId>.xlsx`, sheet `San pham`, dòng 1 là tiêu đề, mỗi dòng một sản phẩm — Admin DiamondShop (Tab 5 → Nhập từ Excel) nhập thẳng file này. Dữ liệu đang sửa chưa lưu vẫn xuất được. **Không đổi tên / thứ tự cột** (hợp đồng với `web-site-aff/src/lib/productImport.ts`):
+
+  | Cột | Nội dung |
+  |---|---|
+  | `Mã sản phẩm` | mã in trên ảnh (`VAY_01`…) |
+  | `Tên sản phẩm` | tên đã làm sạch |
+  | `Giá (đ)` | số nguyên VND |
+  | `Mô tả` | text thuần ≤ 600 ký tự |
+  | `Ảnh 1` … `Ảnh 6` | URL https ảnh gốc Shopee (`*.susercontent.com`); `Ảnh 1` = ảnh chính. DiamondShop chỉ nhận ảnh CDN Shopee, không nhận ảnh render local |
+  | `Link Shopee` | `https://shopee.vn/product/<shopId>/<itemId>` |
+  | `Danh mục` | tuỳ chọn |
+  | `Hoa hồng Shopee (đ)` | **để trống** — web-video không có, DiamondShop điền |
+  | `Ghi chú` | `Ảnh model mặc đồ – <tên ảnh model> – Bộ n` |
+  | `Xem trước` | thumbnail ảnh model có mã (chỉ để nhìn, đọc từ file local) |
+
+- API: `GET /api/runs/:id/products` → `{ mode: 'input', rows, frame }`; `PUT /api/runs/:id/products` `{ products: { [assetId]: { code, name, price, description, mainImage, category, badge: { x, y, scale, png } } } }`; `POST /api/runs/:id/products.xlsx`; `GET /api/products/suggest-code?title=&taken=`; `POST /api/product/import` nhận thêm `product` (kết quả bóc tách) để lưu `asset.product`. Test: `node scripts/test-product-export.mjs` (8 bài, thuần) và `node scripts/test-anh-model-products.mjs` (đầu-cuối trên server thật với engine giả: bóc link → làm sạch → chạy Ảnh model mặc đồ → lưu mã → in mã lên ảnh → Excel → DiamondShop đọc bằng `parseProductRows` nếu repo `../web-site-aff` nằm cạnh).
 
 Thêm quy trình mới (vd. Thay quần áo): tạo `server/workflows/<ten>.js` cùng cấu trúc với `dancing.js` (inputs, prompts, options, stages) và đăng ký trong `server/workflows/index.js`. Giao diện tự sinh trang riêng, không ảnh hưởng tới Dancing. Các bước dùng chung (Cắt, Ghép, Đăng) giữ nguyên. Các job lẻ (motion / background / image) vẫn có API (`/api/jobs/...`) nhưng không còn trang riêng.
 
@@ -81,7 +113,7 @@ App tự ghép prompt mẫu (tiếng Anh) với prompt của bạn; ảnh tham c
 
 ## Ảnh sản phẩm từ Shopee
 
-Ở ô **Ảnh sản phẩm** dán link Shopee (link rút gọn `s.shopee.vn/…` hoặc link sản phẩm) rồi bấm **🛒 Lấy ảnh**: web mở trang sản phẩm trong cửa sổ Chrome của Flow (Shopee chặn request không phải trình duyệt), lấy ảnh từng phân loại + ảnh bộ sưu tập, xếp theo lượt bán từng phân loại nếu Shopee trả về (thường không công khai → theo thứ tự Shopee ưu tiên), chọn sẵn 3 ảnh đầu. Chọn ảnh → **Thêm vào thư viện** → ảnh đầu tiên được gắn làm ảnh sản phẩm. Shopee đòi xác minh/đăng nhập thì làm trong tab Shopee của cửa sổ Chrome đó rồi bấm lại.
+Ở ô **Ảnh sản phẩm** dán link Shopee (link rút gọn `s.shopee.vn/…` hoặc link sản phẩm) rồi bấm **🛒 Bóc tách & Lấy ảnh**: web tải HTML trang sản phẩm (UA mobile để Shopee trả SSR) → có tên, mô tả, bộ ảnh từng phân loại, chọn sẵn 3 ảnh đầu. **Giá:** Shopee giấu giá trong HTML SSR (mọi trường giá đều `null`) và chặn API từ Node, nên khi thiếu giá (hoặc thiếu ảnh) web mở trang trong **cửa sổ Chrome của Flow** (`server/browserScraper.js`, trang tự gọi API nội bộ của sàn) và chỉ bù phần thiếu (`mergeBrowserData`). Chrome chưa mở thì kết quả báo "Chưa có giá" kèm ô **Giá** để nhập tay ngay tại đó (ô này sửa được cả khi đã có giá). Giá, tên, link đi theo ảnh (`asset.product`) vào bảng **Mã & sản phẩm** và cột `Giá (đ)` của Excel DiamondShop — không phải nhập lại. Chọn ảnh → **Thêm vào thư viện** → ảnh đầu tiên được gắn làm ảnh sản phẩm. Shopee đòi xác minh/đăng nhập thì làm trong tab Shopee của cửa sổ Chrome đó rồi bấm lại.
 
 ## Google Flow tự động (dùng credit Flow)
 
