@@ -73,6 +73,11 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
   const noVideo = !!wf.noVideo; // quy trình chỉ làm ảnh
   const isEmpty = (inp) => (inp.multiple ? !(inputs[inp.key]?.length) : !inputs[inp.key]);
   const missing = wf.inputs.filter((i) => i.required && isEmpty(i)).map((i) => i.label);
+  // Quy trình cần ảnh mặt sau cho từng trang phục: chưa chọn và cũng chưa có ảnh mặt sau tạo từ ảnh đó -> chưa chạy được
+  if (wf.backInput && wf.codedInput) {
+    const backOf = (frontId) => inputs[wf.backInput]?.[frontId] || state.assets.find((a) => a.fromAssetId === frontId && (a.isBackView || /Mặt sau Flow/.test(a.name || '')))?.id;
+    (inputs[wf.codedInput] || []).forEach((id, i) => { if (!backOf(id)) missing.push(`Mặt sau trang phục ${i + 1}`); });
+  }
   const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
   const missingClips = perClip.length
     ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
@@ -140,23 +145,46 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
               label={inp.label + (inp.required ? ' *' : '')}
               assets={state.assets}
               multiple={!!inp.multiple}
+              hide={inp.hideBackViews ? (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '') : null}
               value={inputs[inp.key] || (inp.multiple ? [] : null)}
-              onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: v }))}
+              onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: inp.multiple && inp.max && Array.isArray(v) ? v.slice(0, inp.max) : v }))}
               refresh={refresh}
               state={state}
             />
           ))}
         </div>
+        {wf.codedInput && (inputs[wf.codedInput]?.length || 0) > 0 && (
+          <OutfitCodes
+            ids={inputs[wf.codedInput]}
+            backs={wf.backInput ? inputs[wf.backInput] || {} : null}
+            onBacks={wf.backInput ? (v) => setInputs((s) => ({ ...s, [wf.backInput]: v })) : null}
+            state={state}
+            refresh={refresh}
+          />
+        )}
       </div>
 
       <div className="card stack">
         <b>{noVideo ? '2' : '3'}. Tuỳ chọn</b>
-        {wf.options.map((o) => (
-          <label key={o.key} className="check">
-            <input type="checkbox" checked={!!options[o.key]} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.checked }))} />
-            {o.label}
-          </label>
-        ))}
+        {wf.options.map((o) =>
+          Array.isArray(o.options) ? (
+            // Tuỳ chọn dạng chọn 1 trong danh sách (vd. Chuyển động, Mô hình Flow)
+            <label key={o.key} className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <span>{o.label}</span>
+              <select value={options[o.key] ?? o.default ?? ''} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}>
+                {o.options.map((opt) => {
+                  const v = typeof opt === 'string' ? opt : opt.value;
+                  return <option key={v} value={v}>{typeof opt === 'string' ? opt : opt.label}</option>;
+                })}
+              </select>
+            </label>
+          ) : (
+            <label key={o.key} className="check">
+              <input type="checkbox" checked={!!options[o.key]} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.checked }))} />
+              {o.label}
+            </label>
+          ),
+        )}
         <PromptEditor wf={wf} settings={state.settings} refresh={refresh} />
       </div>
 
@@ -176,6 +204,125 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
         runs.map((r) => <RunCard key={r.id} run={r} state={state} refresh={refresh} go={go} />)
       )}
     </section>
+  );
+}
+
+// Từng ảnh trang phục đã chọn (quy trình có codedInput, vd. Video thời trang không voice): mã sản phẩm in làm caption
+// (ảnh chưa có mã thì server tự cấp khi chạy; sửa ở đây lưu lên ảnh) và, khi quy trình cần (backInput), ảnh MẶT SAU của bộ đó:
+// tự lấy ảnh mặt sau đã tạo từ ảnh mặt trước, hoặc bấm "Tạo mặt sau" (Flow, 0 credit, như quy trình có voice), hoặc chọn ảnh khác.
+function OutfitCodes({ ids, backs, onBacks, state, refresh }) {
+  const { busy, error, run } = useAction();
+  const [drafts, setDrafts] = useState({});
+  const [pendingBack, setPendingBack] = useState({}); // { frontId: jobId } đang tạo mặt sau
+  const normalize = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toUpperCase().replace(/[\s.]+/g, '_').replace(/[^A-Z0-9_-]/g, '');
+  const assetOf = (id) => state.assets.find((a) => a.id === id);
+  const isBack = (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '');
+  const generatedBacks = (frontId) => state.assets.filter((a) => a.fromAssetId === frontId && isBack(a));
+  const backOf = (frontId) => backs?.[frontId] || generatedBacks(frontId)[0]?.id || null;
+  const products = state.assets.filter((a) => a.kind === 'product' && !a.staging);
+  const save = (id) =>
+    run(async () => {
+      const code = normalize(drafts[id]);
+      if (!code) return;
+      await api.assignCode(id, code);
+      setDrafts((d) => { const n = { ...d }; delete n[id]; return n; });
+      await refresh();
+    });
+  const assign = (id) => run(async () => { await api.assignCode(id); await refresh(); });
+  const renderBack = (id) =>
+    run(async () => {
+      const res = await api.renderBackAsset(id, state.defaults?.backViewPrompt);
+      setPendingBack((p) => ({ ...p, [id]: res.id }));
+      await refresh();
+    });
+  // Ảnh mới nhất đã xong trên Flow -> lưu làm mặt sau của bộ này và chọn luôn (khi Flow tạo xong mà tải về lỗi / tạo tay)
+  const backFromFlow = (id) =>
+    run(async () => {
+      const a = await api.backFromFlow(id);
+      if (onBacks) onBacks({ ...(backs || {}), [id]: a.id });
+      await refresh();
+    });
+  // Job tạo mặt sau xong -> gắn luôn ảnh mới vào bộ đó
+  useEffect(() => {
+    for (const [frontId, jobId] of Object.entries(pendingBack)) {
+      const job = state.jobs?.find((j) => j.id === jobId);
+      if (!job || job.status === 'running' || job.status === 'queued') continue;
+      setPendingBack((p) => { const n = { ...p }; delete n[frontId]; return n; });
+      const a = state.assets.find((x) => x.fromJobId === jobId) || (job.meta?.assetId && assetOf(job.meta.assetId));
+      if (a && onBacks) onBacks({ ...(backs || {}), [frontId]: a.id });
+    }
+  }, [state.jobs, state.assets]);
+  // Đang tạo thì làm mới nhanh để thấy tiến trình
+  useEffect(() => {
+    if (!Object.keys(pendingBack).length) return;
+    const t = setInterval(refresh, 1500);
+    return () => clearInterval(t);
+  }, [Object.keys(pendingBack).join(','), refresh]);
+
+  return (
+    <div className="stack outfit-codes">
+      <b className="small">🏷️ Từng trang phục: mã sản phẩm in trên video{backs ? ' · ảnh mặt sau (cho đoạn quay lưng)' : ''}</b>
+      <div className="stack" style={{ gap: 8 }}>
+        {ids.map((id, i) => {
+          const a = assetOf(id);
+          if (!a) return null;
+          const value = drafts[id] ?? a.productCode ?? '';
+          const backId = backs ? backOf(id) : null;
+          const back = backId && assetOf(backId);
+          const job = pendingBack[id] && state.jobs?.find((j) => j.id === pendingBack[id]);
+          return (
+            <div key={id} className="row outfit-code" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <img src={a.url} alt="" className="mini-thumb" title={a.name} />
+              <div className="stack" style={{ gap: 2 }}>
+                <small className="muted">Bộ {i + 1} · {a.name.slice(0, 28)}</small>
+                <div className="row" style={{ gap: 4 }}>
+                  <input
+                    className="mono"
+                    style={{ width: 120, fontWeight: 700 }}
+                    placeholder="VAY_01"
+                    value={value}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [id]: normalize(e.target.value) }))}
+                    onBlur={() => drafts[id] != null && drafts[id] !== a.productCode && save(id)}
+                    onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                    title="Mã dạng LOAI_SO (không dấu, in hoa); rời ô để lưu lên ảnh"
+                  />
+                  {!a.productCode && <button className="small-btn" disabled={busy} onClick={() => assign(id)} title="Server cấp mã tiếp theo theo loại sản phẩm">Cấp mã</button>}
+                </div>
+              </div>
+              {backs && (
+                <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                  <span className="small muted">Mặt sau:</span>
+                  {back ? <img src={back.url} alt="" className="mini-thumb" title={back.name} /> : <span className="mini-thumb placeholder-thumb" title="Chưa có ảnh mặt sau">?</span>}
+                  <select
+                    value={backId || ''}
+                    onChange={(e) => onBacks({ ...(backs || {}), [id]: e.target.value || undefined })}
+                    title="Chọn ảnh mặt sau trong thư viện (ảnh tạo từ mặt trước được xếp đầu)"
+                    style={{ maxWidth: 180 }}
+                  >
+                    <option value="">— chọn ảnh mặt sau —</option>
+                    {[...generatedBacks(id), ...products.filter((p) => p.id !== id && !generatedBacks(id).includes(p))].map((p) => (
+                      <option key={p.id} value={p.id}>{(isBack(p) ? '↩ ' : '') + p.name.slice(0, 40)}</option>
+                    ))}
+                  </select>
+                  <button className="small-btn" disabled={busy || !!job} onClick={() => renderBack(id)} title="Tạo ảnh mặt sau từ ảnh mặt trước bằng Flow (Nano Banana, 0 credit)">
+                    {job ? `⏳ ${job.attempts?.at(-1)?.progress || 'Đang tạo…'}` : '✨ Tạo mặt sau'}
+                  </button>
+                  <button className="small-btn" disabled={busy} onClick={() => backFromFlow(id)} title="Lấy ảnh mới nhất đã render xong trong cửa sổ Chrome Google Flow về làm mặt sau của bộ này (khi Flow tạo xong mà tải về lỗi, hoặc bạn tự tạo bằng tay)">
+                    📥 Lấy mặt sau từ Flow
+                  </button>
+                  {job?.status === 'failed' && <span className="err small">{job.error}</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <small className="muted">
+        Mã: ảnh chưa có mã sẽ được cấp tự động khi chạy; mã gắn với ảnh nên lần sau dùng lại là có.
+        {backs && <> Mặt sau: không chọn thì quy trình tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước đó; chưa có thì phải tạo trước khi chạy.</>}
+      </small>
+      {error && <div className="err small">{error}</div>}
+    </div>
   );
 }
 

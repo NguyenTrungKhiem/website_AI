@@ -118,7 +118,8 @@ export function cancelJob(jobId, reason = 'Đã huỷ') {
 }
 
 /**
- * Tải video mới nhất từ Flow về và gán làm kết quả hoàn thành cho 1 job
+ * Tải kết quả mới nhất từ Flow (video, hoặc ảnh với job ảnh) về và gán làm kết quả hoàn thành cho 1 job.
+ * Dùng khi Flow đã render xong nhưng bước tải về bị lỗi, hoặc người dùng tự tạo bằng tay trong cửa sổ Chrome.
  */
 export async function applyFlowVideoToJob(job) {
   if (running.has(job.id)) {
@@ -126,12 +127,13 @@ export async function applyFlowVideoToJob(job) {
   }
   cancelledJobs.delete(job.id);
 
+  const isImage = job.type === 'image';
   const attemptN = Math.max(0, ...job.attempts.map((a) => a.n)) + 1;
-  const outputFile = path.join(DIRS.outputs, `${job.type}-${job.id}-v${attemptN}.mp4`);
+  const outputFile = path.join(DIRS.outputs, `${job.type}-${job.id}-v${attemptN}.${isImage ? 'png' : 'mp4'}`);
   let flowSrc = null;
-  const res = await flow.downloadLatestVideoFromFlow(outputFile, (src) => { flowSrc = src; });
+  const res = await flow.downloadLatestFromFlow(outputFile, isImage ? 'image' : 'video', (src) => { flowSrc = src; }, { imageQuality: job.meta?.imageQuality || null });
   const thumb = outputFile.replace(/\.[^.]+$/, '.jpg');
-  await thumbnail(outputFile, thumb).catch(() => {});
+  await (isImage ? imageThumb(outputFile, thumb) : thumbnail(outputFile, thumb)).catch(() => {});
 
   const attempt = {
     n: attemptN,
@@ -145,7 +147,7 @@ export async function applyFlowVideoToJob(job) {
     thumbPath: thumb,
     flowSrc,
     flowTitle: res.title,
-    note: `Lấy trực tiếp từ Google Flow: ${res.title || 'video mới nhất'}`
+    note: `Lấy trực tiếp từ Google Flow: ${res.title || (isImage ? 'ảnh mới nhất' : 'video mới nhất')}`
   };
 
   job.attempts.push(attempt);
@@ -293,9 +295,16 @@ async function mockGenerate({ video, images, outputFile, log }, isImage) {
   const src = isImage ? images[0] : (video || images[0]);
   if (!src) throw new Error('Engine giả: thiếu đầu vào');
   if (!isImage && !video) {
-    const { exec } = await import('node:child_process');
-    await new Promise((resolve) => {
-      exec(`ffmpeg -y -loop 1 -i "${src}" -c:v libx264 -t 2 -pix_fmt yuv420p "${outputFile}"`, () => resolve());
+    // Video từ ảnh (quy trình không có video gốc): dùng ffmpeg đóng gói sẵn (ffmpeg-static), không phụ thuộc PATH;
+    // kích thước làm chẵn để libx264 không từ chối ảnh lẻ pixel
+    const { spawn } = await import('node:child_process');
+    const { default: ffmpegPath } = await import('ffmpeg-static');
+    await new Promise((resolve, reject) => {
+      const p = spawn(ffmpegPath, ['-y', '-loop', '1', '-i', src, '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30', '-c:v', 'libx264', '-t', '2', '-pix_fmt', 'yuv420p', outputFile], { windowsHide: true });
+      let err = '';
+      p.stderr.on('data', (d) => (err += d));
+      p.on('error', reject);
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error('Engine giả: ffmpeg lỗi ' + err.split('\n').slice(-3).join(' ')))));
     });
   } else {
     fs.copyFileSync(src, outputFile);

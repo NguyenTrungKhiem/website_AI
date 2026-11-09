@@ -3,7 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
-import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage } from './ffmpeg.js';
+import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage, concatRanges } from './ffmpeg.js';
 import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks, applyFlowVideoToJob } from './queue.js';
 import { publish } from './social.js';
 import * as zernio from './zernio.js';
@@ -22,6 +22,31 @@ import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frame
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_CLIP = 10; // Omni Flash chỉ nhận video đầu vào tối đa 10 giây
+
+const LOG_FILE = path.join(DATA_DIR, 'server.log');
+function logServer(...args) {
+  const line = `[${new Date().toISOString()}] ${args.map(a => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}\n`;
+  try { fs.appendFileSync(LOG_FILE, line); } catch {}
+  console.log(...args);
+}
+
+process.on('uncaughtException', (err, origin) => {
+  logServer('[UNCAUGHT EXCEPTION]', origin, err);
+});
+process.on('unhandledRejection', (reason) => {
+  logServer('[UNHANDLED REJECTION]', reason);
+});
+process.on('exit', (code) => {
+  logServer('[PROCESS EXIT] Code:', code);
+});
+process.on('SIGINT', () => {
+  logServer('[SIGNAL] SIGINT');
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  logServer('[SIGNAL] SIGTERM');
+  process.exit(0);
+});
 
 const app = express();
 app.use(express.json({ limit: '20mb' })); // PUT /api/runs/:id/products gửi kèm PNG khung mã (data URL) của từng ảnh
@@ -76,6 +101,8 @@ app.get('/api/state', (req, res) => {
       url: mediaUrl(s.path),
       thumbUrl: mediaUrl(s.thumbPath),
       filmstrip: s.filmstrip && { ...s.filmstrip, url: mediaUrl(s.filmstrip.path) },
+      // video đã gộp lại từ các đoạn giữ (trang Cắt video → Gộp lại)
+      merged: s.merged && { ...s.merged, url: mediaUrl(s.merged.path), thumbUrl: mediaUrl(s.merged.thumbPath) },
     })),
     clips: db.clips.map((c) => ({ ...c, url: mediaUrl(c.path), thumbUrl: mediaUrl(c.thumbPath) })),
     assets: db.assets.map((a) => ({ ...a, url: mediaUrl(a.path) })),
@@ -240,6 +267,40 @@ app.post('/api/sources/:id/cut', wrap(async (req, res) => {
   res.json(created);
 }));
 
+// Gộp lại các đoạn giữ của video gốc (bỏ các đoạn "Bỏ qua") thành 1 video để tải về. body: { ranges: [[a,b],...], mute }
+// Mỗi video gốc giữ 1 bản gộp gần nhất (gộp lại thì thay bản cũ).
+app.post('/api/sources/:id/merge', wrap(async (req, res) => {
+  const src = db.sources.find((s) => s.id === req.params.id);
+  if (!src) throw new Error('Không tìm thấy video gốc');
+  const { ranges: raw, mute = false } = req.body || {};
+  const ranges = (raw || []).map(([a, b]) => [Number(a), Number(b)]).sort((x, y) => x[0] - y[0]);
+  if (!ranges.length) throw new Error('Chưa có đoạn nào để gộp');
+  for (const [a, b] of ranges) {
+    if (!(b > a) || a < 0 || b > src.duration + 0.1) throw new Error(`Đoạn ${a}–${b}s không hợp lệ`);
+  }
+  const id = newId();
+  const file = path.join(DIRS.merged, `cut-${src.id}-${id}.mp4`);
+  const hasAudio = src.hasAudio ?? (await probe(src.path)).hasAudio;
+  await concatRanges(src.path, file, ranges, { mute: !!mute, fps: src.fps || 30, hasAudio });
+  const thumbPath = file.replace(/\.mp4$/, '.jpg');
+  await thumbnail(file, thumbPath, 0.5).catch(() => {});
+  const meta = await probe(file).catch(() => ({ duration: ranges.reduce((s, [a, b]) => s + (b - a), 0) }));
+  if (src.merged) { rm(src.merged.path); rm(src.merged.thumbPath); }
+  src.merged = { id, path: file, thumbPath, duration: meta.duration, ranges, mute: !!mute, name: `${path.parse(src.name).name} – gộp.mp4`, createdAt: Date.now() };
+  save();
+  res.json({ ...src.merged, url: mediaUrl(file), thumbUrl: mediaUrl(thumbPath) });
+}));
+
+app.delete('/api/sources/:id/merge', (req, res) => {
+  const src = db.sources.find((s) => s.id === req.params.id);
+  if (src?.merged) {
+    rm(src.merged.path); rm(src.merged.thumbPath);
+    delete src.merged;
+    save();
+  }
+  res.json({ ok: true });
+});
+
 app.delete('/api/clips/:id', (req, res) => {
   const c = db.clips.find((x) => x.id === req.params.id);
   if (c) {
@@ -294,6 +355,35 @@ app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
     meta: { backOf: a.id, kind: 'product' },
   });
   res.json(viewJob(job));
+}));
+
+// Lấy ảnh MỚI NHẤT đã render xong trên Flow về làm ảnh mặt sau của ảnh mặt trước :id (khi "Tạo mặt sau" đã xong trên Flow
+// nhưng tải về lỗi, hoặc người dùng tự tạo mặt sau bằng tay trong cửa sổ Chrome). Ảnh được lưu như kết quả của render-back.
+app.post('/api/assets/:id/back-from-flow', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh mặt trước');
+  const id = newId();
+  const dest = path.join(DIRS.assets, `${id}.png`);
+  let flowSrc = null;
+  const result = await flow.downloadLatestFromFlow(dest, 'image', (src) => { flowSrc = src; });
+  const base = a.name.replace(/ \((Flow|Mặt sau Flow)\)( #\d+)?$/, '');
+  const n = db.assets.filter((x) => x.fromAssetId === a.id).length + 1;
+  const asset = {
+    id,
+    kind: a.kind || 'product',
+    name: `${base} (Mặt sau Flow)${n > 1 ? ` #${n}` : ''}`,
+    path: dest,
+    createdAt: Date.now(),
+    fromAssetId: a.id,
+    staging: false,
+    isBackView: true,
+    flowTitle: result.title || null,
+    flowSrc,
+    product: a.product ? structuredClone(a.product) : undefined,
+  };
+  db.assets.unshift(asset);
+  save();
+  res.json({ ...asset, url: mediaUrl(dest) });
 }));
 
 // Phân tích ảnh mặt trước & mặt sau bằng Gemini -> sinh Mô tả sản phẩm & 2 Prompt cho 2 Phân cảnh
@@ -946,4 +1036,4 @@ for (const p of [...db.posts, ...db.merges]) {
 for (const p of db.posts) if (!p.filePath && p.jobId) p.filePath = db.jobs.find((j) => j.id === p.jobId)?.outputPath;
 save();
 
-app.listen(PORT, HOST, () => console.log(`Server: http://${HOST}:${PORT}`));
+app.listen(PORT, HOST, () => logServer(`Server: http://${HOST}:${PORT}`));

@@ -22,6 +22,8 @@ export const api = {
   },
   deleteSource: (id) => req('DELETE', `/api/sources/${id}`),
   cut: (id, body) => req('POST', `/api/sources/${id}/cut`, body),
+  mergeSource: (id, body) => req('POST', `/api/sources/${id}/merge`, body),
+  deleteMergedSource: (id) => req('DELETE', `/api/sources/${id}/merge`),
   deleteClip: (id) => req('DELETE', `/api/clips/${id}`),
   uploadAsset: (kind, file) => {
     const f = new FormData();
@@ -105,5 +107,6 @@ export const api = {
   delogoMerge: (id) => req('POST', `/api/merges/${id}/delogo`),
   cropAsset: (body) => req('POST', '/api/assets/crop', body),
   renderBackAsset: (id, prompt) => req('POST', `/api/assets/${id}/render-back`, { prompt }),
+  backFromFlow: (id) => req('POST', `/api/assets/${id}/back-from-flow`),
   analyzeFashionGarment: (body) => req('POST', '/api/fashion/analyze-and-prompt', body),
 };

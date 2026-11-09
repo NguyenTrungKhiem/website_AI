@@ -29,6 +29,12 @@ export default function CutPage({ state, refresh, go }) {
       await api.cut(src.id, { ranges, mute });
       await refresh();
     });
+  // Gộp các đoạn giữ thành 1 video (giữ âm thanh gốc) để tải về
+  const mergeKept = ({ ranges }) =>
+    run(async () => {
+      await api.mergeSource(src.id, { ranges, mute: false });
+      await refresh();
+    });
 
   return (
     <section>
@@ -61,7 +67,8 @@ export default function CutPage({ state, refresh, go }) {
 
       {src && (
         <div className="card stack">
-          <CutEditor key={src.id} src={src} busy={busy} onExport={exportClips} defaultSec={parseFloat(state.settings.flowDuration) || 10} />
+          <CutEditor key={src.id} src={src} busy={busy} onExport={exportClips} onMerge={mergeKept} defaultSec={parseFloat(state.settings.flowDuration) || 10} />
+          {src.merged && <MergedSource src={src} refresh={refresh} />}
           <div className="row between">
             <SourceAudio src={src} audios={state.audios} refresh={refresh} />
             <ConfirmButton
@@ -103,6 +110,35 @@ export default function CutPage({ state, refresh, go }) {
         </>
       )}
     </section>
+  );
+}
+
+// Video đã gộp lại từ các đoạn giữ (nút "Gộp lại" trong trình cắt): xem, tải về, xoá
+function MergedSource({ src, refresh }) {
+  const { busy, error, run } = useAction();
+  const m = src.merged;
+  const fps = src.fps || 30;
+  return (
+    <div className="stack merged-box">
+      <div className="row between">
+        <b>🔗 Video đã gộp lại</b>
+        <small className="muted">{m.ranges.length} đoạn · {fmt(m.duration)} · {new Date(m.createdAt).toLocaleString('vi-VN')}</small>
+      </div>
+      <div className="row">
+        <video src={m.url} controls preload="metadata" poster={m.thumbUrl || undefined} className="merged-video" />
+        <div className="stack">
+          <small className="muted">
+            Gồm: {m.ranges.map(([a, b]) => `${tcs(a, fps)}→${tcs(b, fps)}`).join(', ')}
+          </small>
+          <div className="row">
+            <a className="btn primary" href={m.url} download={m.name}>⬇ Tải video đã gộp</a>
+            <ConfirmButton disabled={busy} armedText="Xoá bản gộp này?" onConfirm={() => run(async () => { await api.deleteMergedSource(src.id); await refresh(); })}>Xoá</ConfirmButton>
+          </div>
+          <small className="muted">Gộp lại lần nữa sẽ thay bản này.</small>
+        </div>
+      </div>
+      {error && <div className="err">{error}</div>}
+    </div>
   );
 }
 

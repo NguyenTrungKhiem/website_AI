@@ -86,9 +86,9 @@ export function FileDrop({ accept, multiple, onFiles, children }) {
 // Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới.
 // state (tuỳ chọn) = state toàn app, để popup xem ảnh to biết job/cài đặt/prompt mặc định.
 // multiple = chọn nhiều ảnh: value là mảng id (theo thứ tự chọn), bấm ảnh để thêm/bỏ, có số thứ tự trên ảnh.
-export function AssetPicker({ kind, label, assets, value, onChange, refresh, state, multiple = false }) {
-  // Ảnh nháp (bóc tách / kết quả làm sạch chưa bấm Dùng) không hiện trong thư viện
-  const list = assets.filter((a) => a.kind === kind && !a.staging);
+export function AssetPicker({ kind, label, assets, value, onChange, refresh, state, multiple = false, hide = null }) {
+  // Ảnh nháp (bóc tách / kết quả làm sạch chưa bấm Dùng) không hiện trong thư viện; hide(a) = ẩn thêm theo quy trình
+  const list = assets.filter((a) => a.kind === kind && !a.staging && !(hide && hide(a)));
   const { busy, error, run } = useAction();
   const [viewing, setViewing] = useState(null); // id ảnh đang phóng to
   
@@ -861,18 +861,18 @@ export function JobCard({ job, refresh, selectable, selected, onToggle, compact 
           >
             🔄 Thử lại
           </button>
-          {job.type !== 'image' && (
-            <button
-              disabled={busy || job.status === 'running' || job.status === 'queued'}
-              title="Tải video mới nhất vừa render xong trong cửa sổ Chrome Google Flow gán cho video này"
-              onClick={() => run(async () => {
-                await api.importFlowJob(job.id);
-                await refresh();
-              })}
-            >
-              📥 Lấy từ Flow
-            </button>
-          )}
+          <button
+            disabled={busy || job.status === 'running' || job.status === 'queued'}
+            title={job.type === 'image'
+              ? 'Tải ảnh mới nhất đã render xong trong cửa sổ Chrome Google Flow (ô đầu lưới) gán cho ảnh này — dùng khi Flow đã tạo xong mà tải về lỗi'
+              : 'Tải video mới nhất vừa render xong trong cửa sổ Chrome Google Flow gán cho video này'}
+            onClick={() => run(async () => {
+              await api.importFlowJob(job.id);
+              await refresh();
+            })}
+          >
+            📥 Lấy từ Flow
+          </button>
           <button
             disabled={job.status === 'running' || job.status === 'queued'}
             onClick={() => { setPrompt(job.prompt); setEditing(true); }}

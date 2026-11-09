@@ -81,6 +81,18 @@ Khách xem ảnh / video trên TikTok gõ **mã sản phẩm** vào web DiamondS
 
 - API: `GET /api/runs/:id/products` → `{ mode: 'input', rows, frame }`; `PUT /api/runs/:id/products` `{ products: { [assetId]: { code, name, price, description, mainImage, category, badge: { x, y, scale, png } } } }`; `POST /api/runs/:id/products.xlsx`; `GET /api/products/suggest-code?title=&taken=`; `POST /api/product/import` nhận thêm `product` (kết quả bóc tách) để lưu `asset.product`. Test: `node scripts/test-product-export.mjs` (8 bài, thuần) và `node scripts/test-anh-model-products.mjs` (đầu-cuối trên server thật với engine giả: bóc link → làm sạch → chạy Ảnh model mặc đồ → lưu mã → in mã lên ảnh → Excel → DiamondShop đọc bằng `parseProductRows` nếu repo `../web-site-aff` nằm cạnh).
 
+### Video bán hàng thời trang không voice
+
+Menu **🤫 Video bán hàng thời trang không voice** (`server/workflows/video-thoi-trang-khong-voice.js`): 1 ảnh model (@Image1) + **1–4 trang phục** chọn theo thứ tự mặc, mỗi bộ có ảnh **mặt trước + mặt sau** (đoạn quay lưng dùng ảnh mặt sau) + 1 ảnh bối cảnh → 2 phân cảnh 10s trên Flow (Omni · Ingredients · 9:16), không voice, không lip-sync, rồi ghép lại.
+
+- **Mặt sau**: dưới phần chọn ảnh, mỗi bộ có ô chọn ảnh mặt sau và nút **✨ Tạo mặt sau** (Flow, 0 credit, cùng cách với quy trình có voice); không chọn thì quy trình tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước đó, chưa có thì không chạy được.
+- Thứ tự ảnh gửi Flow: Part 1 = model, trước 1, sau 1, mặt trước các bộ còn lại (cầm trên móc), bối cảnh; Part 2 = model, (trước, sau) từng bộ còn lại, bối cảnh, khung hình cuối Part 1. Tag `@ImageN` trong prompt được server điền theo đúng thứ tự này.
+- **Mã sản phẩm** làm caption trên video: mỗi ảnh trang phục có 1 mã (ô sửa ngay dưới phần chọn ảnh; ảnh chưa có mã được cấp tự động khi chạy, xem `server/productCodes.js`). Part 1 hiện mã của trang phục 1; Part 2 đổi mã đúng tại mỗi lần đổi trang phục.
+- Prompt cố ý gọn (≈2.200–2.600 ký tự mỗi phân cảnh, ngang prompt TH1 của quy trình có voice) vì Flow từ chối prompt quá dài; mỗi mốc chỉ ghi động tác tay / chân / đầu.
+- **Chuyển động** (tuỳ chọn dạng chọn): kịch bản tay chân theo mốc giây. *Chuyển động 1* dựng theo video mẫu (cầm móc → match cut → khăn/túi → quay lưng → cận chi tiết → kết dáng). Mỗi chuyển động gồm prompt Part 1 cố định và các **khối** cho trang phục kế tiếp (gốc 6s / 4s) + khối "chỉ 1 trang phục" (10s); server tự chia 10s của Part 2 cho các trang phục còn lại (2 trang phục còn lại: 6s + 4s như video mẫu, 1: trọn 10s, 3: 3,3s mỗi bộ) và co giãn mốc giây của khối. Thêm chuyển động mới = thêm một mục vào `MOTIONS` trong file quy trình.
+- Mọi khối sửa được trong "Prompt mẫu của quy trình": dòng dạng `a.a-b.bs: …`, chỗ điền `{MODEL}`, `{OUTFIT}`, `{OUTFITS}`, `{CODE}`, `{BG}`, `{START}`, `{PART}`.
+- Part 2 nhận thêm khung hình cuối của Part 1 làm nguyên liệu cuối (`{START}`) để mở đúng khung đó; khung này được **xoá dải chữ phía trên** (ffmpeg delogo, `removeCaptionBand`) vì nó in sẵn mã của trang phục 1 và Flow sẽ chép mã đó sang Part 2; prompt Part 2 cũng nói rõ chữ trong ảnh thuộc Part 1, caption từ khung đầu là mã của trang phục kế tiếp. Part 1 đổi kết quả thì Part 2 và ghép tự làm lại.
+
 Thêm quy trình mới (vd. Thay quần áo): tạo `server/workflows/<ten>.js` cùng cấu trúc với `dancing.js` (inputs, prompts, options, stages) và đăng ký trong `server/workflows/index.js`. Giao diện tự sinh trang riêng, không ảnh hưởng tới Dancing. Các bước dùng chung (Cắt, Ghép, Đăng) giữ nguyên. Các job lẻ (motion / background / image) vẫn có API (`/api/jobs/...`) nhưng không còn trang riêng.
 
 Thử quy trình không tốn tiền: đặt `"engine": "mock"` trong `data/db.json` (engine giả chép đầu vào thành đầu ra sau 2 giây).

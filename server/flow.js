@@ -1054,30 +1054,38 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
 }
 
 /**
- * Tải video mới nhất đã hoàn thành trên Flow (dùng khi hệ thống tự động gặp lỗi hoặc người dùng tự tạo bằng tay trên Chrome).
+ * Tải kết quả MỚI NHẤT đã hoàn thành trên Flow (video hoặc ảnh) — dùng khi hệ thống tự động gặp lỗi lúc tải về,
+ * hoặc người dùng tự tạo bằng tay trong cửa sổ Chrome. kind 'image': lấy ô ảnh (không phải video, không phải file tải lên);
+ * imageQuality ('2K' | '4K'): tải bản phóng to qua menu Download như job ảnh thường.
  */
-export async function downloadLatestVideoFromFlow(outputFile, onResult = () => {}) {
+export async function downloadLatestFromFlow(outputFile, kind = 'video', onResult = () => {}, { imageQuality = null } = {}) {
   const page = await flowPage();
   await page.bringToFront();
   await scrollTilesTop(page);
   await sleep(600);
 
   const all = await tiles(page);
+  const isVideoTile = (t) => t.hasVideo || !!t.src || /play_circle|video/i.test(t.icons || '') || /play_circle|video/i.test(t.text || '');
   const candidate = all.find((t) =>
     !isUploadTile(t, []) &&
     !isFailed(t) &&
     !isGenerating(t) &&
-    (t.hasVideo || t.src || /play_circle|video/i.test(t.icons || '') || /play_circle|video/i.test(t.text || ''))
+    (kind === 'image' ? !isVideoTile(t) && /^https?:/.test(t.isrc || '') : isVideoTile(t))
   );
 
   if (!candidate) {
-    throw new Error('Không tìm thấy video nào đã hoàn thành trên Flow. Hãy đảm bảo bạn đã render xong video trong cửa sổ Chrome.');
+    throw new Error(kind === 'image'
+      ? 'Không tìm thấy ảnh nào đã hoàn thành trên Flow. Hãy đảm bảo ảnh đã render xong trong cửa sổ Chrome (ô mới nhất ở đầu lưới).'
+      : 'Không tìm thấy video nào đã hoàn thành trên Flow. Hãy đảm bảo bạn đã render xong video trong cửa sổ Chrome.');
   }
 
   const tile = page.locator(TILE).nth(candidate.i);
   const title = (await tile.getAttribute('aria-label').catch(() => '')) || candidate.key || '';
-  await downloadTile(page, tile, outputFile, 'video', onResult);
+  await downloadTile(page, tile, outputFile, kind, onResult, { imageQuality });
   return { outputFile, title, tileMedia: tileMedia(candidate) };
 }
+
+// Giữ tên cũ cho các chỗ đang gọi
+export const downloadLatestVideoFromFlow = (outputFile, onResult) => downloadLatestFromFlow(outputFile, 'video', onResult);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

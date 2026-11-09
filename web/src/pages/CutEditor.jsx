@@ -22,7 +22,7 @@ const loadSaved = (id) => {
 
 // defaultSec = "Thời lượng video" trong Cài đặt: video-to-video (AI Dancing…) ra dài đúng bằng đoạn cắt,
 // nên mặc định tự chia theo thời lượng này
-export default function CutEditor({ src, onExport, busy, defaultSec = 10 }) {
+export default function CutEditor({ src, onExport, onMerge, busy, defaultSec = 10 }) {
   const fps = src.fps || 30;
   const totalFrames = Math.max(1, Math.round(src.duration * fps));
   const videoRef = useRef();
@@ -136,6 +136,9 @@ export default function CutEditor({ src, onExport, busy, defaultSec = 10 }) {
     if (!splits.includes(f)) return;
     commit(splits.filter((x) => x !== f), excluded.filter((x) => x !== f));
   };
+  // Điểm cắt sẽ bỏ khi bấm "Nối với đoạn trước": điểm tại playhead, không thì điểm đầu của đoạn đang chọn/đang đứng
+  const joinableSplit = splits.includes(frame) ? frame : (segments.find((s) => s.start === selected) || segAt(frame))?.start;
+  const canJoin = joinableSplit > 0 && splits.includes(joinableSplit);
   const toggleExclude = () => {
     const seg = segments.find((s) => s.start === selected) || segAt(frame);
     commit(splits, seg.excluded ? excluded.filter((x) => x !== seg.start) : [...excluded, seg.start]);
@@ -302,7 +305,15 @@ export default function CutEditor({ src, onExport, busy, defaultSec = 10 }) {
           <button className="primary" title="Cắt tại playhead (Ctrl+B)" onClick={split} disabled={frame <= 0 || splits.includes(frame)}>
             ✂️ Cắt <kbd>Ctrl+B</kbd>
           </button>
-          <button title="Bỏ điểm cắt tại playhead" disabled={!splits.includes(frame)} onClick={() => removeSplit()}>Gộp lại</button>
+          <button title="Bỏ điểm cắt ở đầu đoạn đang chọn (hoặc tại playhead) để nối đoạn này với đoạn trước" disabled={!canJoin} onClick={() => removeSplit(joinableSplit)}>⇤ Nối với đoạn trước</button>
+          <button
+            className="primary-outline"
+            title="Nối các đoạn giữ (không 'Bỏ qua') thành 1 video giữ âm thanh gốc để tải về; các đoạn Bỏ qua bị cắt khỏi video"
+            disabled={busy || !kept.length || (!splits.length && !excluded.length)}
+            onClick={() => onMerge?.({ ranges: kept.map((s) => [s.startS, s.endS]) })}
+          >
+            🔗 Gộp lại {kept.length} đoạn giữ
+          </button>
           <button title="Bỏ qua / lấy lại đoạn đang chọn (Delete)" onClick={toggleExclude}>
             {(segments.find((s) => s.start === selected) || cur)?.excluded ? '↺ Lấy lại đoạn' : '🗑 Bỏ đoạn'} <kbd>Del</kbd>
           </button>

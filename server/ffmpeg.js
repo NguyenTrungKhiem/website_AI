@@ -276,6 +276,20 @@ export function frameAt(src, dest, at = 0.1) {
   return run(ffmpegPath, args);
 }
 
+/**
+ * Xoá dải chữ (caption mã sản phẩm ở phần trên khung hình) trong 1 ảnh bằng delogo (nội suy nền), lưu ra dest.
+ * Dùng cho khung hình cuối của Part 1 trước khi làm khung mở đầu Part 2: nếu để nguyên, Flow chép luôn dòng mã cũ sang Part 2.
+ * Vùng mặc định = dải ngang giữa, từ 4% tới 21% chiều cao (chỗ Flow in "caption at the top-center fifth").
+ */
+export async function removeCaptionBand(src, dest, { x = 0.1, y = 0.04, w = 0.8, h = 0.17 } = {}) {
+  const info = await probe(src);
+  const W = info.width, H = info.height;
+  if (!W || !H) throw new Error('Không đọc được kích thước ảnh để xoá dải chữ');
+  const X = Math.max(1, Math.round(W * x)), Y = Math.max(1, Math.round(H * y));
+  const BW = Math.min(W - X - 1, Math.round(W * w)), BH = Math.min(H - Y - 1, Math.round(H * h));
+  return run(ffmpegPath, ['-y', '-i', src, '-vf', `delogo=x=${X}:y=${Y}:w=${BW}:h=${BH}:show=0`, '-c:v', 'png', '-pix_fmt', 'rgb24', dest]);
+}
+
 // Trích xuất khung hình cuối cùng của video ở định dạng PNG chuẩn màu rgb24 nguyên bản (giữ nguyên dải màu gốc, không bị nén mất màu như JPG)
 export async function extractLastFrame(src, dest) {
   const info = await probe(src);
@@ -329,6 +343,26 @@ export function buildOverlayBadgeArgs({ src, badge, dest, x = 0.5, y = 0.12, fra
 }
 export function overlayBadge(opts) {
   return run(ffmpegPath, buildOverlayBadgeArgs(opts));
+}
+
+/**
+ * Gộp các khoảng [start, end] của CÙNG một video thành 1 file (bỏ các đoạn không có trong ranges), một lần chạy ffmpeg,
+ * không cần file tạm: trim từng khoảng rồi concat. Giữ âm thanh gốc nếu có và không mute.
+ */
+export function concatRanges(src, dest, ranges, { mute = false, fps = 30, hasAudio = true } = {}) {
+  const useAudio = hasAudio && !mute;
+  const filters = [];
+  ranges.forEach(([a, b], i) => {
+    filters.push(`[0:v]trim=start=${a.toFixed(6)}:end=${b.toFixed(6)},setpts=PTS-STARTPTS,fps=${fps},format=yuv420p[v${i}]`);
+    if (useAudio) filters.push(`[0:a]atrim=start=${a.toFixed(6)}:end=${b.toFixed(6)},asetpts=PTS-STARTPTS[a${i}]`);
+  });
+  const pads = ranges.map((_, i) => (useAudio ? `[v${i}][a${i}]` : `[v${i}]`)).join('');
+  filters.push(`${pads}concat=n=${ranges.length}:v=1:a=${useAudio ? 1 : 0}[v]${useAudio ? '[a]' : ''}`);
+  const args = ['-y', '-i', src, '-filter_complex', filters.join(';'), '-map', '[v]'];
+  if (useAudio) args.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k');
+  else args.push('-an');
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', dest);
+  return run(ffmpegPath, args);
 }
 
 export function thumbnail(src, dest, at = 0.5) {

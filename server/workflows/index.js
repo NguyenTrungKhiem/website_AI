@@ -5,12 +5,14 @@ import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
 import fashionV2v from './fashion-v2v.js';
 import videoThoiTrang from './video-thoi-trang.js';
+import videoThoiTrangKhongVoice from './video-thoi-trang-khong-voice.js';
 import { db } from '../db.js';
 
 export const WORKFLOWS = {
   [dancing.id]: dancing,
   [thayTrangPhuc.id]: thayTrangPhuc,
   [videoThoiTrang.id]: videoThoiTrang,
+  [videoThoiTrangKhongVoice.id]: videoThoiTrangKhongVoice,
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,
@@ -35,7 +37,9 @@ export const listWorkflows = () =>
       icon: w.icon,
       description: w.description,
       noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
-      inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id)
+      codedInput: w.codedInput || null, // key input mà mỗi ảnh có mã sản phẩm (giao diện hiện ô sửa mã)
+      backInput: w.backInput || null, // key inputs chứa ảnh mặt sau theo từng ảnh mặt trước ({ frontId: backId })
+      inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id); max = số ảnh tối đa
       perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
       prompts: mergedPrompts,
       options: w.options,

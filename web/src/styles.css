@@ -247,6 +247,14 @@ button.big { padding: 10px 18px; font-size: 15px; }
 .ed-player { background: #000; border-radius: 10px; display: flex; justify-content: center; }
 .ed-player video { max-height: 52vh; max-width: 100%; display: block; cursor: pointer; }
 .ed-toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.outfit-codes { background: var(--panel2); border-radius: 8px; padding: 8px 10px; gap: 6px; }
+.outfit-codes .mini-thumb { width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #000; }
+.outfit-codes .placeholder-thumb { display: inline-grid; place-items: center; color: var(--muted); border: 1px dashed var(--line); background: var(--panel); }
+/* Video đã gộp lại từ các đoạn giữ (trang Cắt video) */
+.merged-box { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.merged-box .merged-video { width: 150px; aspect-ratio: 9/16; object-fit: contain; background: #000; border-radius: 6px; }
+.merged-box a.btn { display: inline-block; padding: 6px 12px; border-radius: 8px; text-decoration: none; }
+.merged-box a.btn.primary { background: var(--accent); color: #fff; }
 .ed-toolbar button { padding: 6px 10px; }
 .ed-toolbar .play { width: 44px; font-weight: 700; }
 .tc { font: 600 16px ui-monospace, 'Cascadia Mono', Consolas, monospace; background: var(--panel2); border-radius: 6px; padding: 4px 10px; cursor: text; }
