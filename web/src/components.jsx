@@ -38,6 +38,119 @@ export function Badge({ status }) {
   return <span className={`badge ${color}`}>{label}</span>;
 }
 
+// Mở cửa sổ phóng to từ bất kỳ đâu (ô chọn video không bắt click vì click = chọn): zoomMedia({ type, src, name })
+export const zoomMedia = (detail) => window.dispatchEvent(new CustomEvent('vs-media-zoom', { detail }));
+
+/**
+ * Phóng to toàn cục: bấm vào BẤT KỲ <video> nào trong app -> mở to và phát ngay (thẻ video mới, tải lại từ đầu nên không
+ * dính lỗi của thẻ cũ); bấm vào ảnh -> xem to. Gắn 1 lần ở App. Không can thiệp: trình cắt video (.editor), cửa sổ so
+ * sánh (.compare), các popup sẵn có (.lightbox), và ảnh đã có hành vi bấm riêng (ô chọn .thumb, nút, link, con trỏ pointer).
+ */
+export function MediaLightbox() {
+  const [media, setMedia] = useState(null); // { type: 'video' | 'image', src, poster, at, name }
+  useEffect(() => {
+    const onClick = (e) => {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      const t = e.target;
+      if (!(t instanceof Element)) return;
+      if (t.closest('.lightbox, .editor, .compare, [data-no-zoom]')) return;
+      const video = t.closest('video');
+      if (video) {
+        const src = video.currentSrc || video.getAttribute('src');
+        if (!src) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const at = video.ended ? 0 : video.currentTime || 0;
+        video.pause();
+        setTimeout(() => video.pause(), 60); // nút play của thanh điều khiển có thể vẫn kịp phát
+        setMedia({ type: 'video', src, poster: video.poster || undefined, at });
+        return;
+      }
+      const img = t.closest('img');
+      if (!img) return;
+      if (img.closest('.thumb, .rthumb, .sheet, .lightbox-strip, .source, .tl-track, button, a, label')) return;
+      const cur = getComputedStyle(img).cursor;
+      if (cur === 'pointer' || cur === 'zoom-in') return; // ảnh đã có hành vi bấm riêng
+      const src = img.currentSrc || img.src;
+      if (!src || img.naturalWidth < 48) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setMedia({ type: 'image', src, name: img.alt || img.title || '' });
+    };
+    const onZoom = (e) => e.detail?.src && setMedia({ at: 0, ...e.detail });
+    const onKey = (e) => e.key === 'Escape' && setMedia(null);
+    document.addEventListener('click', onClick, true);
+    window.addEventListener('vs-media-zoom', onZoom);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      window.removeEventListener('vs-media-zoom', onZoom);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+  if (!media) return null;
+  const close = () => setMedia(null);
+  return (
+    <div className="lightbox media-lightbox" onClick={close}>
+      <button className="lightbox-close" onClick={close} title="Đóng (Esc)">×</button>
+      {media.type === 'video' ? (
+        <video
+          key={media.src}
+          src={media.src}
+          poster={media.poster}
+          controls
+          autoPlay
+          playsInline
+          onClick={(e) => e.stopPropagation()}
+          onLoadedMetadata={(e) => { if (media.at > 0.2 && media.at < e.currentTarget.duration - 0.3) e.currentTarget.currentTime = media.at; }}
+        />
+      ) : (
+        <img src={media.src} alt={media.name || ''} onClick={(e) => e.stopPropagation()} />
+      )}
+      <div className="media-bar" onClick={(e) => e.stopPropagation()}>
+        {media.name && <span className="ellipsis">{media.name}</span>}
+        <a href={media.src} download>⬇ Tải về</a>
+      </div>
+    </div>
+  );
+}
+
+// Nút nhỏ phủ trên ô video (trang Ghép / Đăng video): ⬇ tải về (ghi nhận "đã tải"), ▶ xem to, × xoá video (bấm 2 lần),
+// và dấu "⬇ Đã tải" cho video đã từng tải xuống. kind: 'merge' | 'job'.
+export function VideoThumbActions({ kind, id, url, name, downloadedAt, refresh, onDeleted }) {
+  const { run } = useAction();
+  const mark = () => run(async () => { await api.markDownloaded(kind, id); await refresh(); });
+  const del = () =>
+    run(async () => {
+      if (kind === 'merge') await api.deleteMerge(id);
+      else await api.deleteJob(id);
+      onDeleted?.(id);
+      await refresh();
+    });
+  return (
+    <>
+      {url && (
+        <a
+          className="zoom-btn dl-btn"
+          href={url}
+          download={`${(name || 'video').replace(/[\\/:*?"<>|]+/g, '_')}.mp4`}
+          title="Tải video về máy"
+          onClick={(e) => { e.stopPropagation(); mark(); }}
+        >
+          ⬇
+        </a>
+      )}
+      {url && (
+        <button className="zoom-btn play-btn" title="Xem to và phát video" onClick={(e) => { e.stopPropagation(); zoomMedia({ type: 'video', src: url, name }); }}>▶</button>
+      )}
+      <ConfirmButton className="x" armedText="Xoá?" title="Xoá video này (xoá cả file)" onConfirm={del}>×</ConfirmButton>
+      {downloadedAt && (
+        <span className="dl-mark" title={`Đã tải xuống lúc ${new Date(downloadedAt).toLocaleString('vi-VN')}`}>⬇ Đã tải</span>
+      )}
+    </>
+  );
+}
+
 export function useAction() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);

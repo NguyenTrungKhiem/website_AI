@@ -22,6 +22,8 @@ export const api = {
   },
   deleteSource: (id) => req('DELETE', `/api/sources/${id}`),
   cut: (id, body) => req('POST', `/api/sources/${id}/cut`, body),
+  // kind: 'merge' (video ghép) | 'job' (video lẻ) — ghi nhận video đã được tải xuống
+  markDownloaded: (kind, id) => req('POST', `/api/${kind === 'merge' ? 'merges' : 'jobs'}/${id}/downloaded`),
   mergeSource: (id, body) => req('POST', `/api/sources/${id}/merge`, body),
   deleteMergedSource: (id) => req('DELETE', `/api/sources/${id}/merge`),
   deleteClip: (id) => req('DELETE', `/api/clips/${id}`),

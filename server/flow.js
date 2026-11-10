@@ -102,6 +102,21 @@ export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // imageQuality: '2K' | '4K' -> tải bản Flow phóng to (menu Download) thay vì ảnh gốc 1K
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
+// Chỉ có 1 trang Flow dùng chung: lần tạo (generate) và "cấu hình sẵn" (preset, do giao diện gọi khi mở module / đổi lựa
+// chọn) không được thao tác cùng lúc — preset mở rồi đóng bảng cài đặt (phím Escape) ngay dưới tay job đang chọn model,
+// job mất nút "Select model family" và lỗi sau 30s. Đang tạo -> preset bỏ qua; preset đang chạy -> lần tạo chờ nó xong.
+let flowBusy = 0; // số lần tạo đang thao tác trên trang Flow
+let presetRunning = null; // lần cấu hình sẵn đang chạy (Promise) hoặc null
+async function generate(opts) {
+  flowBusy++;
+  try {
+    if (presetRunning) await presetRunning.catch(() => {});
+    return await generateOnPage(opts);
+  } finally {
+    flowBusy--;
+  }
+}
+
 // Ô prompt của Flow là trình soạn thảo ProseMirror; thẻ mention là <span class="mention-chip" contenteditable="false">tên ảnh</span>
 const PROMPT_BOX = 'What do you want to create?';
 const CHIP_SEL = 'span.mention-chip';
@@ -257,7 +272,7 @@ async function fillPromptWithMentions(page, prompt, items, log) {
 }
 
 // flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
-async function generate({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled, imageQuality = null }) {
+async function generateOnPage({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled, imageQuality = null }) {
   const page = await flowPage();
   await page.bringToFront();
   if (page.url().includes('/about') || page.url().includes('accounts.google.com')) {
@@ -582,51 +597,95 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
     await sleep(800);
   }
   await dismissOverlays(page);
-  await page.getByRole('button', { name: 'Settings trigger' }).click();
+  const trigger = page.getByRole('button', { name: 'Settings trigger' });
   const radio = (name) => page.getByRole('radio', { name, exact: true });
   const family = page.getByRole('button', { name: 'Select model family' });
+  // Bảng cài đặt "đang mở" = thấy nút chọn model. Bảng có thể bị đóng giữa chừng (Flow vẽ lại, phím Escape, thao tác khác
+  // trên cùng trang) -> mở lại, thay vì chờ 30s rồi báo lỗi khó hiểu "waiting for … Select model family".
+  const panelOpen = (ms) => family.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
+  const ensurePanel = async () => {
+    if (await panelOpen(3000)) return;
+    for (let i = 0; i < 3; i++) {
+      await dismissOverlays(page);
+      await trigger.click({ timeout: 10_000 });
+      if (await panelOpen(4000)) return;
+    }
+    throw new Error('Không mở được bảng cài đặt model của Flow (không thấy nút chọn model) — xem cửa sổ Chrome của Flow: tắt chế độ Agent / đóng hộp thoại đang mở rồi Thử lại.');
+  };
+  await trigger.click({ timeout: 15_000 });
+  if (!(await panelOpen(5000))) await ensurePanel();
+  // Bấm 1 nút trong bảng: bảng bị đóng giữa chừng thì mở lại rồi bấm lại (tối đa 3 lần, mỗi lần chờ ngắn)
+  const tap = async (loc) => {
+    for (let i = 0; ; i++) {
+      await ensurePanel();
+      try {
+        return await loc.click({ timeout: 5000 });
+      } catch (e) {
+        if (i >= 2) throw e;
+      }
+    }
+  };
   const pickFamily = async (re) => {
-    if (re.test(await family.innerText())) return;
-    await family.click();
-    await page.getByRole('menuitem', { name: re }).first().click();
+    for (let i = 0; ; i++) {
+      await ensurePanel();
+      if (re.test(await family.innerText({ timeout: 5000 }).catch(() => ''))) return;
+      try {
+        await family.click({ timeout: 5000 });
+        await page.getByRole('menuitem', { name: re }).first().click({ timeout: 5000 });
+        return;
+      } catch (e) {
+        if (i >= 2) throw e;
+        await page.keyboard.press('Escape').catch(() => {});
+      }
+    }
   };
   // Omni có nhiều phiên bản (1.1 Flash, 1.2 Flash…) -> chọn đúng số phiên bản, chấp nhận cả "Omni 1.2 Flash" và
   // "Omni Flash 1.2". Không thấy thì báo lỗi kèm danh sách model Flow đang có (thay vì lặng lẽ chọn bản khác).
   // So đúng số phiên bản trong tên (1.2 không khớp nhầm 1.12 hay 11.2)
   const isOmni = (t, version) => /omni/i.test(t) && (String(t).match(/\d+(?:\.\d+)+/g) || []).includes(version);
-  const familyText = async () => (await family.innerText().catch(() => '')).replace(/arrow_drop_down/g, '').replace(/\s+/g, ' ').trim();
+  const familyText = async () => (await family.innerText({ timeout: 5000 }).catch(() => '')).replace(/arrow_drop_down/g, '').replace(/\s+/g, ' ').trim();
   const pickOmni = async (version) => {
     const isWanted = (t) => isOmni(t, version);
-    if (isWanted(await familyText())) return;
-    await family.click();
-    const items = page.getByRole('menuitem');
-    await items.first().waitFor({ timeout: 5000 }).catch(() => {});
-    const texts = await items.allInnerTexts();
-    const idx = texts.findIndex(isWanted);
-    if (idx < 0) {
-      await page.keyboard.press('Escape');
-      const list = texts.map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ');
-      throw new Error(`Flow không có model Omni ${version} Flash (đang có: ${list || 'không đọc được menu'}) — đổi "Mô hình video trên Flow" trong Cài đặt.`);
+    for (let i = 0; ; i++) {
+      await ensurePanel();
+      if (isWanted(await familyText())) return;
+      try {
+        await family.click({ timeout: 5000 });
+        const items = page.getByRole('menuitem');
+        await items.first().waitFor({ timeout: 5000 }); // menu không mở (bảng vừa bị đóng) -> thử lại
+        const texts = await items.allInnerTexts();
+        const idx = texts.findIndex(isWanted);
+        if (idx < 0) {
+          await page.keyboard.press('Escape');
+          const list = texts.map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ');
+          throw Object.assign(new Error(`Flow không có model Omni ${version} Flash (đang có: ${list || 'không đọc được menu'}) — đổi "Mô hình video trên Flow" trong Cài đặt.`), { final: true });
+        }
+        await items.nth(idx).click({ timeout: 5000 });
+        return;
+      } catch (e) {
+        if (e.final || i >= 2) throw e;
+        await page.keyboard.press('Escape').catch(() => {});
+      }
     }
-    await items.nth(idx).click();
   };
   if (kind === 'image') {
-    await radio('Image').click();
+    await tap(radio('Image'));
     await sleep(400);
-    await radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16').click();
+    await tap(radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16'));
     await pickFamily(/Nano Banana/i);
   } else {
-    await radio('Video').click();
+    await tap(radio('Video'));
     await sleep(400);
     const isFrames = settings.flowVideoMode === 'frames' || settings.isFramesMode;
     const modeRadio = page.getByRole('radio', { name: isFrames ? /^(frames|khung hình)$/i : /^(ingredients|thành phần)$/i });
+    await ensurePanel();
     if (await modeRadio.isVisible().catch(() => false)) {
-      await modeRadio.click().catch(() => {});
+      await tap(modeRadio).catch(() => {});
     } else {
-      await radio(isFrames ? 'Frames' : 'Ingredients').click().catch(() => {});
+      await radio(isFrames ? 'Frames' : 'Ingredients').click({ timeout: 5000 }).catch(() => {});
     }
     await sleep(300);
-    await radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16').click();
+    await tap(radio(settings.aspectRatio === '16:9' ? '16:9' : '9:16'));
     const model = settings.flowVideoModel || 'Omni 1.1 Flash';
     if (/veo 3\.1.*quality/i.test(model)) {
       await pickFamily(/Veo 3\.1.*Quality/i);
@@ -638,8 +697,9 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
     const omniVersion = /omni/i.test(model) || !/veo/i.test(model) ? model.match(/\d+\.\d+/)?.[0] || '1.1' : null; // 'Omni 1.2 Flash' -> 1.2
     if (omniVersion) await pickOmni(omniVersion);
     const resRadio = page.getByRole('radio', { name: settings.flowResolution === '360p' ? /^360p/ : /^720p/ });
+    await ensurePanel();
     if (await resRadio.isVisible().catch(() => false)) {
-      await resRadio.click().catch(() => {});
+      await tap(resRadio).catch(() => {});
     }
     // Thời lượng: nút radio có tên truy cập bắt đầu bằng "10s" / "10 s" / "10 sec" / "10 seconds" / "10 giây"
     // (tên có thể kèm chữ phía sau, vd. số credit). Nút chỉ hiện sau khi chọn model -> chờ một nhịp.
@@ -648,19 +708,47 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
     const wantSec = parseFloat(duration);
     const durRadio = page.getByRole('radio', { name: new RegExp(`^\\s*${wantSec}(\\.0+)?\\s*(s|secs?|seconds?|giây)\\b`, 'i') }).first();
     const summaryDur = async () => {
-      const t = await page.getByRole('button', { name: 'Settings trigger' }).innerText().catch(() => '');
+      const t = await trigger.innerText({ timeout: 5000 }).catch(() => '');
       const m = t.match(/(\d+(?:\.\d+)?)\s*s\b/i);
       return m ? parseFloat(m[1]) : null;
     };
     const clickDur = async () => {
       await durRadio.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
       if (!(await durRadio.isVisible().catch(() => false))) return false;
-      if ((await durRadio.getAttribute('aria-checked').catch(() => null)) !== 'true') await durRadio.click().catch(() => {});
+      if ((await durRadio.getAttribute('aria-checked').catch(() => null)) !== 'true') await tap(durRadio).catch(() => {});
       await sleep(400);
       return true;
     };
-    let hadDur = await clickDur();
-    if (!hasVideo && hadDur && (await summaryDur()) !== wantSec) hadDur = await clickDur(); // bấm lại 1 lần nếu Flow chưa nhận
+    // Omni 1.2 Flash: thời lượng là THANH TRƯỢT "Length" (3–15s, mỗi nấc 1 giây) thay cho các nút radio (Omni 1.1 vẫn là
+    // radio 4/6/8/10s; Veo 3.1 Lite không có). Chỉnh bằng phím mũi tên, sau mỗi nấc đọc lại dòng tóm tắt của Flow
+    // ("Video · 720p · 15s") cho tới khi đúng số giây; kẹt 3 nấc liên tiếp (hết thang) thì thôi.
+    const lenSlider = page.getByRole('slider', { name: /^\s*(length|duration|thời lượng|độ dài)\s*$/i }).first();
+    const slideDur = async () => {
+      let stuck = 0;
+      for (let i = 0; i < 40; i++) {
+        const cur = await summaryDur();
+        if (cur === wantSec) return true;
+        if (cur === null) return false;
+        await ensurePanel(); // bảng bị đóng thì mở lại, không thì phím mũi tên rơi ra ngoài trang
+        await lenSlider.focus({ timeout: 5000 }).catch(() => {});
+        await page.keyboard.press(cur < wantSec ? 'ArrowRight' : 'ArrowLeft');
+        await sleep(200);
+        if ((await summaryDur()) === cur) { if (++stuck >= 3) return false; } else stuck = 0;
+      }
+      return (await summaryDur()) === wantSec;
+    };
+    // Sau khi đổi model Flow vẽ lại bảng -> chờ 1 trong 2 kiểu điều khiển hiện ra rồi dùng kiểu đó
+    const setDur = async () => {
+      await ensurePanel();
+      for (let i = 0; i < 12; i++) {
+        if (await lenSlider.count().catch(() => 0)) return slideDur();
+        if (await durRadio.isVisible().catch(() => false)) return clickDur();
+        await sleep(250);
+      }
+      return false;
+    };
+    let hadDur = await setDur();
+    if (!hasVideo && hadDur && (await summaryDur()) !== wantSec) hadDur = await setDur(); // chỉnh lại 1 lần nếu Flow chưa nhận
     // Chọn độ phân giải / thời lượng có thể làm Flow tự đổi về model mặc định (vd. Omni 1.1) -> đọc lại model
     // thật sự đang chọn, sai thì chọn lại; vẫn sai thì dừng (không bấm tạo bằng model khác, tránh tốn credit)
     if (omniVersion) {
@@ -668,7 +756,7 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
       if (!isOmni(await familyText(), omniVersion)) {
         await pickOmni(omniVersion);
         await sleep(300);
-        await clickDur();
+        await setDur();
         const now = await familyText();
         if (!isOmni(now, omniVersion)) throw new Error(`Flow không giữ được model Omni ${omniVersion} Flash (đang là "${now}") — có thể bản này chưa hỗ trợ ${duration}/${settings.flowResolution || '720p'}.`);
       }
@@ -678,13 +766,15 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
       const got = await summaryDur();
       if (got !== null && got !== wantSec) {
         await page.keyboard.press('Escape').catch(() => {});
-        throw new Error(`Flow đang để thời lượng ${got}s thay vì ${duration}${hadDur ? '' : ' (không thấy nút ' + duration + ' — model này có thể không hỗ trợ)'} — chọn thời lượng khác hoặc model khác rồi Thử lại.`);
+        throw new Error(`Flow đang để thời lượng ${got}s thay vì ${duration}${hadDur ? '' : ' (không chỉnh được sang ' + duration + ' — model này có thể không hỗ trợ thời lượng đó)'} — chọn thời lượng khác hoặc model khác rồi Thử lại.`);
       }
     }
   }
-  await radio('x1').click();
+  await tap(radio('x1'));
   await sleep(500);
-  const credits = await page.getByRole('link', { name: /credits/ }).innerText().catch(() => '? credits');
+  await ensurePanel();
+  // "Generating will use 60 credits": lấy đúng link số credit (trang còn link "Add AI credits" ở băng thông báo)
+  const credits = (await page.getByRole('link', { name: /^\s*[\d.,]+\s*credits?\s*$/i }).first().innerText({ timeout: 3000 }).catch(() => '? credits')).trim();
   const chosen = await familyText(); // model Flow thật sự đang chọn -> ghi vào thẻ video để kiểm tra
   await page.keyboard.press('Escape');
   const parts = [credits, chosen];
@@ -701,21 +791,27 @@ async function configure(page, settings, kind = 'video', { hasVideo = false } = 
 // Cấu hình trước Flow (ví dụ khi người dùng mở trang module video thời trang)
 export async function preset({ model = 'Omni 1.1 Flash', duration = '10s', resolution = '720p', aspectRatio = '9:16' } = {}) {
   if (!(await isRunning())) return { ok: false, reason: 'Chrome not running' };
-  try {
-    const page = await flowPage();
-    await openProject(page, db.settings);
-    const settings = {
-      ...db.settings,
-      flowVideoModel: model,
-      flowDuration: duration,
-      flowResolution: resolution || db.settings.flowResolution,
-      aspectRatio: aspectRatio || db.settings.aspectRatio,
-    };
-    const credits = await configure(page, settings, 'video');
-    return { ok: true, credits };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  // Đang có lần tạo thao tác trên trang Flow -> không đụng vào bảng cài đặt (xem flowBusy ở trên)
+  if (flowBusy) return { ok: false, reason: 'busy' };
+  if (presetRunning) return presetRunning;
+  presetRunning = (async () => {
+    try {
+      const page = await flowPage();
+      await openProject(page, db.settings);
+      const settings = {
+        ...db.settings,
+        flowVideoModel: model,
+        flowDuration: duration,
+        flowResolution: resolution || db.settings.flowResolution,
+        aspectRatio: aspectRatio || db.settings.aspectRatio,
+      };
+      const credits = await configure(page, settings, 'video');
+      return { ok: true, credits };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  })().finally(() => { presetRunning = null; });
+  return presetRunning;
 }
 
 // Bật/tắt công tắc "Return videos without audio" / "Trả về video không có âm thanh" trong bảng cài đặt dự án

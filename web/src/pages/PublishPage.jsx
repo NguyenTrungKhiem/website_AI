@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Badge, useAction } from '../components.jsx';
+import { Badge, VideoThumbActions, useAction } from '../components.jsx';
 
 export const PLATFORMS = [
   { id: 'tiktok', label: 'TikTok', ok: (s) => !!s.tiktok?.accessToken },
@@ -35,11 +35,11 @@ function getPlatformIcon(platform = '') {
 export default function PublishPage({ state, refresh, go, handoff }) {
   const merges = state.merges.filter((m) => m.status === 'done');
   const done = [
-    ...merges.map((m) => ({ id: m.id, kind: 'merge', label: m.name, thumbUrl: m.thumbUrl, icon: '🎞️', watermarkRemoved: m.watermarkRemoved })),
+    ...merges.map((m) => ({ id: m.id, kind: 'merge', label: m.name, thumbUrl: m.thumbUrl, icon: '🎞️', watermarkRemoved: m.watermarkRemoved, url: m.url, downloadedAt: m.downloadedAt })),
     // Chỉ video (job sinh ảnh — bối cảnh, ảnh sạch — không đăng được)
     ...state.jobs
       .filter((j) => j.status === 'done' && j.type !== 'image')
-      .map((j) => ({ id: j.id, kind: 'job', label: j.videoLabel, thumbUrl: j.thumbUrl, icon: j.type === 'import' ? '📥' : j.type === 'background' ? '🏞️' : '🕺' })),
+      .map((j) => ({ id: j.id, kind: 'job', label: j.videoLabel, thumbUrl: j.thumbUrl, icon: j.type === 'import' ? '📥' : j.type === 'background' ? '🏞️' : '🕺', url: j.outputUrl, downloadedAt: j.downloadedAt })),
   ];
 
   const hasZernioKey = !!state.settings.zernioApiKey?.trim();
@@ -230,11 +230,20 @@ export default function PublishPage({ state, refresh, go, handoff }) {
             {done.map((v) => (
               <div
                 key={v.id}
-                className={'thumb wide' + (videoIds.includes(v.id) ? ' selected' : '')}
+                className={'thumb wide' + (videoIds.includes(v.id) ? ' selected' : '') + (v.downloadedAt ? ' downloaded' : '')}
                 onClick={() => toggle(videoIds, setVideoIds, v.id)}
                 title={v.label}
               >
                 <img src={v.thumbUrl} alt="" />
+                <VideoThumbActions
+                  kind={v.kind}
+                  id={v.id}
+                  url={v.url}
+                  name={v.label}
+                  downloadedAt={v.downloadedAt}
+                  refresh={refresh}
+                  onDeleted={(id) => setVideoIds((s) => s.filter((x) => x !== id))}
+                />
                 <span className="cap">{v.icon} {v.label}{v.watermarkRemoved ? ' ✨' : ''}</span>
               </div>
             ))}

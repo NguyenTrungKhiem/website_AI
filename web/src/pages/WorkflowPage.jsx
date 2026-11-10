@@ -170,8 +170,9 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
           Array.isArray(o.options) ? (
             // Tuỳ chọn dạng chọn 1 trong danh sách (vd. Chuyển động, Mô hình Flow)
             <label key={o.key} className="row" style={{ gap: 8, alignItems: 'center' }}>
-              <span>{o.label}</span>
-              <select value={options[o.key] ?? o.default ?? ''} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}>
+              <span style={{ flex: '0 0 auto' }}>{o.label}</span>
+              {/* tên chuyển động dài: ô chọn co theo khung, không đẩy cả trang tràn ngang */}
+              <select style={{ flex: '1 1 0', minWidth: 0, maxWidth: '100%' }} value={options[o.key] ?? o.default ?? ''} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}>
                 {o.options.map((opt) => {
                   const v = typeof opt === 'string' ? opt : opt.value;
                   return <option key={v} value={v}>{typeof opt === 'string' ? opt : opt.label}</option>;
@@ -547,6 +548,33 @@ function ClipTable({ run: r, jobs, refresh }) {
           </small>
           {error && <div className="err">{error}</div>}
         </>
+      )}
+    </div>
+  );
+}
+
+// Từng phân cảnh của quy trình tạo video từ ảnh (run.scenes): mỗi phân cảnh 1 thẻ video thu gọn. Thử lại -> thêm lần tạo
+// 1, 2, 3… trên CÙNG thẻ; bấm số để chốt bản tốt nhất (server tự làm lại bước phía sau / ghép lại).
+function SceneTable({ run: r, jobs, refresh }) {
+  const [open, setOpen] = useState(true);
+  const byId = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
+  return (
+    <div className="stack">
+      <a onClick={() => setOpen(!open)}>{open ? '▾' : '▸'} Từng phân cảnh ({r.scenes.length}): xem video, thử lại, chọn bản tốt nhất</a>
+      {open && (
+        <div className="scene-grid">
+          {r.scenes.map((s) => {
+            const job = byId[s.job.id];
+            const made = job ? job.attempts.filter((a) => a.outputPath).length : 0;
+            return (
+              <div key={s.key} className="stack scene-cell">
+                <b className="small">{s.label}{made > 1 ? ` · ${made} bản` : ''}</b>
+                {job ? <JobCard compact job={job} refresh={refresh} /> : <span className="muted">–</span>}
+                {s.note && <small className="muted">{s.note}</small>}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -1037,6 +1065,7 @@ function RunCard({ run: r, state, refresh, go }) {
       ))}
 
       {r.clipRows.length > 0 && <ClipTable run={r} jobs={jobs} refresh={refresh} />}
+      {r.scenes?.length > 0 && <SceneTable run={r} jobs={jobs} refresh={refresh} />}
       {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} refresh={refresh} />}
       {showProducts && <ProductCodeSheet run={r} refresh={refresh} onClose={() => setShowProducts(false)} />}
 

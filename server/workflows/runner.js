@@ -570,6 +570,9 @@ export function viewRun(run) {
           codedStale: !!c?.stale,
         };
       }),
+    // Quy trình khai báo sceneJobs (vd. Video thời trang không voice): job đang dùng của từng phân cảnh, để giao diện hiện
+    // thẻ video với các lần tạo (Thử lại / chọn bản tốt nhất) ngay trong lần chạy
+    scenes: (wf?.sceneJobs || []).map((s) => ({ ...s, job: brief(byKey(s.key)) || null })).filter((s) => s.job),
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)

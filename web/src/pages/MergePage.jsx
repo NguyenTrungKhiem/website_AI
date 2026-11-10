@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
-import { Badge, ConfirmButton, FileDrop, fmt, useAction } from '../components.jsx';
+import { Badge, ConfirmButton, FileDrop, VideoThumbActions, fmt, useAction } from '../components.jsx';
 
 export default function MergePage({ state, refresh, go, handoff }) {
   const done = state.jobs.filter((j) => j.status === 'done' && j.type !== 'image'); // chỉ video, không lấy job sinh ảnh
@@ -109,9 +109,18 @@ export default function MergePage({ state, refresh, go, handoff }) {
           {list.map((j) => {
             const pos = seq.indexOf(j.id);
             return (
-              <div key={j.id} className={'thumb wide' + (pos >= 0 ? ' selected' : '')} onClick={() => add(j.id)} title={j.videoLabel}>
+              <div key={j.id} className={'thumb wide' + (pos >= 0 ? ' selected' : '') + (j.downloadedAt ? ' downloaded' : '')} onClick={() => add(j.id)} title={j.videoLabel}>
                 <img src={j.thumbUrl} alt="" />
                 {pos >= 0 && <span className="order">{pos + 1}</span>}
+                <VideoThumbActions
+                  kind="job"
+                  id={j.id}
+                  url={j.outputUrl}
+                  name={j.videoLabel}
+                  downloadedAt={j.downloadedAt}
+                  refresh={refresh}
+                  onDeleted={(id) => setSeq((s) => s.filter((x) => x !== id))}
+                />
                 <span className="cap">{icon(j)} {j.videoLabel}</span>
               </div>
             );
@@ -303,6 +312,9 @@ export default function MergePage({ state, refresh, go, handoff }) {
                 ) : m.watermarkRemoved !== false ? (
                   <span className="badge green" title="Đã nội suy xoá logo Gemini góc dưới phải">✓ Xoá logo</span>
                 ) : null}
+                {m.downloadedAt && (
+                  <span className="badge purple" title={`Đã tải xuống lúc ${new Date(m.downloadedAt).toLocaleString('vi-VN')}${m.downloadCount > 1 ? ` (${m.downloadCount} lần)` : ''}`}>⬇ Đã tải</span>
+                )}
                 <Badge status={m.status} />
               </div>
               <small className="muted">
@@ -310,7 +322,11 @@ export default function MergePage({ state, refresh, go, handoff }) {
               </small>
               {m.error && <div className="err small">{m.error}</div>}
               <div className="row">
-                {m.url && <a href={m.url} download={`${m.name}.mp4`}>Tải về</a>}
+                {m.url && (
+                  <a href={m.url} download={`${m.name}.mp4`} onClick={() => run(async () => { await api.markDownloaded('merge', m.id); await refresh(); })}>
+                    {m.downloadedAt ? 'Tải lại' : 'Tải về'}
+                  </a>
+                )}
                 {m.status === 'done' && <button className="primary small-btn" onClick={() => go('publish', [m.id])}>🚀 Đăng video</button>}
                 <a onClick={() => { setSeq(m.jobIds); setAudioId(m.audioId); window.scrollTo(0, 0); }}>Ghép lại</a>
                 <span className="grow" />

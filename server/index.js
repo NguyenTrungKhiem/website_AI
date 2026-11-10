@@ -687,6 +687,25 @@ app.delete('/api/jobs/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Đánh dấu video (job lẻ hoặc video ghép) đã được người dùng tải xuống: lưu thời điểm tải gần nhất + số lần,
+// để trang Ghép / Đăng video hiện dấu "đã tải" phân biệt với video chưa tải
+const markDownloaded = (item) => {
+  item.downloadedAt = Date.now();
+  item.downloadCount = (item.downloadCount || 0) + 1;
+  save();
+  return { ok: true, downloadedAt: item.downloadedAt, downloadCount: item.downloadCount };
+};
+app.post('/api/jobs/:id/downloaded', wrap(async (req, res) => {
+  const job = db.jobs.find((j) => j.id === req.params.id);
+  if (!job) throw new Error('Không tìm thấy video');
+  res.json(markDownloaded(job));
+}));
+app.post('/api/merges/:id/downloaded', wrap(async (req, res) => {
+  const m = db.merges.find((x) => x.id === req.params.id);
+  if (!m) throw new Error('Không tìm thấy video ghép');
+  res.json(markDownloaded(m));
+}));
+
 // ---------- Ghép video + chèn âm thanh (logic trong merge.js) ----------
 app.post('/api/merges', wrap(async (req, res) => {
   const { jobIds = [], audioId = null, audioMode = 'match', offset = 0, name, removeWatermark, watermarkMode, watermarkText, watermarkImageId, keepOriginalAudio = true } = req.body;

@@ -5,6 +5,7 @@ import MergePage from './pages/MergePage.jsx';
 import PublishPage from './pages/PublishPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import WorkflowPage from './pages/WorkflowPage.jsx';
+import { MediaLightbox } from './components.jsx';
 
 // Menu: các bước dùng chung (Cắt / Ghép / Đăng) + mỗi quy trình tự động 1 mục (lấy từ server)
 function buildTabs(workflows = []) {
@@ -99,6 +100,8 @@ export default function App() {
           </>
         )}
       </main>
+      {/* Bấm vào video / ảnh bất kỳ trong app -> phóng to (video tự phát) */}
+      <MediaLightbox />
     </div>
   );
 }
