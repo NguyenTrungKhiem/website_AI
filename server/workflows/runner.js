@@ -34,6 +34,12 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, cli
       cleanInputs[inp.key] = v || null;
     }
   }
+  // Ảnh mặt sau người dùng chọn cho từng ảnh mặt trước (quy trình có backInput, vd. Video thời trang không voice):
+  // { [ảnh mặt trước]: ảnh mặt sau } — chỉ giữ cặp mà cả 2 ảnh còn trong thư viện
+  if (wf.backInput && inputs[wf.backInput] && typeof inputs[wf.backInput] === 'object') {
+    const has = (id) => typeof id === 'string' && db.assets.some((a) => a.id === id);
+    cleanInputs[wf.backInput] = Object.fromEntries(Object.entries(inputs[wf.backInput]).filter(([f, b]) => has(f) && has(b)));
+  }
   // Ảnh riêng cho từng đoạn (vd. Thay trang phục: mỗi đoạn một bộ trang phục): { [clipId]: { [key]: assetId } }
   const perClip = {};
   for (const clip of clips) {

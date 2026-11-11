@@ -262,6 +262,9 @@ button.big { padding: 10px 18px; font-size: 15px; }
 .thumb:hover .dl-mark { display: none; } /* nhường chỗ cho nút tải khi rê chuột */
 .thumb.downloaded { border-color: #7c3aed; }
 .outfit-codes { background: var(--panel2); border-radius: 8px; padding: 8px 10px; gap: 6px; }
+.caption-modes { background: var(--panel); flex-wrap: wrap; max-width: 100%; }
+.caption-modes button { padding: 5px 10px; font-size: 13px; }
+.caption-text { width: 240px; max-width: 100%; font-weight: 700; }
 .outfit-codes .mini-thumb { width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #000; }
 .outfit-codes .placeholder-thumb { display: inline-grid; place-items: center; color: var(--muted); border: 1px dashed var(--line); background: var(--panel); }
 /* Video đã gộp lại từ các đoạn giữ (trang Cắt video) */

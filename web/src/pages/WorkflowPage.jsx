@@ -2,7 +2,7 @@
 // nên thêm quy trình mới ở server/workflows là tự có trang riêng.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { AssetPicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, PromptVersionPicker, fmt, useAction } from '../components.jsx';
+import { AssetPicker, CaptionModePicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, MAX_CAPTION_TEXT, PromptVersionPicker, cleanCaptionText, fmt, useAction } from '../components.jsx';
 import FashionSalesView from './FashionSalesView.jsx';
 
 export default function WorkflowPage({ state, refresh, go, wf }) {
@@ -78,6 +78,10 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
     const backOf = (frontId) => inputs[wf.backInput]?.[frontId] || state.assets.find((a) => a.fromAssetId === frontId && (a.isBackView || /Mặt sau Flow/.test(a.name || '')))?.id;
     (inputs[wf.codedInput] || []).forEach((id, i) => { if (!backOf(id)) missing.push(`Mặt sau trang phục ${i + 1}`); });
   }
+  // Chữ trên video = chữ tuỳ ý: bộ 1 phải có chữ (các bộ sau để trống thì dùng chữ của bộ trước)
+  const captionMode = wf.captionModes ? options.captionMode || 'code' : null;
+  const firstOutfit = wf.codedInput && inputs[wf.codedInput]?.[0];
+  if (captionMode === 'text' && firstOutfit && !cleanCaptionText(options.captionTexts?.[firstOutfit]).trim()) missing.push('Chữ trên video (bộ 1)');
   const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
   const missingClips = perClip.length
     ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
@@ -158,6 +162,8 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
             ids={inputs[wf.codedInput]}
             backs={wf.backInput ? inputs[wf.backInput] || {} : null}
             onBacks={wf.backInput ? (v) => setInputs((s) => ({ ...s, [wf.backInput]: v })) : null}
+            caption={captionMode ? { mode: captionMode, texts: options.captionTexts || {} } : null}
+            onCaption={(patch) => setOptions((s) => ({ ...s, ...patch }))}
             state={state}
             refresh={refresh}
           />
@@ -211,7 +217,11 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 // Từng ảnh trang phục đã chọn (quy trình có codedInput, vd. Video thời trang không voice): mã sản phẩm in làm caption
 // (ảnh chưa có mã thì server tự cấp khi chạy; sửa ở đây lưu lên ảnh) và, khi quy trình cần (backInput), ảnh MẶT SAU của bộ đó:
 // tự lấy ảnh mặt sau đã tạo từ ảnh mặt trước, hoặc bấm "Tạo mặt sau" (Flow, 0 credit, như quy trình có voice), hoặc chọn ảnh khác.
-function OutfitCodes({ ids, backs, onBacks, state, refresh }) {
+// caption (quy trình có captionModes): { mode: 'code' | 'text' | 'none', texts: { [ảnh mặt trước]: chữ } } — chọn in mã sản
+// phẩm, chữ tuỳ ý hay không chữ; onCaption(patch) ghi vào options (captionMode, captionTexts).
+function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }) {
+  const mode = caption?.mode || 'code';
+  const setText = (id, v) => onCaption({ captionTexts: { ...(caption?.texts || {}), [id]: cleanCaptionText(v) } });
   const { busy, error, run } = useAction();
   const [drafts, setDrafts] = useState({});
   const [pendingBack, setPendingBack] = useState({}); // { frontId: jobId } đang tạo mặt sau
@@ -262,7 +272,13 @@ function OutfitCodes({ ids, backs, onBacks, state, refresh }) {
 
   return (
     <div className="stack outfit-codes">
-      <b className="small">🏷️ Từng trang phục: mã sản phẩm in trên video{backs ? ' · ảnh mặt sau (cho đoạn quay lưng)' : ''}</b>
+      <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <b className="small">
+          {caption ? '🏷️ Từng trang phục: chữ trên video' : '🏷️ Từng trang phục: mã sản phẩm in trên video'}
+          {backs ? ' · ảnh mặt sau (cho đoạn quay lưng)' : ''}
+        </b>
+        {caption && <CaptionModePicker value={mode} onChange={(v) => onCaption({ captionMode: v })} />}
+      </div>
       <div className="stack" style={{ gap: 8 }}>
         {ids.map((id, i) => {
           const a = assetOf(id);
@@ -276,19 +292,33 @@ function OutfitCodes({ ids, backs, onBacks, state, refresh }) {
               <img src={a.url} alt="" className="mini-thumb" title={a.name} />
               <div className="stack" style={{ gap: 2 }}>
                 <small className="muted">Bộ {i + 1} · {a.name.slice(0, 28)}</small>
-                <div className="row" style={{ gap: 4 }}>
+                {mode === 'code' && (
+                  <div className="row" style={{ gap: 4 }}>
+                    <input
+                      className="mono"
+                      style={{ width: 120, fontWeight: 700 }}
+                      placeholder="VAY_01"
+                      value={value}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [id]: normalize(e.target.value) }))}
+                      onBlur={() => drafts[id] != null && drafts[id] !== a.productCode && save(id)}
+                      onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                      title="Mã dạng LOAI_SO (không dấu, in hoa); rời ô để lưu lên ảnh"
+                    />
+                    {!a.productCode && <button className="small-btn" disabled={busy} onClick={() => assign(id)} title="Server cấp mã tiếp theo theo loại sản phẩm">Cấp mã</button>}
+                  </div>
+                )}
+                {mode === 'text' && (
                   <input
-                    className="mono"
-                    style={{ width: 120, fontWeight: 700 }}
-                    placeholder="VAY_01"
-                    value={value}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [id]: normalize(e.target.value) }))}
-                    onBlur={() => drafts[id] != null && drafts[id] !== a.productCode && save(id)}
-                    onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
-                    title="Mã dạng LOAI_SO (không dấu, in hoa); rời ô để lưu lên ảnh"
+                    className="caption-text"
+                    maxLength={MAX_CAPTION_TEXT}
+                    placeholder={i === 0 ? 'VD: NEW ARRIVAL' : '(để trống = giống bộ trên)'}
+                    value={caption.texts[id] || ''}
+                    onChange={(e) => setText(id, e.target.value)}
+                    onBlur={(e) => setText(id, e.target.value.trim())}
+                    title={`Chữ in lên video khi mặc bộ này (tối đa ${MAX_CAPTION_TEXT} ký tự, không dùng dấu nháy kép)`}
                   />
-                  {!a.productCode && <button className="small-btn" disabled={busy} onClick={() => assign(id)} title="Server cấp mã tiếp theo theo loại sản phẩm">Cấp mã</button>}
-                </div>
+                )}
+                {mode === 'none' && <span className="small muted">Không in chữ</span>}
               </div>
               {backs && (
                 <div className="row" style={{ gap: 6, alignItems: 'center' }}>
@@ -319,7 +349,9 @@ function OutfitCodes({ ids, backs, onBacks, state, refresh }) {
         })}
       </div>
       <small className="muted">
-        Mã: ảnh chưa có mã sẽ được cấp tự động khi chạy; mã gắn với ảnh nên lần sau dùng lại là có.
+        {mode === 'code' && 'Mã: ảnh chưa có mã sẽ được cấp tự động khi chạy; mã gắn với ảnh nên lần sau dùng lại là có.'}
+        {mode === 'text' && `Chữ tuỳ ý: tối đa ${MAX_CAPTION_TEXT} ký tự, in ở giữa phía trên video; bộ để trống dùng chữ của bộ trên. Model video hay vẽ sai chữ có dấu — nên viết ngắn, không dấu.`}
+        {mode === 'none' && 'Không chữ: prompt dặn video không có chữ nào trên màn hình.'}
         {backs && <> Mặt sau: không chọn thì quy trình tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước đó; chưa có thì phải tạo trước khi chạy.</>}
       </small>
       {error && <div className="err small">{error}</div>}

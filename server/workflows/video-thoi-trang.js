@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { extractLastFrame } from '../ffmpeg.js';
 import { DIRS } from '../db.js';
+import { applyTitle, captionModeOf, cleanCaptionText } from '../caption.js';
 import {
   DEFAULT_FASHION_SCENE1_TEMPLATE, DEFAULT_FASHION_SCENE2_TEMPLATE,
   DEFAULT_FASHION_AODAI_SCENE1_TEMPLATE, DEFAULT_FASHION_AODAI_SCENE2_TEMPLATE,
@@ -26,9 +27,18 @@ const pickDuration = (v, fallback) => (FASHION_DURATIONS.includes(v) ? v : fallb
 
 // Thay chỗ điền "TODAY'S OUTFIT" (cả dấu nháy cong) bằng mã sản phẩm
 export function applyProductCode(template, code) {
-  if (!code) throw new Error('Chưa có mã sản phẩm để in lên video (ô "Mã sản phẩm" trong module)');
-  return template.replace(/TODAY[’']S OUTFIT/g, code);
+  return applyTitle(template, { mode: 'code', code });
 }
+
+// Chữ trên video theo lựa chọn của lần chạy (../caption.js): options.captionMode 'code' (mã sản phẩm, mặc định) |
+// 'text' (options.captionText) | 'none' (bỏ câu in chữ "TODAY'S OUTFIT", dặn thêm không có chữ trên màn hình).
+const titleOpts = (o) => ({ mode: captionModeOf(o), code: o.productCode, text: o.captionText });
+// Nhãn ngắn cho tên video / ghép
+const tagOf = (o) => {
+  const mode = captionModeOf(o);
+  const v = mode === 'text' ? cleanCaptionText(o.captionText) : mode === 'code' ? o.productCode : o.productCode || '';
+  return v ? `[${v}] ` : '';
+};
 
 // Chế độ của lần chạy: 'case1' đầy đủ outfit (1 video) | 'case2' chỉ trang phục | 'case3' áo dài (như TH2, prompt riêng, cảnh 2 10s)
 function caseOf(run, inputs) {
@@ -67,6 +77,8 @@ export default {
     { key: 'promptScene2', label: 'Prompt Phân cảnh 2' },
     { key: 'customPrompt', label: 'Prompt TH1' },
     { key: 'productCode', label: `Mã sản phẩm in trên video (thay "TODAY'S OUTFIT")` },
+    { key: 'captionMode', label: 'Chữ trên video: code = mã sản phẩm, text = chữ tuỳ ý, none = không chữ', default: 'code' },
+    { key: 'captionText', label: 'Chữ tuỳ ý in trên video (khi captionMode = text)' },
     // Model / thời lượng Flow từng cảnh (TH1 dùng của cảnh 1). Cảnh 2: TH2 mặc định 6s, TH3 mặc định 10s
     { key: 'scene1Model', label: 'Mô hình Flow – Cảnh 1 / TH1', default: DEFAULT_MODEL },
     { key: 'scene1Duration', label: 'Thời lượng – Cảnh 1 / TH1', default: '10s' },
@@ -103,15 +115,14 @@ export default {
         const o = ctx.run.options;
         const model1 = pickModel(o.scene1Model);
         const dur1 = pickDuration(o.scene1Duration, '10s');
-        const code = o.productCode;
-        const tag = `[${code}] `;
+        const tag = tagOf(o);
 
         if (isCase1) {
           if (!shoes) throw new Error('Trường hợp 1 (Đầy đủ outfit) cần ảnh giày (footwear)');
           if (!bag) throw new Error('Trường hợp 1 (Đầy đủ outfit) cần ảnh túi xách (bag)');
           const imagePaths = [model, front, back, shoes, bag, bg];
           const rawTemplate = (o.customPrompt || '').trim() || ctx.prompt('case1');
-          const template = sanitizeFlowPromptMentions(applyProductCode(rawTemplate, code), true);
+          const template = sanitizeFlowPromptMentions(applyTitle(rawTemplate, titleOpts(o)), true);
 
           const job = ctx.ensureJob('video:main', {
             type: 'video',
@@ -129,7 +140,7 @@ export default {
         // Trường hợp 2 / 3: Phân cảnh 1 (Mặt trước - 10s). TH3 (áo dài) dùng prompt gốc riêng
         const imagePaths = [model, front, bg, back];
         const rawTemplate = (o.promptScene1 || '').trim() || ctx.prompt(mode === 'case3' ? 'case3_scene1' : 'case2_scene1');
-        const template = sanitizeFlowPromptMentions(applyProductCode(rawTemplate, code), false);
+        const template = sanitizeFlowPromptMentions(applyTitle(rawTemplate, titleOpts(o)), false);
 
         const job1 = ctx.ensureJob('video:scene1', {
           type: 'video',
@@ -174,15 +185,19 @@ export default {
 
         const o = ctx.run.options;
         const rawTemplate = (o.promptScene2 || '').trim() || ctx.prompt(mode === 'case3' ? 'case3_scene2' : 'case2_scene2');
-        // Cảnh 2 thường không có chữ tiêu đề, nhưng nếu prompt có "TODAY'S OUTFIT" thì cũng thay bằng mã
-        const template = sanitizeFlowPromptMentions(o.productCode ? applyProductCode(rawTemplate, o.productCode) : rawTemplate, false);
+        // Cảnh 2 thường không có chữ tiêu đề, nhưng nếu prompt có "TODAY'S OUTFIT" thì cũng thay theo lựa chọn chữ;
+        // chế độ "không chữ" thì dặn thêm không có chữ trên màn hình
+        const mode2 = captionModeOf(o);
+        const hasTitle = /TODAY[’']S OUTFIT/.test(rawTemplate);
+        const titled = mode2 === 'none' || hasTitle ? applyTitle(rawTemplate, titleOpts(o)) : rawTemplate;
+        const template = sanitizeFlowPromptMentions(titled, false);
         const dur2 = pickDuration(o.scene2Duration, mode === 'case3' ? '10s' : '6s');
 
         const job2 = ctx.ensureJob('video:scene2', {
           type: 'video',
           imagePaths: [framePath],
           template,
-          videoLabel: `${o.productCode ? `[${o.productCode}] ` : ''}${mode === 'case3' ? 'Áo dài' : 'Thời trang'} Cảnh 2 (Mặt sau ${dur2}) – ${ctx.assetName(ctx.inputs.outfitFront)}`,
+          videoLabel: `${tagOf(o)}${mode === 'case3' ? 'Áo dài' : 'Thời trang'} Cảnh 2 (Mặt sau ${dur2}) – ${ctx.assetName(ctx.inputs.outfitFront)}`,
           meta: {
             aspectRatio: '9:16',
             flowVideoModel: pickModel(o.scene2Model),
@@ -207,7 +222,7 @@ export default {
 
         let jobIds;
         let mergeName;
-        const tag = ctx.run.options.productCode ? `[${ctx.run.options.productCode}] ` : '';
+        const tag = tagOf(ctx.run.options);
 
         if (isCase1) {
           const vJob = ctx.job('video:main');

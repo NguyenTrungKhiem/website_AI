@@ -20,6 +20,7 @@ import path from 'node:path';
 import { extractLastFrame, removeCaptionBand } from '../ffmpeg.js';
 import { DIRS, db, save } from '../db.js';
 import { codeOfAsset, assignCode } from '../productCodes.js';
+import { captionModeOf, cleanCaptionText, NO_TEXT_RULE } from '../caption.js';
 import { FASHION_MODELS } from './video-thoi-trang.js';
 
 const MAX_OUTFITS = 4;
@@ -136,22 +137,33 @@ const motionOf = (run) => MOTIONS[run.options.motion] || MOTIONS[DEFAULT_MOTION]
 const fmtT = (t) => (Math.round(t * 10) / 10).toFixed(1);
 const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT|BACK|CODE|BG|START|PART|DUR|CUT|WEAR)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
 
+// Chữ trên video (../caption.js): 'code' = mã sản phẩm (mặc định) · 'text' = chữ tuỳ ý · 'none' = không chữ.
+// Prompt mẫu viết cho chế độ mã -> đổi đúng câu về chữ trong phần mở đầu / dòng quy tắc, không đụng mốc động tác.
+const CAPTION_SENTENCE = /Caption:[^.]*\./;
+function setupFor(setup, mode) {
+  if (mode === 'code') return setup;
+  const sentence = mode === 'text' ? 'Caption: small white serif text at the top-center.' : NO_TEXT_RULE;
+  return CAPTION_SENTENCE.test(setup) ? setup.replace(CAPTION_SENTENCE, sentence) : `${setup} ${sentence}`;
+}
+const ruleFor = (rule, mode) => (mode === 'none' ? rule.replace(/,?\s*no text except the caption/i, ', no on-screen text at all') : rule);
+const captionLine = (o, mode) => (mode === 'none' ? null : `Caption: "${o.caption}" for the whole clip.`);
+
 /**
  * Prompt cho chuyển động 1 phân cảnh (motion.single): cả video trong 1 lần tạo, thời lượng '15s' | '10s' chọn bản prompt
- * tương ứng (cùng chuyển động, khác nhịp). outfit = { code, p1: { front, back } }.
+ * tương ứng (cùng chuyển động, khác nhịp). outfit = { caption, p1: { front, back } }.
  */
-export function buildSinglePrompt({ motion, prompt, outfit, tags, duration }) {
+export function buildSinglePrompt({ motion, prompt, outfit, tags, duration, captionMode = 'code' }) {
   const d = motion.durations[duration] || Object.values(motion.durations)[0];
-  const setup = (prompt('setup') || SETUP).trim();
-  const rule = (prompt('rule') ?? COMMON_RULE).trim();
-  const vars = { MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: outfit.p1.front, OUTFIT: outfit.p1.front, BACK: outfit.p1.back, CODE: outfit.code, PART: 'One continuous take', DUR: duration, CUT: fmtT(d.cutAt) };
+  const setup = setupFor((prompt('setup') || SETUP).trim(), captionMode);
+  const rule = ruleFor((prompt('rule') ?? COMMON_RULE).trim(), captionMode);
+  const vars = { MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: outfit.p1.front, OUTFIT: outfit.p1.front, BACK: outfit.p1.back, CODE: outfit.caption || '', PART: 'One continuous take', DUR: duration, CUT: fmtT(d.cutAt) };
   return [
     fill(setup, vars),
-    `Caption: "${outfit.code}" for the whole clip.`,
+    captionLine(outfit, captionMode),
     fill((prompt('wardrobe') || WARDROBE).trim(), vars),
     fill(prompt(d.prompt), vars),
     `${rule} Clean match cut at ${fmtT(d.cutAt)}s. Sharp final frame at ${fmtT(parseFloat(duration))}s.`.trim(),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 const listTags = (tags) => (tags.length <= 1 ? tags[0] || '' : tags.slice(0, -1).join(', ') + ' and ' + tags.at(-1));
 
@@ -183,24 +195,25 @@ const captionRule = (ranges) =>
   'Caption: ' + ranges.map(([a, b, code]) => `${fmtT(a)}-${fmtT(b)}s "${code}"`).join('; ') + ' (switches exactly on each match cut).';
 
 /**
- * Dựng prompt 2 phân cảnh. outfits = [{ code, p1: { front, back }, p2: { front, back } }] với các tag theo thứ tự ảnh của
- * TỪNG phân cảnh (xem imagesFor). prompt(key) = prompt mẫu đã đóng băng của lần chạy.
+ * Dựng prompt 2 phân cảnh. outfits = [{ caption, p1: { front, back }, p2: { front, back } }] với các tag theo thứ tự ảnh của
+ * TỪNG phân cảnh (xem imagesFor). prompt(key) = prompt mẫu đã đóng băng của lần chạy. caption = chữ in trên video của bộ đó
+ * (mã sản phẩm hoặc chữ tuỳ ý; null khi captionMode 'none').
  */
-export function buildPrompts({ motion, prompt, outfits, tags }) {
-  const setup = (prompt('setup') || SETUP).trim();
-  const rule = (prompt('rule') ?? COMMON_RULE).trim();
+export function buildPrompts({ motion, prompt, outfits, tags, captionMode = 'code' }) {
+  const setup = setupFor((prompt('setup') || SETUP).trim(), captionMode);
+  const rule = ruleFor((prompt('rule') ?? COMMON_RULE).trim(), captionMode);
   const first = outfits[0];
   if (motion.maxOutfits && outfits.length > motion.maxOutfits) {
     throw new Error(`"${motion.name.split(' – ')[0]}" chỉ dùng cho ${motion.maxOutfits} trang phục (đang chọn ${outfits.length}) — bỏ bớt trang phục hoặc đổi sang chuyển động khác`);
   }
-  const v1 = { MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: listTags(outfits.map((o) => o.p1.front)), OUTFIT: first.p1.front, BACK: first.p1.back, CODE: first.code, DUR: '10s', CUT: fmtT(motion.cutAt ?? 3.5) };
+  const v1 = { MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: listTags(outfits.map((o) => o.p1.front)), OUTFIT: first.p1.front, BACK: first.p1.back, CODE: first.caption || '', DUR: '10s', CUT: fmtT(motion.cutAt ?? 3.5) };
   const part1 = [
     fill(setup, { ...v1, PART: 'Part 1 of 2' }),
-    `Caption: "${first.code}" for the whole clip.`,
+    captionLine(first, captionMode),
     fill((prompt('wardrobe') || WARDROBE).trim(), v1),
     fill(prompt(motion.part1), v1),
     `${rule} Clean match cut at ${fmtT(motion.cutAt ?? 3.5)}s; the last frame is the first frame of Part 2.`.trim(),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const rest = outfits.slice(1);
   const slots = part2Slots(rest.length);
@@ -209,27 +222,31 @@ export function buildPrompts({ motion, prompt, outfits, tags }) {
   const wear = []; // trang phục theo từng khoảng thời gian (cho dòng Wardrobe của Part 2)
   const v2 = { MODEL: '@Image1', BG: tags.p2.bg, START: tags.p2.start, DUR: '10s' };
   if (!rest.length) {
-    ranges.push([0, PART_SEC, first.code]);
+    ranges.push([0, PART_SEC, first.caption]);
     wear.push(`${first.p2.front} (back ${first.p2.back}) for the whole clip`);
-    blocks.push(rescaleBeats(prompt(motion.same), { offset: 0, slot: PART_SEC }, { ...v2, OUTFIT: first.p2.front, BACK: first.p2.back, CODE: first.code }));
+    blocks.push(rescaleBeats(prompt(motion.same), { offset: 0, slot: PART_SEC }, { ...v2, OUTFIT: first.p2.front, BACK: first.p2.back, CODE: first.caption || '' }));
   } else {
     let t = 0;
     rest.forEach((o, i) => {
-      ranges.push([t, t + slots[i], o.code]);
+      ranges.push([t, t + slots[i], o.caption]);
       wear.push(`${o.p2.front} (back ${o.p2.back}) ${rest.length > 1 ? `at ${fmtT(t)}-${fmtT(t + slots[i])}s` : 'for the whole clip'}`);
-      blocks.push(rescaleBeats(prompt(motion.segments[i % motion.segments.length]), { offset: t, slot: slots[i] }, { ...v2, OUTFIT: o.p2.front, BACK: o.p2.back, CODE: o.code }));
+      blocks.push(rescaleBeats(prompt(motion.segments[i % motion.segments.length]), { offset: t, slot: slots[i] }, { ...v2, OUTFIT: o.p2.front, BACK: o.p2.back, CODE: o.caption || '' }));
       t += slots[i];
     });
   }
   const cuts = ranges.map(([a]) => `${fmtT(a)}s`).join(' and ');
+  const start = tags.p2.start;
+  const noText = captionMode === 'none';
   const part2 = [
     fill(setup, { ...v2, PART: 'Part 2 of 2' }),
-    `Opens exactly on ${tags.p2.start} (last frame of Part 1: same pose, framing, background), then continues. ${tags.p2.start} is a pose reference only: any text in it belongs to Part 1 and must not appear; from the very first frame the caption reads "${ranges[0][2]}".`,
-    captionRule(ranges),
+    noText
+      ? `Opens exactly on ${start} (last frame of Part 1: same pose, framing, background), then continues. ${start} is a pose reference only: any text in it must not appear.`
+      : `Opens exactly on ${start} (last frame of Part 1: same pose, framing, background), then continues. ${start} is a pose reference only: any text in it belongs to Part 1 and must not appear; from the very first frame the caption reads "${ranges[0][2]}".`,
+    noText ? null : captionRule(ranges),
     fill((prompt('wardrobe2') || WARDROBE_PART2).trim(), { ...v2, WEAR: wear.join(', then ') }),
     ...blocks,
     `${rule}${rest.length ? ` Clean match cuts at ${cuts}.` : ''} Sharp final frame at 10.0s.`.trim(),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   return { part1, part2, ranges };
 }
 
@@ -239,6 +256,8 @@ export default {
   icon: '🤫',
   noVideo: true,
   codedInput: 'outfits', // input có mã sản phẩm theo từng ảnh (giao diện hiện ô sửa mã)
+  // Giao diện cho chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ (options.captionMode, options.captionTexts)
+  captionModes: true,
   backInput: 'outfitBacks', // inputs.outfitBacks = { [ảnh mặt trước]: ảnh mặt sau } (giao diện chọn / tạo mặt sau cho từng bộ)
   // Thẻ video của từng phân cảnh hiện ngay trong lần chạy (Thử lại -> thêm lần tạo 1, 2, 3… trên cùng thẻ, chọn bản tốt nhất)
   sceneJobs: [
@@ -272,22 +291,23 @@ export default {
       id: 'part1',
       label: 'Phân cảnh 1 (hoặc cả video nếu 1 phân cảnh)',
       async run(ctx) {
-        const { outfits, tags, images } = prepare(ctx);
+        const { outfits, tags, images, captionMode } = prepare(ctx);
         const motion = motionOf(ctx.run);
         // Chuyển động 1 phân cảnh: cả video trong 1 lần tạo, thời lượng 15s / 10s chọn bản prompt tương ứng
         const single = !!motion.single;
         const duration = single ? singleDuration(ctx.run) : '10s';
         const template = single
-          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfit: outfits[0], tags, duration })
-          : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags }).part1;
-        ctx.state.codes = outfits.map((o) => o.code);
+          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfit: outfits[0], tags, duration, captionMode })
+          : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode }).part1;
+        ctx.state.codes = outfits.map(tagOf);
+        ctx.state.captionMode = captionMode;
         ctx.state.part1Prompt = template;
         const job = ctx.ensureJob('video:part1', {
           type: 'video',
           imagePaths: images.p1,
           template,
-          videoLabel: `[${outfits.map((o) => o.code).join('+')}] Không voice · ${single ? `1 phân cảnh ${duration}` : 'Part 1'} – ${ctx.assetName(ctx.inputs.outfits[0])}`,
-          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: duration, flowResolution: '720p', codes: outfits.map((o) => o.code) },
+          videoLabel: `[${outfits.map(tagOf).join('+')}] Không voice · ${single ? `1 phân cảnh ${duration}` : 'Part 1'} – ${ctx.assetName(ctx.inputs.outfits[0])}`,
+          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: duration, flowResolution: '720p', codes: outfits.map((o) => o.code).filter(Boolean), captionMode },
         });
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
@@ -327,15 +347,15 @@ export default {
       async run(ctx) {
         const frame = ctx.stages.last_frame?.path;
         if (!frame || !fs.existsSync(frame)) throw new Error('Chưa có khung hình cuối của Part 1');
-        const { outfits, tags, images } = prepare(ctx, frame);
-        const built = buildPrompts({ motion: motionOf(ctx.run), prompt: (k) => ctx.prompt(k), outfits, tags });
+        const { outfits, tags, images, captionMode } = prepare(ctx, frame);
+        const built = buildPrompts({ motion: motionOf(ctx.run), prompt: (k) => ctx.prompt(k), outfits, tags, captionMode });
         ctx.state.part2Prompt = built.part2;
         ctx.state.ranges = built.ranges;
         const job = ctx.ensureJob('video:part2', {
           type: 'video',
           imagePaths: images.p2,
           template: built.part2,
-          videoLabel: `[${(outfits.slice(1).length ? outfits.slice(1) : outfits).map((o) => o.code).join('+')}] Không voice · Part 2 – ${ctx.assetName(ctx.inputs.outfits[0])}`,
+          videoLabel: `[${(outfits.slice(1).length ? outfits.slice(1) : outfits).map(tagOf).join('+')}] Không voice · Part 2 – ${ctx.assetName(ctx.inputs.outfits[0])}`,
           meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: '10s', flowResolution: '720p', startFrame: frame },
         });
         if (job.status === 'failed') throw ctx.jobError(job);
@@ -424,8 +444,13 @@ export function backOf(frontId, chosen) {
   return gen?.id || null;
 }
 
-// Thu nguyên liệu + tag theo đúng thứ tự ảnh của từng phân cảnh (xem đầu file). Mã sản phẩm: của ảnh mặt trước (kế thừa
-// theo chuỗi fromAssetId), chưa có thì cấp mới.
+// Nhãn ngắn của 1 bộ cho tên video / ghép: mã sản phẩm, không có thì chữ tuỳ ý, không có nữa thì "không chữ"
+const tagOf = (o) => o.code || o.caption || 'không chữ';
+
+// Thu nguyên liệu + tag theo đúng thứ tự ảnh của từng phân cảnh (xem đầu file). Chữ trên video (options.captionMode):
+//  'code' (mặc định) = mã sản phẩm của ảnh mặt trước (kế thừa theo chuỗi fromAssetId), chưa có thì cấp mới;
+//  'text' = options.captionTexts[ảnh mặt trước]; bộ để trống thì dùng chữ của bộ trước đó (nhập 1 lần cho bộ 1 là đủ);
+//  'none' = không in chữ (không cấp mã mới, chỉ dùng mã sẵn có để đặt tên video).
 function prepare(ctx, startFrame = null) {
   const model = ctx.assetPath(ctx.inputs.model);
   const bg = ctx.assetPath(ctx.inputs.background);
@@ -433,13 +458,24 @@ function prepare(ctx, startFrame = null) {
   if (!model) throw new Error('Ảnh model không còn trong thư viện');
   if (!bg) throw new Error('Ảnh bối cảnh không còn trong thư viện');
   if (!ids.length) throw new Error('Chưa chọn ảnh trang phục');
+  const captionMode = captionModeOf(ctx.run.options);
+  const texts = ctx.run.options.captionTexts || {};
+  let lastText = '';
   const outfits = ids.map((id, i) => {
     const front = ctx.assetPath(id);
     if (!front) throw new Error(`Ảnh trang phục thứ ${i + 1} không còn trong thư viện`);
     const backId = backOf(id, ctx.inputs.outfitBacks?.[id]);
     const back = ctx.assetPath(backId);
     if (!back) throw new Error(`Trang phục ${i + 1} (${ctx.assetName(id)}) chưa có ảnh mặt sau — chọn hoặc bấm "Tạo mặt sau" trong trang quy trình rồi chạy lại`);
-    return { id, backId, front, back, code: codeOfAsset(id) || assignCode(id).productCode };
+    const code = codeOfAsset(id) || (captionMode === 'code' ? assignCode(id).productCode : null);
+    let caption = null;
+    if (captionMode === 'code') caption = code;
+    if (captionMode === 'text') {
+      caption = cleanCaptionText(texts[id]) || lastText;
+      if (!caption) throw new Error(`Chưa nhập chữ in trên video cho trang phục ${i + 1} (${ctx.assetName(id)}) — nhập ở ô "Chữ trên video" hoặc đổi sang "Mã sản phẩm" / "Không chữ"`);
+      lastText = caption;
+    }
+    return { id, backId, front, back, code, caption };
   });
   const motion = motionOf(ctx.run);
   if (motion.maxOutfits && outfits.length > motion.maxOutfits) {
@@ -457,5 +493,5 @@ function prepare(ctx, startFrame = null) {
     p2: { front: p2.includes(o.front) ? tag(p2, o.front) : null, back: p2.includes(o.back) ? tag(p2, o.back) : null },
   }));
   const tags = { p1: { bg: tag(p1, bg) }, p2: { bg: tag(p2, bg), start: startFrame ? tag(p2, startFrame) : `@Image${p2.length + 1}` } };
-  return { outfits: tagged, tags, images: { p1, p2 } };
+  return { outfits: tagged, tags, images: { p1, p2 }, captionMode };
 }

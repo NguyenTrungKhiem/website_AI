@@ -33,6 +33,35 @@ const STATUS = {
   failed: ['Lỗi', 'red'],
   scheduled: ['⏰ Đã lên lịch', 'purple'],
 };
+// Chữ in trên video thời trang (server/caption.js): mã sản phẩm / chữ tuỳ ý / không chữ
+export const CAPTION_MODES = [
+  { value: 'code', label: '🏷️ Mã sản phẩm', tip: 'In mã sản phẩm (VAY_01…) của ảnh mặt trước lên video' },
+  { value: 'text', label: '✏️ Chữ tuỳ ý', tip: 'In chữ bạn tự nhập lên video (tối đa 40 ký tự)' },
+  { value: 'none', label: '🚫 Không chữ', tip: 'Video không có chữ nào trên màn hình' },
+];
+export const MAX_CAPTION_TEXT = 40;
+export const cleanCaptionText = (v) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(/["“”„«»`]/g, '').replace(/\s+/g, ' ').slice(0, MAX_CAPTION_TEXT);
+export function CaptionModePicker({ value = 'code', onChange, disabled }) {
+  return (
+    <div className="tabs caption-modes" role="radiogroup" aria-label="Chữ trên video">
+      {CAPTION_MODES.map((m) => (
+        <button
+          key={m.value}
+          type="button"
+          role="radio"
+          aria-checked={value === m.value}
+          className={value === m.value ? 'on' : ''}
+          disabled={disabled}
+          title={m.tip}
+          onClick={() => onChange(m.value)}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Badge({ status }) {
   const [label, color] = STATUS[status] || [status, 'gray'];
   return <span className={`badge ${color}`}>{label}</span>;

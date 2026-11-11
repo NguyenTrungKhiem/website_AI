@@ -39,6 +39,7 @@ export const listWorkflows = () =>
       noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
       codedInput: w.codedInput || null, // key input mà mỗi ảnh có mã sản phẩm (giao diện hiện ô sửa mã)
       backInput: w.backInput || null, // key inputs chứa ảnh mặt sau theo từng ảnh mặt trước ({ frontId: backId })
+      captionModes: !!w.captionModes, // chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ
       inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id); max = số ảnh tối đa
       perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
       prompts: mergedPrompts,

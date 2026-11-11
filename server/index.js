@@ -16,6 +16,7 @@ import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
 import { setWorkflowPrompts, listPromptVersions, rollbackPrompt, currentPrompt } from './promptVersions.js';
 import { assignCode, codeOfAsset, normalizeCode, isValidCode, listCodes, exportText, importText } from './productCodes.js';
+import { captionModeOf, cleanCaptionText } from './caption.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
 
@@ -756,15 +757,26 @@ const findRun = (id) => {
 app.get('/api/workflows', (req, res) => res.json(listWorkflows()));
 app.post('/api/runs', wrap(async (req, res) => {
   const body = req.body || {};
-  // Video thời trang: cần mã sản phẩm để in lên video (thay "TODAY'S OUTFIT"); thiếu thì lấy/cấp theo ảnh mặt trước
+  // Video thời trang: chữ in lên video (thay "TODAY'S OUTFIT") theo options.captionMode —
+  // 'code' (mặc định): cần mã sản phẩm, thiếu thì lấy/cấp theo ảnh mặt trước · 'text': cần chữ tuỳ ý · 'none': không chữ
   if (body.workflowId === 'video-thoi-trang') {
     const o = (body.options ||= {});
-    let code = normalizeCode(o.productCode || '');
+    o.captionMode = captionModeOf(o);
     const frontId = body.inputs?.outfitFront;
-    if (!code && frontId) code = codeOfAsset(frontId) || assignCode(frontId).productCode;
-    if (!isValidCode(code)) throw new Error('Chưa có mã sản phẩm hợp lệ để in lên video (dạng LOAI_SO, vd. VAY_01)');
-    if (frontId && codeOfAsset(frontId) !== code) assignCode(frontId, code); // người dùng sửa mã trong ô -> lưu lên ảnh
-    o.productCode = code;
+    if (o.captionMode === 'code') {
+      let code = normalizeCode(o.productCode || '');
+      if (!code && frontId) code = codeOfAsset(frontId) || assignCode(frontId).productCode;
+      if (!isValidCode(code)) throw new Error('Chưa có mã sản phẩm hợp lệ để in lên video (dạng LOAI_SO, vd. VAY_01)');
+      if (frontId && codeOfAsset(frontId) !== code) assignCode(frontId, code); // người dùng sửa mã trong ô -> lưu lên ảnh
+      o.productCode = code;
+    } else {
+      // Không in mã: chỉ giữ mã sẵn có của ảnh để đặt tên video, không cấp mã mới
+      o.productCode = (frontId && codeOfAsset(frontId)) || null;
+      if (o.captionMode === 'text') {
+        o.captionText = cleanCaptionText(o.captionText);
+        if (!o.captionText) throw new Error('Chưa nhập chữ để in lên video (ô "Chữ trên video")');
+      }
+    }
   }
   res.json(viewRun(createRun(body)));
 }));

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
-import { AssetPicker, ConfirmButton, useAction, Badge, PromptVersionPicker } from '../components.jsx';
+import { AssetPicker, ConfirmButton, useAction, Badge, PromptVersionPicker, CaptionModePicker, MAX_CAPTION_TEXT, cleanCaptionText } from '../components.jsx';
 import CropModal from '../components/CropModal.jsx';
 
 const FASHION_DRAFT_KEY = 'fashion_sales_draft_v1';
@@ -97,6 +97,9 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
 
   // Mã sản phẩm in lên video (thay "TODAY'S OUTFIT"): theo ảnh mặt trước, server cấp VAY_01, VAY_02… và lưu lên ảnh
   const [productCode, setProductCode] = useState(() => savedDraft?.productCode || '');
+  // Chữ trên video: 'code' = mã sản phẩm (như trước) · 'text' = chữ tuỳ ý · 'none' = không chữ
+  const [captionMode, setCaptionMode] = useState(() => (['code', 'text', 'none'].includes(savedDraft?.captionMode) ? savedDraft.captionMode : 'code'));
+  const [captionText, setCaptionText] = useState(() => savedDraft?.captionText || '');
   const [codeMsg, setCodeMsg] = useState(null);
   const [codeList, setCodeList] = useState(null); // { codes, text } khi bấm "Xem danh sách mã"
   const [productDescription, setProductDescription] = useState(() => savedDraft?.productDescription || '');
@@ -157,6 +160,8 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         scene2Model,
         scene2Duration,
         productCode,
+        captionMode,
+        captionText,
       };
       localStorage.setItem(FASHION_DRAFT_KEY, JSON.stringify(dataToSave));
     } catch (e) {
@@ -186,6 +191,8 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     scene2Model,
     scene2Duration,
     productCode,
+    captionMode,
+    captionText,
   ]);
 
   const isScene1Custom = promptScene1.trim() !== baseScene1Prompt.trim();
@@ -428,6 +435,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       setProductCode(a.productCode);
       return;
     }
+    if (captionMode !== 'code') return; // không in mã thì không cấp mã mới (khỏi tốn số trong sổ mã)
     let cancelled = false;
     api.assignCode(a.id)
       .then((res) => {
@@ -438,7 +446,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
       })
       .catch((e) => !cancelled && setCodeMsg({ type: 'err', text: `Không cấp được mã: ${e.message}` }));
     return () => { cancelled = true; };
-  }, [inputs.outfitFront]);
+  }, [inputs.outfitFront, captionMode]);
 
   // Người dùng sửa mã trong ô -> lưu lên ảnh mặt trước (mã trùng ảnh khác thì báo lỗi, giữ mã cũ)
   const commitCode = () =>
@@ -527,7 +535,8 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
     if (!inputs.shoes) missing.push('Ảnh giày');
     if (!inputs.bag) missing.push('Ảnh túi xách');
   }
-  if (!isValidCode(normalizeCodeInput(productCode))) missing.push('Mã sản phẩm (dạng VAY_01)');
+  if (captionMode === 'code' && !isValidCode(normalizeCodeInput(productCode))) missing.push('Mã sản phẩm (dạng VAY_01)');
+  if (captionMode === 'text' && !cleanCaptionText(captionText).trim()) missing.push('Chữ trên video');
 
   // Khởi tạo chạy workflow
   const startRun = () =>
@@ -544,7 +553,9 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
           scene1Duration,
           scene2Model,
           scene2Duration,
-          productCode: normalizeCodeInput(productCode),
+          productCode: captionMode === 'code' ? normalizeCodeInput(productCode) : undefined,
+          captionMode,
+          captionText: captionMode === 'text' ? cleanCaptionText(captionText).trim() : undefined,
           removeWatermark,
           autoPublish,
           keepAudio,
@@ -1054,11 +1065,14 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
         </div>
       </div>
 
-      {/* KHỐI MÃ SẢN PHẨM: in lên video thay chữ "TODAY'S OUTFIT" */}
+      {/* KHỐI CHỮ TRÊN VIDEO: thay chữ "TODAY'S OUTFIT" bằng mã sản phẩm / chữ tuỳ ý, hoặc không in chữ */}
       <div className="card stack">
         <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <b>🏷️ Mã sản phẩm in trên video</b>
-          <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b>🏷️ Chữ trên video</b>
+            <CaptionModePicker value={captionMode} onChange={setCaptionMode} />
+          </div>
+          {captionMode === 'code' && <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <a className="small" href="/api/codes/export" download="ma-san-pham.txt" title="Tải file .txt chứa mọi mã đã dùng trên máy này (cách nhau dấu phẩy) để đưa cho người khác nhập vào">
               📤 Xuất mã (.txt)
             </a>
@@ -1067,9 +1081,31 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
               <input type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={(e) => { handleImportCodes(e.target.files?.[0]); e.target.value = ''; }} />
             </label>
             <a className="small" onClick={toggleCodeList}>{codeList ? 'Ẩn danh sách mã' : 'Xem danh sách mã'}</a>
-          </div>
+          </div>}
         </div>
-        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {captionMode === 'text' && (
+          <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              className="caption-text"
+              maxLength={MAX_CAPTION_TEXT}
+              placeholder="VD: NEW ARRIVAL"
+              value={captionText}
+              onChange={(e) => setCaptionText(cleanCaptionText(e.target.value))}
+              onBlur={(e) => setCaptionText(e.target.value.trim())}
+              title={`Chữ in lên video thay cho "TODAY'S OUTFIT" (tối đa ${MAX_CAPTION_TEXT} ký tự, không dùng dấu nháy kép)`}
+            />
+            <span className="small muted">
+              Chữ <code>"TODAY'S OUTFIT"</code> trong prompt được thay bằng chữ này khi gửi Flow (tối đa {MAX_CAPTION_TEXT} ký tự). Model video hay vẽ sai chữ có dấu — nên viết ngắn, không dấu.
+            </span>
+          </div>
+        )}
+        {captionMode === 'none' && (
+          <span className="small muted">
+            Video không có chữ: câu in <code>"TODAY'S OUTFIT"</code> được bỏ khỏi prompt và thêm dặn "không có chữ nào trên màn hình". Prompt bạn sửa vẫn giữ nguyên, chỉ đổi lúc gửi Flow.
+            {isCase1 && <> TH1 vẫn giữ các ô nhỏ "Mã sản phẩm" bật lên cạnh ảnh sản phẩm — sửa trong prompt TH1 nếu muốn bỏ.</>}
+          </span>
+        )}
+        {captionMode === 'code' && <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <input
             className="mono"
             style={{ width: 200, fontWeight: 700, letterSpacing: 1 }}
@@ -1086,8 +1122,8 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
               ? <>Mã gắn với ảnh mặt trước <b>{frontAsset?.name}</b>. Chữ <code>"TODAY'S OUTFIT"</code> trong prompt sẽ được thay bằng mã này khi gửi Flow. Chọn ảnh mặt trước khác → mã khác; ảnh mới chưa có mã → tự cấp số tiếp theo.</>
               : 'Chọn ảnh Trang phục – Mặt trước ở trên, app sẽ tự cấp mã (VAY_01, VAY_02…) hoặc lấy lại mã đã cấp cho ảnh đó.'}
           </span>
-        </div>
-        {codeMsg && (
+        </div>}
+        {captionMode === 'code' && codeMsg && (
           <div
             className="small"
             style={{
@@ -1101,7 +1137,7 @@ export default function FashionSalesView({ wf, state, refresh, go }) {
             {codeMsg.text}
           </div>
         )}
-        {codeList && (
+        {captionMode === 'code' && codeList && (
           <div className="stack gap-xs" style={{ background: 'var(--panel2)', padding: 10, borderRadius: 6 }}>
             <span className="small muted"><b>Sổ mã trên máy này ({codeList.codes.length}):</b> mã đã cấp cho ảnh, mã sửa tay và mã nhập từ file .txt</span>
             <textarea className="mono small" rows={3} readOnly value={codeList.text} onFocus={(e) => e.target.select()} />
