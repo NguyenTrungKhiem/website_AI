@@ -118,6 +118,7 @@ export default function SettingsPage({ state, refresh }) {
             hint="Thời lượng tạo video trên Flow (mặc định 10s)"
           />
           <Field {...f} path="flowResolution" label="Độ phân giải trên Flow" options={['720p', '360p']} hint="Dành cho Omni Flash: 720p ≈ 15-20 credit, 360p ≈ 10 credit / video" />
+          <Field {...f} path="flowVideoDownload" label="Chất lượng tải video về" options={['1080p', '720p']} hint="1080p: Flow phóng to rồi mới tải (chờ lâu hơn, Flow tính thêm credit cho mỗi video — menu Download ghi “1080p Upscaled · 5 credits”); lỗi thì tự lấy bản 720p. 720p: bản gốc, không tốn thêm. Áp dụng cho mọi video tải từ Flow." />
           <Field {...f} path="aspectRatio" label="Tỉ lệ khung hình" options={['9:16', '16:9']} />
           <Field {...f} path="flowProjectUrl" label="Dự án Flow dùng chung" hint="Để trống thì tự tạo dự án mới lần đầu" />
           <label>

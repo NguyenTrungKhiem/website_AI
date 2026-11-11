@@ -78,6 +78,21 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
     const backOf = (frontId) => inputs[wf.backInput]?.[frontId] || state.assets.find((a) => a.fromAssetId === frontId && (a.isBackView || /Mặt sau Flow/.test(a.name || '')))?.id;
     (inputs[wf.codedInput] || []).forEach((id, i) => { if (!backOf(id)) missing.push(`Mặt sau trang phục ${i + 1}`); });
   }
+  // Tuỳ chọn đang chọn có ràng buộc riêng (vd. Chuyển động 3: ĐÚNG 2 trang phục, chỉ có bản 15s): giới hạn ô chọn trang phục,
+  // báo thiếu / thừa, và chỉ cho chọn các thời lượng chuyển động đó có
+  const rule = wf.options
+    .map((o) => (Array.isArray(o.options) ? o.options.find((x) => typeof x === 'object' && x.value === (options[o.key] ?? o.default)) : null))
+    .find((x) => x && x.minOutfits) || null;
+  const ruleName = rule ? rule.label.split(' – ')[0] : '';
+  const ruleNeed = rule ? (rule.minOutfits === rule.maxOutfits ? `đúng ${rule.minOutfits}` : `${rule.minOutfits}–${rule.maxOutfits}`) : '';
+  const pickedCount = wf.codedInput ? inputs[wf.codedInput]?.length || 0 : 0;
+  if (rule && pickedCount > 0 && (pickedCount < rule.minOutfits || pickedCount > rule.maxOutfits)) {
+    missing.push(`${ruleName} cần ${ruleNeed} trang phục (đang chọn ${pickedCount})`);
+  }
+  const allowedDurations = rule?.durations || null; // [] = chuyển động 2 phân cảnh, không dùng ô Thời lượng
+  const effectiveOptions = allowedDurations?.length && !allowedDurations.includes(options.duration)
+    ? { ...options, duration: allowedDurations[0] }
+    : options;
   // Chữ trên video = chữ tuỳ ý: bộ 1 phải có chữ (các bộ sau để trống thì dùng chữ của bộ trước)
   const captionMode = wf.captionModes ? options.captionMode || 'code' : null;
   const firstOutfit = wf.codedInput && inputs[wf.codedInput]?.[0];
@@ -89,7 +104,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 
   const start = () =>
     run(async () => {
-      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs, clipInputs, options });
+      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs, clipInputs, options: effectiveOptions });
       await refresh();
     });
 
@@ -142,20 +157,26 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
       <div className="card stack">
         <b>{noVideo ? '1' : '2'}. Ảnh tham chiếu</b>
         <div className="grid2">
-          {wf.inputs.map((inp) => (
-            <AssetPicker
-              key={inp.key}
-              kind={inp.kind}
-              label={inp.label + (inp.required ? ' *' : '')}
-              assets={state.assets}
-              multiple={!!inp.multiple}
-              hide={inp.hideBackViews ? (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '') : null}
-              value={inputs[inp.key] || (inp.multiple ? [] : null)}
-              onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: inp.multiple && inp.max && Array.isArray(v) ? v.slice(0, inp.max) : v }))}
-              refresh={refresh}
-              state={state}
-            />
-          ))}
+          {wf.inputs.map((inp) => {
+            // Ô trang phục: số ảnh tối đa và chữ "chọn 1–4" theo chuyển động đang chọn (vd. Chuyển động 3: đúng 2)
+            const limited = rule && inp.key === wf.codedInput;
+            const max = limited ? Math.min(inp.max || rule.maxOutfits, rule.maxOutfits) : inp.max;
+            const label = limited ? inp.label.replace(/chọn \d+[–-]\d+/, `chọn ${ruleNeed}`) : inp.label;
+            return (
+              <AssetPicker
+                key={inp.key}
+                kind={inp.kind}
+                label={label + (inp.required ? ' *' : '')}
+                assets={state.assets}
+                multiple={!!inp.multiple}
+                hide={inp.hideBackViews ? (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '') : null}
+                value={inputs[inp.key] || (inp.multiple ? [] : null)}
+                onChange={(v) => setInputs((s) => ({ ...s, [inp.key]: inp.multiple && max && Array.isArray(v) ? v.slice(0, max) : v }))}
+                refresh={refresh}
+                state={state}
+              />
+            );
+          })}
         </div>
         {wf.codedInput && (inputs[wf.codedInput]?.length || 0) > 0 && (
           <OutfitCodes
@@ -172,14 +193,18 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 
       <div className="card stack">
         <b>{noVideo ? '2' : '3'}. Tuỳ chọn</b>
-        {wf.options.map((o) =>
-          Array.isArray(o.options) ? (
+        {wf.options.map((o) => {
+          // Ô "Thời lượng": chỉ hiện các bản chuyển động đang chọn có; chuyển động 2 phân cảnh (không có bản nào) thì ẩn
+          const isDuration = o.key === 'duration' && allowedDurations;
+          if (isDuration && !allowedDurations.length) return null;
+          const choices = Array.isArray(o.options) && isDuration ? o.options.filter((opt) => allowedDurations.includes(typeof opt === 'string' ? opt : opt.value)) : o.options;
+          return Array.isArray(o.options) ? (
             // Tuỳ chọn dạng chọn 1 trong danh sách (vd. Chuyển động, Mô hình Flow)
             <label key={o.key} className="row" style={{ gap: 8, alignItems: 'center' }}>
               <span style={{ flex: '0 0 auto' }}>{o.label}</span>
               {/* tên chuyển động dài: ô chọn co theo khung, không đẩy cả trang tràn ngang */}
-              <select style={{ flex: '1 1 0', minWidth: 0, maxWidth: '100%' }} value={options[o.key] ?? o.default ?? ''} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}>
-                {o.options.map((opt) => {
+              <select style={{ flex: '1 1 0', minWidth: 0, maxWidth: '100%' }} value={effectiveOptions[o.key] ?? o.default ?? ''} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}>
+                {choices.map((opt) => {
                   const v = typeof opt === 'string' ? opt : opt.value;
                   return <option key={v} value={v}>{typeof opt === 'string' ? opt : opt.label}</option>;
                 })}
@@ -190,8 +215,8 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
               <input type="checkbox" checked={!!options[o.key]} onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.checked }))} />
               {o.label}
             </label>
-          ),
-        )}
+          );
+        })}
         <PromptEditor wf={wf} settings={state.settings} refresh={refresh} />
       </div>
 

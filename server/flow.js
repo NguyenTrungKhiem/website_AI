@@ -365,9 +365,12 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
     const tile = await waitForResult(page, before, log, names, kind, isCancelled);
     // Tên Flow đặt cho kết quả -> ảnh này về sau dùng lại được làm nguyên liệu (không tải lên lại)
     const title = (await tile.getAttribute('aria-label').catch(() => '')) || '';
-    log(kind === 'image' ? (imageQuality ? `Tải ảnh ${imageQuality} về (Flow phóng to, mất ~15-30s)` : 'Tải ảnh về') : 'Tải video về');
-    await downloadTile(page, tile, outputFile, kind, (src) => onResult(src, { title }), { imageQuality, log });
-    return { id: tag, outputFile, text: `Google Flow · ${credits}`, title };
+    const videoQuality = kind === 'image' ? null : videoDownloadOf(settings);
+    log(kind === 'image' ? (imageQuality ? `Tải ảnh ${imageQuality} về (Flow phóng to, mất ~15-30s)` : 'Tải ảnh về') : `Tải video ${videoQuality} về`);
+    const got = await downloadTile(page, tile, outputFile, kind, (src) => onResult(src, { title }), { imageQuality, videoQuality, log });
+    // Ghi lên thẻ video bản đã tải: "tải 1080p Upscaled · 5 credits", hoặc 720p khi không lấy được bản phóng to
+    const dlNote = kind === 'image' ? '' : ` · tải ${typeof got === 'string' ? got : videoQuality === '720p' ? '720p' : `720p (không lấy được ${videoQuality})`}`;
+    return { id: tag, outputFile, text: `Google Flow · ${credits}${dlNote}`, title };
   } finally {
     for (const it of items) if (it.file) fs.rm(it.file, { force: true }, () => {});
   }
@@ -1104,10 +1107,30 @@ export async function fetchToFile(src, outputFile) {
   fs.writeFileSync(outputFile, body);
 }
 
-async function downloadTile(page, tile, outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, log = () => {} } = {}) {
+// Chất lượng tải video về: '1080p' (mặc định) = mục "1080p Upscaled" trong menu Download của Flow — Flow phóng to rồi
+// mới tải nên chờ lâu hơn và TỐN CREDIT (menu ghi rõ, vd. "1080p Upscaled · 5 credits"); '720p' = bản gốc, không tốn thêm.
+export const VIDEO_DOWNLOADS = ['1080p', '720p'];
+export const videoDownloadOf = (settings = db.settings) => (VIDEO_DOWNLOADS.includes(settings?.flowVideoDownload) ? settings.flowVideoDownload : '1080p');
+
+async function downloadTile(page, tile, outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, videoQuality = null, log = () => {} } = {}) {
   // Cách 1: lấy thẳng file từ thẻ <video>/<img>
   const src = await tileMediaSrc(page, tile, kind);
   if (src) onResult(src); // ghi nhớ để lần Thử lại sau có thể lấy lại mà không tạo mới
+  // Video: bản phóng to 1080p qua menu Download (Flow xử lý xong mới trả file — chờ tới 15 phút). Lỗi / Flow không có mục
+  // đó thì rơi về bản gốc 720p như thường, không làm hỏng job.
+  if (kind !== 'image' && videoQuality && videoQuality !== '720p') {
+    try {
+      let picked = videoQuality;
+      await downloadViaMenu(page, tile, outputFile, new RegExp('^' + videoQuality, 'i'), 900_000, {
+        onPick: (label) => { picked = label; log(`Tải video ${videoQuality} về: Flow đang phóng to (${label}) — chờ lâu hơn bản 720p`); },
+      });
+      return picked; // nhãn mục đã tải, vd. "1080p Upscaled · 5 credits"
+    } catch (e) {
+      console.error(`Tải video ${videoQuality} từ Flow lỗi, dùng bản gốc 720p:`, e.message);
+      log(`Không tải được bản ${videoQuality} (${e.message.split('\n')[0].slice(0, 90)}), dùng bản gốc 720p`);
+      await dismissOverlays(page);
+    }
+  }
   // Ảnh: menu Download của Flow có "1K Original size" / "2K Upscaled" / "4K Upscaled" -> lấy bản phóng to nếu được yêu cầu
   // (Flow upscale rồi mới tải, ~15-30s; file trả về là JPG). Lỗi thì rơi về ảnh gốc 1K như thường.
   if (kind === 'image' && imageQuality) {
@@ -1133,19 +1156,37 @@ async function downloadTile(page, tile, outputFile, kind = 'video', onResult = (
 }
 
 // Menu "More options" -> Download (-> mục chất lượng nếu có) của 1 ô kết quả, lưu file tải về vào outputFile
-export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout) {
+// qualityRe bắt đầu bằng "^" = bắt buộc có đúng mục đó (không có thì báo lỗi để nơi gọi rơi về bản gốc);
+// onPick(nhãn mục đã bấm, vd. "1080p Upscaled · 5 credits") để ghi tiến trình.
+export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout, { onPick = () => {} } = {}) {
+  // Nút "More options" chỉ hiện khi rê chuột vào ô, mà rê chuột không ăn nếu tab Flow không ở phía trước
+  // (lúc tải thường là vài phút sau khi bấm tạo, người dùng có thể đã chuyển tab)
+  await page.bringToFront().catch(() => {});
   await dismissOverlays(page);
+  await tile.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   await tile.hover({ timeout: 5000 }).catch(() => {});
-  await tile.getByRole('button', { name: 'More options' }).click();
-  const [dl] = await Promise.all([
-    page.waitForEvent('download', { timeout }),
-    (async () => {
-      await page.getByRole('menuitem', { name: /Download/i }).first().click();
-      const quality = page.getByRole('menuitem', { name: qualityRe }).first();
-      if (await quality.isVisible({ timeout: 2000 }).catch(() => false)) await quality.click();
-      else if (qualityRe.source.startsWith('^')) throw new Error(`Flow không có mục tải ${qualityRe.source.slice(1)} cho ảnh này`);
-    })(),
-  ]);
+  await tile.getByRole('button', { name: 'More options' }).click({ timeout: 10_000 });
+  const required = qualityRe.source.startsWith('^');
+  const waitDownload = page.waitForEvent('download', { timeout });
+  waitDownload.catch(() => {}); // lỗi được ném lại ở dưới; tránh "unhandled rejection" khi bước chọn mục lỗi trước
+  await page.getByRole('menuitem', { name: /Download/i }).first().click({ timeout: 10_000 });
+  // Tên mục có biểu tượng đứng trước ("1080p Upscaled · 5 credits") -> so theo chữ hiển thị của từng mục
+  const items = page.getByRole('menuitem');
+  let picked = null;
+  for (let i = 0; i < 10 && picked === null; i++) {
+    const texts = (await items.allInnerTexts().catch(() => [])).map((t) => t.replace(/\s+/g, ' ').trim());
+    const idx = texts.findIndex((t) => qualityRe.test(t));
+    if (idx >= 0) picked = { idx, label: texts[idx] };
+    else await sleep(300);
+  }
+  if (picked) {
+    onPick(picked.label);
+    await items.nth(picked.idx).click({ timeout: 10_000 });
+  } else if (required) {
+    await dismissOverlays(page);
+    throw new Error(`Flow không có mục tải "${qualityRe.source.slice(1)}" cho kết quả này`);
+  }
+  const dl = await waitDownload;
   await dl.saveAs(outputFile);
 }
 
@@ -1154,7 +1195,7 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
  * hoặc người dùng tự tạo bằng tay trong cửa sổ Chrome. kind 'image': lấy ô ảnh (không phải video, không phải file tải lên);
  * imageQuality ('2K' | '4K'): tải bản phóng to qua menu Download như job ảnh thường.
  */
-export async function downloadLatestFromFlow(outputFile, kind = 'video', onResult = () => {}, { imageQuality = null } = {}) {
+export async function downloadLatestFromFlow(outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, videoQuality = videoDownloadOf(), log = () => {} } = {}) {
   const page = await flowPage();
   await page.bringToFront();
   await scrollTilesTop(page);
@@ -1177,7 +1218,7 @@ export async function downloadLatestFromFlow(outputFile, kind = 'video', onResul
 
   const tile = page.locator(TILE).nth(candidate.i);
   const title = (await tile.getAttribute('aria-label').catch(() => '')) || candidate.key || '';
-  await downloadTile(page, tile, outputFile, kind, onResult, { imageQuality });
+  await downloadTile(page, tile, outputFile, kind, onResult, { imageQuality, videoQuality: kind === 'image' ? null : videoQuality, log });
   return { outputFile, title, tileMedia: tileMedia(candidate) };
 }
 

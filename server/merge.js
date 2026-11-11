@@ -94,7 +94,12 @@ export function createMerge({
 async function runMerge(merge, plan) {
   try {
     const first = await probe(plan.segments[0].file);
-    const [w, h] = first.width && first.height ? [first.width, first.height] : db.settings.aspectRatio === '16:9' ? [1280, 720] : [720, 1280];
+    let [w, h] = first.width && first.height ? [first.width, first.height] : db.settings.aspectRatio === '16:9' ? [1280, 720] : [720, 1280];
+    // Các đoạn cùng tỉ lệ nhưng khác độ nét (đoạn tải 1080p, đoạn rơi về 720p): xuất theo đoạn nét nhất, không hạ xuống 720p
+    for (const seg of plan.segments.slice(1)) {
+      const m = await probe(seg.file).catch(() => null);
+      if (m?.width > w && m.height && Math.abs(m.width / m.height - w / h) < 0.02) [w, h] = [m.width, m.height];
+    }
     const dest = path.join(DIRS.merged, `${merge.id}.mp4`);
 
     let watermarkImagePath = null;
