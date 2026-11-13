@@ -46,6 +46,22 @@ export function canonicalShopeeUrl(u) {
 
 const isShopeeProductPage = (u) => /(shopee\.[a-z.]+|shope\.ee|shp\.ee)\/.*(-i\.\d+\.\d+|\/product\/\d+\/\d+|\/opaanlp\/\d+\/\d+|\/universal-link\/)/i.test(u);
 
+async function createBackgroundPage(ctx) {
+  try {
+    const existing = ctx.pages();
+    if (existing.length > 0) {
+      const cdp = await ctx.newCDPSession(existing[0]);
+      await cdp.send('Target.createTarget', { url: 'about:blank', background: true });
+      for (let i = 0; i < 25; i++) {
+        const p = ctx.pages().find((page) => page.url() === 'about:blank' && !existing.includes(page));
+        if (p) return p;
+        await sleep(100);
+      }
+    }
+  } catch {}
+  return ctx.newPage();
+}
+
 /**
  * Mở url trong tab mới của Chrome (Flow), gom: JSON API sản phẩm của sàn, thẻ meta, ảnh trong DOM.
  * Trả về null nếu Chrome chưa mở. Không ném lỗi vì trang chặn — trả về những gì lấy được.
@@ -60,7 +76,7 @@ export async function fetchProductWithBrowser(url, { timeoutMs = 25_000 } = {}) 
   const ctx = browser.contexts()[0];
   // Tab của lần trước bị chặn (để người dùng giải captcha) -> đóng khi bắt đầu lần mới
   if (pendingTab) { await pendingTab.close().catch(() => {}); pendingTab = null; }
-  const page = await ctx.newPage();
+  const page = await createBackgroundPage(ctx);
   const found = { shopeeData: null, lazadaItem: null, tiktokItem: null, apiHits: [] };
 
   page.on('response', async (res) => {
