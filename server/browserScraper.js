@@ -27,6 +27,10 @@ export function canonicalShopeeUrl(u) {
     const host = url.hostname.toLowerCase();
     if (!/(shopee\.|shope\.ee|shp\.ee)/.test(host)) return null;
     const p = decodeURIComponent(url.pathname);
+    // Nếu URL đã là dạng chuẩn có slug và -i.shop.item trên shopee.vn thì giữ nguyên để tránh bị WAF chặn
+    if (host.includes('shopee.vn') && /-i\.\d+\.\d+/.test(p) && !p.startsWith('/product-i.')) {
+      return `https://shopee.vn${url.pathname}${url.search}`;
+    }
     const m = p.match(/-i\.(\d+)\.(\d+)/)
            || p.match(/\/product\/(\d+)\/(\d+)/)
            || p.match(/\/[^/]+\/(\d{4,})\/(\d{6,})(?:\/|$)/)
@@ -80,8 +84,26 @@ export async function fetchProductWithBrowser(url, { timeoutMs = 25_000 } = {}) 
   });
 
   try {
+    const isShopee = /shopee\./i.test(url);
+    if (isShopee) {
+      const cookies = await ctx.cookies('https://shopee.vn').catch(() => []);
+      if (!cookies.some((c) => c.name === 'SPC_SI' || c.name === 'SPC_F' || c.name === 'SPC_T_ID')) {
+        // Chưa có cookie Shopee trong profile -> ghé nhẹ trang chủ để khởi tạo guest session hợp lệ
+        await page.goto('https://shopee.vn/', { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
+        await sleep(1000);
+      }
+    }
+
     const target = canonicalShopeeUrl(url) || url;
-    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+    await page.goto(target, { waitUntil: 'domcontentloaded', referer: isShopee ? 'https://shopee.vn/' : undefined, timeout: timeoutMs }).catch(() => {});
+
+    // Nếu Shopee chuyển hướng sang trang verify traffic (is_logged_in=false), tự động lấy lại cookie từ trang chủ rồi thử lại 1 lần
+    if (isShopee && !found.shopeeData && page.url().includes('verify/traffic/error')) {
+      await page.goto('https://shopee.vn/', { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
+      await sleep(1200);
+      await page.goto(target, { waitUntil: 'domcontentloaded', referer: 'https://shopee.vn/', timeout: timeoutMs }).catch(() => {});
+    }
+
     // Chờ API sản phẩm (ưu tiên, có đủ bộ ảnh gốc + giá); không có API thì chờ ảnh CDN trong DOM
     const start = Date.now();
     const deadline = start + timeoutMs;
@@ -109,12 +131,13 @@ export async function fetchProductWithBrowser(url, { timeoutMs = 25_000 } = {}) 
       return { title: document.title, ogTitle: meta('og:title'), ogImage: meta('og:image'), ogDesc: meta('og:description'), imgs, jsonLd, bodyText: document.body?.innerText?.slice(0, 300) || '' };
     }).catch(() => ({ title: '', ogTitle: '', ogImage: '', ogDesc: '', imgs: [], jsonLd: [], bodyText: '' }));
 
-    const blocked = /robot or human|captcha|xác minh|verify/i.test(dom.title) || /\/verify|captcha/i.test(finalUrl);
+    const isTrafficLoginError = /\/verify\/traffic\/error/i.test(finalUrl) && /is_logged_in=false/i.test(finalUrl);
+    const blocked = !isTrafficLoginError && (/robot or human|captcha|xác minh/i.test(dom.title) || /\/verify|captcha/i.test(finalUrl));
     // Shopee chuyển về trang chủ / tìm kiếm (link hỏng, sản phẩm đã gỡ…) -> không lấy ảnh linh tinh từ trang đó
     const notProduct = /shopee\./i.test(finalUrl) && !found.shopeeData && !isShopeeProductPage(finalUrl);
     if (notProduct) dom.imgs = [], dom.ogImage = '', dom.jsonLd = [];
     if (blocked && !found.shopeeData) {
-      // Giữ tab mở và đưa ra trước để người dùng tự qua bước xác minh của sàn
+      // Giữ tab mở và đưa ra trước để người dùng tự qua bước xác minh của sàn (chỉ khi có CAPTCHA thật)
       pendingTab = page;
       await page.bringToFront().catch(() => {});
     }
