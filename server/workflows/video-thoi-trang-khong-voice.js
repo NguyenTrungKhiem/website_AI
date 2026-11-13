@@ -150,6 +150,40 @@ const M4_15S = `Mood: alluring, confident evening-dress look; slow, elegant move
 // Dòng Wardrobe cho chuyển động KHÔNG có đoạn mặc đồ thường (Chuyển động 4): mặc sản phẩm ngay từ khung hình đầu tiên
 const WARDROBE_WORN = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. From the very first frame to the end she wears {OUTFIT} exactly (back {BACK}); no part of the clothes in {MODEL} shows under, over or beside it, back views and close-ups included.`;
 
+// ---- Chuyển động 5 – NAM (theo video mẫu e4553e40: lookbook đường phố 10s, nhiều cảnh nhảy cắt ở các góc khác nhau) ----
+// ĐÚNG 1 trang phục (mặt trước + mặt sau), 1 PHÂN CẢNH, mặc sẵn từ khung hình đầu (không match cut). Nhân vật NAM nên dùng
+// phần mở đầu / khoá trang phục / dòng quy tắc bản nam (setup_male, wardrobe_male, rule_male: "he", khoá vóc dáng nam).
+// Video mẫu có mũ lưỡi trai + ba lô đen -> dòng khoá trang phục nam dặn giữ 2 phụ kiện này giống nhau ở mọi cảnh.
+// Video mẫu đổi chỗ liên tục (đường, mép đường, lan can, cột, gốc cây): prompt viết chung chung "các chỗ khác nhau của
+// cùng bối cảnh {BG}" (lối đi, gờ thấp / bậc để ngồi, cột / tường để tựa) để hợp với mọi ảnh bối cảnh.
+// Mốc giây: bản 10s đúng nhịp video mẫu; bản 15s cùng trình tự, mỗi mốc dài gấp 1.5.
+const M5_BEATS = [
+  [0.0, 2.0, 'Medium-full shot on the path: he walks slowly toward the camera with a relaxed swagger, right hand tipping his cap brim then sliding into his pocket, shoulders swaying, playful smile.'],
+  [2.0, 2.6, 'Jump cut, full body: mid-step he crosses one leg in front, right hand on top of his cap, grinning at the camera.'],
+  [2.6, 3.2, 'Jump cut, medium: both hands pull the cap down by its sides, head bowed, then he peeks up.'],
+  [3.2, 3.7, 'Jump cut, low angle: sits on a low ledge, knees up, backpack beside him, right hand flashes a peace sign, left palm open toward the camera.'],
+  [3.7, 4.2, 'Jump cut, full body walking: left hand on his cap, one leg kicked forward.'],
+  [4.2, 4.7, 'Jump cut, medium: sits sideways on a railing or ledge, big smile, right hand on the backpack strap at his chest.'],
+  [4.7, 5.5, 'Jump cut, full body: leans one shoulder on a post, hands loose at his chest, nodding at the camera.'],
+  [5.5, 6.0, 'Jump cut, close: crouches low, forearms on his knees, hands clasped, eyes on the camera.'],
+  [6.0, 6.5, 'Jump cut, wide: stands still in the middle of the path, cap held in his right hand, the other hand on the backpack strap.'],
+  [6.5, 7.2, 'Jump cut, low: sits on the ledge, legs stretched forward, right hand raised near his chin in a cool hand sign.'],
+  [7.2, 7.7, 'Jump cut, wide front: stands centered, feet apart, one hand gesturing loosely.'],
+  [7.7, 8.2, 'Jump cut, medium: sits on the railing, head lowered, hands resting on his knees.'],
+  [8.2, 9.2, 'Jump cut, wide front: stands under the trees, both hands gesturing naturally, relaxed smile.'],
+  [9.2, 10.0, 'Jump cut, low: sits on the ledge, head down, hands on his knees, a shy smile toward the ground; sharp final frame.'],
+];
+const m5Text = (k) => ['Mood: easy-going Korean streetwear lookbook, playful and cool.']
+  .concat(M5_BEATS.map(([a, b, t]) => `${(a * k).toFixed(1)}-${(b * k).toFixed(1)}s: ${t}`))
+  .join('\n');
+const M5_10S = m5Text(1);
+const M5_15S = m5Text(1.5);
+
+// Bản NAM của phần mở đầu / khoá trang phục (mặc sẵn) / dòng quy tắc: "he", khoá vóc dáng nam, phụ kiện mũ + ba lô
+const SETUP_MALE = `{PART} of a silent {DUR} Korean menswear lookbook clip: static camera, no voice, no lip-sync, mouth closed. Caption: small white serif product code at the top-center. Face, hairstyle and head-to-body ratio locked 1:1 to {MODEL}. Keep his real body exactly as in {MODEL} in every frame: same height, shoulder width, chest, waist and leg proportions; never slim, bulk up or reshape him; the outfit is fitted to this body. Background: {BG}; each jump cut is a different spot of this same place (the path, a low ledge to sit on, a post or wall to lean on, under trees) with the same light. Left/right are the model's own.`;
+const WARDROBE_MALE = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. From the very first frame to the end he wears {OUTFIT} exactly (back {BACK}); no part of the clothes in {MODEL} shows under, over or beside it, back and side views included. Accessories in every shot: a casual cap (the one in {OUTFIT} if it has one, otherwise a plain cap) and a black backpack, both identical throughout.`;
+const RULE_MALE = `Jump cuts are instant cuts; the camera never moves within a shot. The cap and backpack stay consistent and never hide the outfit. Natural hands, relaxed natural motion, no text except the caption.`;
+
 const COMMON_RULE = `Jump cuts are instant cuts; the camera never moves. One small bag per outfit, kept consistent, never hiding the garment. Natural hands, smooth motion, no text except the caption.`;
 
 export const MOTIONS = {
@@ -198,6 +232,18 @@ export const MOTIONS = {
     minOutfits: 1,
     maxOutfits: 1,
   },
+  motion5: {
+    name: 'Chuyển động 5 – NAM, ĐÚNG 1 trang phục, 1 phân cảnh 10s hoặc 15s (lookbook đường phố, mặc sẵn từ giây đầu, mũ + ba lô): bước tới chỉnh mũ → kéo mũ cúi đầu → ngồi gờ giơ chữ V → ngồi lan can → tựa cột → ngồi xổm → đứng giữa đường → ngồi gờ cúi đầu cười',
+    prompts: {
+      m5_10s: { label: 'Chuyển động 5 (nam) · 10s (đúng nhịp video mẫu; mặc sẵn từ khung hình đầu: {OUTFIT}/{BACK} = mặt trước/sau)', text: M5_10S },
+      m5_15s: { label: 'Chuyển động 5 (nam) · 15s (cùng trình tự, mỗi mốc dài gấp 1.5)', text: M5_15S },
+    },
+    single: true,
+    male: true, // dùng setup_male / wardrobe_male / rule_male
+    durations: { '15s': { prompt: 'm5_15s', cuts: [] }, '10s': { prompt: 'm5_10s', cuts: [] } },
+    minOutfits: 1,
+    maxOutfits: 1,
+  },
 };
 export const SINGLE_DURATIONS = ['15s', '10s'];
 const isSingle = (run) => !!(MOTIONS[run.options.motion] || MOTIONS[DEFAULT_MOTION]).single;
@@ -241,8 +287,9 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
   const total = parseFloat(duration);
   const cuts = d.cuts || [d.cutAt];
   const [first, second] = outfits;
-  const setup = setupFor((prompt('setup') || SETUP).trim(), captionMode);
-  const rule = ruleFor((prompt('rule') ?? COMMON_RULE).trim(), captionMode);
+  // Chuyển động cho nhân vật nam: phần mở đầu / quy tắc bản nam
+  const setup = setupFor((motion.male ? prompt('setup_male') || SETUP_MALE : prompt('setup') || SETUP).trim(), captionMode);
+  const rule = ruleFor((motion.male ? prompt('rule_male') || RULE_MALE : prompt('rule') ?? COMMON_RULE).trim(), captionMode);
   const vars = {
     MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: listTags(outfits.map((o) => o.p1.front)),
     OUTFIT: first.p1.front, BACK: first.p1.back, OUTFIT2: second?.p1.front, BACK2: second?.p1.back,
@@ -258,7 +305,7 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
   const wardrobe = multi
     ? fill((prompt('wardrobe2') || WARDROBE_PART2).trim(), { ...vars, WEAR: outfits.map((o, i) => `${o.p1.front} (back ${o.p1.back}) at ${fmtT(cuts[i])}-${fmtT(endOf(i))}s`).join(', then ') })
     : worn
-      ? fill((prompt('wardrobe0') || WARDROBE_WORN).trim(), vars)
+      ? fill((motion.male ? prompt('wardrobe_male') || WARDROBE_MALE : prompt('wardrobe0') || WARDROBE_WORN).trim(), vars)
       : fill((prompt('wardrobe') || WARDROBE).trim(), vars);
   const cutNote = worn ? '' : ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.map((c) => `${fmtT(c)}s`).join(' and ')}.`;
   return [
@@ -382,6 +429,9 @@ export default {
     wardrobe0: { label: 'Khoá trang phục – chuyển động mặc sẵn từ khung hình đầu (Chuyển động 4: {OUTFIT}/{BACK})', text: WARDROBE_WORN },
     ...Object.fromEntries(Object.values(MOTIONS).flatMap((m) => Object.entries(m.prompts))),
     rule: { label: 'Dòng quy tắc ngắn cuối mỗi phân cảnh (để trống nếu không cần)', text: COMMON_RULE },
+    setup_male: { label: 'Phần mở đầu – bản NAM (Chuyển động 5: "he", khoá vóc dáng nam, các góc khác nhau của cùng bối cảnh)', text: SETUP_MALE },
+    wardrobe_male: { label: 'Khoá trang phục – bản NAM, mặc sẵn từ khung hình đầu (giữ mũ + ba lô giống nhau mọi cảnh)', text: WARDROBE_MALE },
+    rule_male: { label: 'Dòng quy tắc cuối – bản NAM', text: RULE_MALE },
   },
   options: [
     // minOutfits / maxOutfits: số trang phục chuyển động đó nhận (giao diện giới hạn ô chọn và báo thiếu / thừa);
@@ -392,7 +442,7 @@ export default {
       options: Object.entries(MOTIONS).map(([k, m]) => ({ value: k, label: m.name, minOutfits: m.minOutfits || 1, maxOutfits: m.maxOutfits || MAX_OUTFITS, durations: Object.keys(m.durations || {}) })),
       default: DEFAULT_MOTION,
     },
-    { key: 'duration', label: 'Thời lượng (chuyển động 1 phân cảnh: Chuyển động 2 có 15s / 10s, Chuyển động 3 và 4 chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d === '15s' ? '15s – đúng nhịp video mẫu' : '10s – cùng chuyển động, nhịp rút gọn' })), default: SINGLE_DURATIONS[0] },
+    { key: 'duration', label: 'Thời lượng (Chuyển động 2: 15s đúng nhịp video mẫu, 10s rút gọn · Chuyển động 5: 10s đúng nhịp video mẫu, 15s chậm hơn · Chuyển động 3, 4: chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d })), default: SINGLE_DURATIONS[0] },
     { key: 'flowModel', label: 'Mô hình Flow', options: FASHION_MODELS.map((m) => ({ value: m, label: m })), default: FASHION_MODELS[0] },
     { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
     { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },
