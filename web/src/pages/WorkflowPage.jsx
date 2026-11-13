@@ -191,6 +191,14 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
         )}
       </div>
 
+      {wf.promptWriter && (
+        <ExercisePromptBox
+          wf={wf}
+          value={{ exercise: options.exercise || '', prompt: options.customPrompt || '', note: options.exerciseNote || '' }}
+          onChange={(patch) => setOptions((s) => ({ ...s, ...patch }))}
+        />
+      )}
+
       <div className="card stack">
         <b>{noVideo ? '2' : '3'}. Tuỳ chọn</b>
         {wf.options.map((o) => {
@@ -236,6 +244,67 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
         runs.map((r) => <RunCard key={r.id} run={r} state={state} refresh={refresh} go={go} />)
       )}
     </section>
+  );
+}
+
+// Quy trình có promptWriter (Video tập gym): nhập tên động tác -> Gemini viết lại phần động tác của prompt gốc (góc quay theo
+// nhóm cơ) -> prompt hiện trong ô để xem / sửa tay rồi chạy. value = { exercise, prompt (trống = dùng prompt gốc), note };
+// onChange(patch) ghi vào options (exercise, customPrompt, exerciseNote) nên được lưu nháp và gửi theo lần chạy.
+function ExercisePromptBox({ wf, value, onChange }) {
+  const { busy, error, run } = useAction();
+  const [name, setName] = useState(value.exercise);
+  const pw = wf.promptWriter;
+  const base = wf.prompts?.[pw.baseKey]?.text || '';
+  const usingBase = !value.prompt.trim();
+  const shown = usingBase ? base : value.prompt;
+  const write = () =>
+    run(async () => {
+      const res = await api.exercisePrompt(wf.id, name.trim());
+      const view = { rear: 'từ phía sau', 'rear-three-quarter': 'chéo từ phía sau', side: 'quay ngang', front: 'từ phía trước', 'front-three-quarter': 'chéo từ phía trước' }[res.view] || res.view;
+      onChange({
+        exercise: res.exercise,
+        customPrompt: res.prompt,
+        exerciseNote: [res.exerciseEn?.split('.')[0], res.muscleGroup && `nhóm cơ: ${res.muscleGroup}`, view && `góc quay: ${view}`, res.note].filter(Boolean).join(' · '),
+      });
+    });
+  const reset = () => { setName(''); onChange({ exercise: '', customPrompt: '', exerciseNote: '' }); };
+  return (
+    <div className="card stack exercise-box">
+      <b>🏋️ Động tác tập</b>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          style={{ flex: '1 1 240px', minWidth: 0 }}
+          maxLength={120}
+          placeholder={pw.placeholder || 'Tên động tác'}
+          value={name}
+          disabled={busy}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && name.trim() && !busy && write()}
+          title="Nhập tên động tác (tiếng Việt hoặc tiếng Anh) rồi bấm nút để Gemini viết prompt mới từ prompt gốc"
+        />
+        <button className="primary" disabled={busy || !name.trim()} onClick={write}>
+          {busy ? '⏳ Gemini đang viết…' : '✨ Viết prompt cho động tác này'}
+        </button>
+        {!usingBase && <button disabled={busy} onClick={reset} title="Bỏ prompt đã viết, quay về prompt gốc">↩ Về prompt gốc</button>}
+      </div>
+      <small className="muted">
+        {usingBase
+          ? <>Đang dùng <b>prompt gốc</b>: {pw.defaultExercise}. Nhập tên động tác khác rồi bấm nút: Gemini (API key trong Cài đặt) viết lại phần động tác — thiết bị, tư thế, kỹ thuật, các nhịp theo giây và <b>góc quay theo nhóm cơ</b> (chân / mông: từ phía sau · ngực: quay ngang · tay: phía trước…); các dòng nhân vật, đồ tập, bối cảnh giữ nguyên.</>
+          : <>Đang dùng prompt cho <b>{value.exercise || 'động tác tuỳ chỉnh'}</b>{value.note ? <> — {value.note}</> : null}</>}
+      </small>
+      <textarea
+        className="mono small"
+        rows={14}
+        value={shown}
+        disabled={busy}
+        onChange={(e) => onChange({ customPrompt: e.target.value })}
+        title="Prompt sẽ gửi Flow (sửa tay được). {MODEL} {OUTFIT} {BACK} {BG} {CAPTION} là chỗ điền, giữ nguyên."
+      />
+      <small className="muted">
+        {shown.length.toLocaleString('vi-VN')} ký tự · video {`15s`}, 1 phân cảnh, máy quay cố định. Xem lại dòng <code>Camera:</code> và các mốc giây trước khi chạy; sửa tay trong ô nếu cần. Giữ nguyên các chỗ điền <code>{'{MODEL} {OUTFIT} {BACK} {BG} {CAPTION}'}</code>.
+      </small>
+      {error && <div className="err small">{error}</div>}
+    </div>
   );
 }
 

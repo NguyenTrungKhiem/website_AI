@@ -6,6 +6,7 @@ import anhModel from './anh-model.js';
 import fashionV2v from './fashion-v2v.js';
 import videoThoiTrang from './video-thoi-trang.js';
 import videoThoiTrangKhongVoice from './video-thoi-trang-khong-voice.js';
+import videoTapGym from './video-tap-gym.js';
 import { db } from '../db.js';
 
 export const WORKFLOWS = {
@@ -13,6 +14,7 @@ export const WORKFLOWS = {
   [thayTrangPhuc.id]: thayTrangPhuc,
   [videoThoiTrang.id]: videoThoiTrang,
   [videoThoiTrangKhongVoice.id]: videoThoiTrangKhongVoice,
+  [videoTapGym.id]: videoTapGym,
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,
@@ -40,6 +42,8 @@ export const listWorkflows = () =>
       codedInput: w.codedInput || null, // key input mà mỗi ảnh có mã sản phẩm (giao diện hiện ô sửa mã)
       backInput: w.backInput || null, // key inputs chứa ảnh mặt sau theo từng ảnh mặt trước ({ frontId: backId })
       captionModes: !!w.captionModes, // chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ
+      // Ô nhập tên động tác + nút gọi Gemini viết prompt mới từ prompt gốc (vd. Video tập gym): { baseKey, defaultExercise, placeholder }
+      promptWriter: w.promptWriter || null,
       inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id); max = số ảnh tối đa
       perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
       prompts: mergedPrompts,

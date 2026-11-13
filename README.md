@@ -105,6 +105,15 @@ Menu **🤫 Video bán hàng thời trang không voice** (`server/workflows/vide
 - Mọi khối sửa được trong "Prompt mẫu của quy trình": dòng dạng `a.a-b.bs: …`, chỗ điền `{MODEL}`, `{OUTFIT}`, `{OUTFITS}`, `{CODE}`, `{BG}`, `{START}`, `{PART}`.
 - Part 2 nhận thêm khung hình cuối của Part 1 làm nguyên liệu cuối (`{START}`) để mở đúng khung đó; khung này được **xoá dải chữ phía trên** (ffmpeg delogo, `removeCaptionBand`) vì nó in sẵn mã của trang phục 1 và Flow sẽ chép mã đó sang Part 2; prompt Part 2 cũng nói rõ chữ trong ảnh thuộc Part 1, caption từ khung đầu là mã của trang phục kế tiếp. Part 1 đổi kết quả thì Part 2 và ghép tự làm lại.
 
+### Video tập gym
+
+Menu **🏋️ Video tập gym** (`server/workflows/video-tap-gym.js`): 1 ảnh nhân vật (@Image1) + **1 bộ đồ tập** mặt trước + mặt sau (@Image2, @Image3; ô "Mặt sau" có nút Tạo mặt sau / Lấy từ Flow như module không voice) + 1 ảnh bối cảnh phòng gym (@Image4) → **1 phân cảnh 15s** trên Flow (Omni 1.2 Flash · Ingredients · 9:16), không voice. Nhân vật mặc sẵn bộ đồ ngay từ khung hình đầu và tập 1 động tác, **máy quay cố định** (không cắt cảnh, không zoom).
+
+- **Prompt gốc** (`base`): dựng theo 2 video mẫu — squat máy quay mặt vào đệm (reverse hack squat), quay chéo từ phía sau bên phải, ngang hông; video mẫu 10s / ~3 nhịp được kéo thành 15s / 4 nhịp. Cấu trúc dòng cố định: `Setup` / `{CAPTION}` / `Identity` / `Wardrobe` / `Scene` (không đổi theo động tác) · `Exercise` / `Camera` / `Form` / các mốc giây (phần của động tác) · `Rules`. ≈ 2.350 ký tự.
+- **Động tác mới**: nhập tên động tác (tiếng Việt hoặc Anh) vào ô **🏋️ Động tác tập** → **✨ Viết prompt cho động tác này**: server gọi Gemini (API key trong Cài đặt, `POST /api/workflows/video-tap-gym/exercise-prompt`) với prompt gốc + bộ luật (`rewrite`); Gemini chỉ viết lại 4 phần Exercise / Camera / Form / các mốc giây, server ghép vào prompt gốc nên các dòng nhân vật, đồ tập, bối cảnh, quy tắc giữ nguyên từng chữ. Các mốc giây được ép liền nhau 0.0 → 15.0. Prompt hiện trong ô để xem / sửa tay; **↩ Về prompt gốc** để bỏ.
+- **Luật góc quay theo nhóm cơ** (trong prompt `rewrite`, sửa được ở "Prompt mẫu của quy trình"): chân / mông / đùi sau (squat, hip thrust, deadlift, RDL…) → chéo từ phía sau 30–45°, ngang hông · ngực (bench press, fly, push-up…) → quay ngang 90° · tay trước / tay sau → từ phía trước · vai → phía trước (vai sau → phía sau) · lưng / xô → từ phía sau · bụng / core → quay ngang · toàn thân / cardio → chéo trước 45°.
+- **Chữ trên video**: mã sản phẩm / chữ tuỳ ý / không chữ như 2 module thời trang. **Thử lại** thêm lần tạo vào cùng thẻ, đổi bản thì ghép lại.
+
 Thêm quy trình mới (vd. Thay quần áo): tạo `server/workflows/<ten>.js` cùng cấu trúc với `dancing.js` (inputs, prompts, options, stages) và đăng ký trong `server/workflows/index.js`. Giao diện tự sinh trang riêng, không ảnh hưởng tới Dancing. Các bước dùng chung (Cắt, Ghép, Đăng) giữ nguyên. Các job lẻ (motion / background / image) vẫn có API (`/api/jobs/...`) nhưng không còn trang riêng.
 
 Thử quy trình không tốn tiền: đặt `"engine": "mock"` trong `data/db.json` (engine giả chép đầu vào thành đầu ra sau 2 giây).

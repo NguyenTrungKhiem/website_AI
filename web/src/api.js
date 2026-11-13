@@ -14,6 +14,8 @@ export const api = {
   state: () => req('GET', '/api/state'),
   saveSettings: (s) => req('PUT', '/api/settings', s),
   promptVersions: (wfId, key) => req('GET', `/api/workflows/${wfId}/prompts/${key}/versions`), // lịch sử prompt gốc của 1 bước
+  // Video tập gym: Gemini viết prompt cho động tác mới từ prompt gốc (góc quay theo nhóm cơ)
+  exercisePrompt: (wfId, exercise) => req('POST', `/api/workflows/${wfId}/exercise-prompt`, { exercise }),
   rollbackPrompt: (wfId, key, file) => req('POST', `/api/workflows/${wfId}/prompts/${key}/rollback`, { file }),
   uploadSource: (file) => {
     const f = new FormData();

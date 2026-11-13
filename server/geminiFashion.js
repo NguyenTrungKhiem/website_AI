@@ -61,7 +61,7 @@ function fileToPart(filePath) {
  * Gọi Google Generative Language API với cơ chế tự động chuyển đổi sang model ổn định
  * (gemini-2.5-flash / gemini-3.1-flash-lite) nếu model chính gặp lỗi mạng, quá tải hoặc timeout.
  */
-async function callGeminiWithFallback({ apiKey, primaryModel, contents, generationConfig, timeoutMs = 15000 }) {
+export async function callGeminiWithFallback({ apiKey, primaryModel, contents, generationConfig, timeoutMs = 15000 }) {
   const modelsToTry = [
     primaryModel,
     'gemini-2.5-flash',

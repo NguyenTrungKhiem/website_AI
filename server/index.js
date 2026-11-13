@@ -17,6 +17,7 @@ import { listWorkflows } from './workflows/index.js';
 import { setWorkflowPrompts, listPromptVersions, rollbackPrompt, currentPrompt } from './promptVersions.js';
 import { assignCode, codeOfAsset, normalizeCode, isValidCode, listCodes, exportText, importText } from './productCodes.js';
 import { captionModeOf, cleanCaptionText } from './caption.js';
+import { writeExercisePrompt, GYM_BASE_PROMPT, GYM_REWRITE_PROMPT } from './workflows/video-tap-gym.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
 
@@ -143,6 +144,22 @@ app.get('/api/workflows/:id/prompts/:key/versions', wrap(async (req, res) => {
 app.post('/api/workflows/:id/prompts/:key/rollback', wrap(async (req, res) => {
   const text = rollbackPrompt(req.params.id, req.params.key, String(req.body?.file || ''));
   res.json({ text, versions: listPromptVersions(req.params.id, req.params.key) });
+}));
+
+// Video tập gym: viết prompt cho động tác người dùng nhập — Gemini viết lại phần động tác (Exercise / Camera / Form / mốc giây)
+// của prompt gốc (bản người dùng đã sửa nếu có), góc quay theo nhóm cơ; các dòng còn lại giữ nguyên
+app.post('/api/workflows/video-tap-gym/exercise-prompt', wrap(async (req, res) => {
+  const apiKey = db.settings.geminiApiKey || process.env.GEMINI_API_KEY || '';
+  if (!apiKey) throw new Error('Chưa cấu hình Gemini API Key trong Cài đặt');
+  const saved = db.settings?.workflows?.['video-tap-gym']?.prompts || {};
+  const out = await writeExercisePrompt({
+    exercise: req.body?.exercise,
+    base: (saved.base || '').trim() || GYM_BASE_PROMPT,
+    rules: (saved.rewrite || '').trim() || GYM_REWRITE_PROMPT,
+    apiKey,
+    model: db.settings.geminiModel || 'gemini-2.5-flash',
+  });
+  res.json(out);
 }));
 
 // ---------- Google Flow (Playwright) ----------
