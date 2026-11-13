@@ -789,6 +789,12 @@ function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse
 
   const clean = (im) => run(async () => { await api.cleanAsset(await ensureAsset(im), prompt); await refresh(); });
   const retry = (r) => run(async () => { await api.cleanAsset(r.fromAssetId, prompt); await refresh(); });
+  const importFromFlow = (sourceAssetId) => run(async () => {
+    const aId = sourceAssetId || await ensureAsset(cur);
+    const added = await api.cleanFromFlow(aId);
+    if (added?.id) setViewId(added.id);
+    await refresh();
+  });
   const pickSource = () => run(async () => onUse(await ensureAsset(cur)));
   const remove = (r) => {
     if (armed !== r.id) { setArmed(r.id); setTimeout(() => setArmed((a) => (a === r.id ? null : a)), 3000); return; }
@@ -830,23 +836,45 @@ function ExtractPopup({ images, startIdx, kind, state, refresh, busyOuter, onUse
             <div className="small muted">{viewing ? viewing.name : cur.name || 'Ảnh sản phẩm'}</div>
           </div>
           {viewing ? (
-            <div className="row">
+            <div className="row" style={{ flexWrap: 'wrap', gap: '8px' }}>
               <button className="primary" disabled={busy} onClick={() => onUse(viewing.id)}>✓ Dùng ảnh này</button>
               <button disabled={busy} onClick={() => retry(viewing)} title="Tạo bản sạch khác từ cùng ảnh gốc">🔄 Thử lại</button>
+              <button disabled={busy} onClick={() => importFromFlow(viewing.fromAssetId)} title="Tải ảnh mới nhất đã render xong trong cửa sổ Chrome Google Flow về làm ảnh sạch cho bộ này">
+                📥 Tải ảnh từ Flow
+              </button>
               <button className={armed === viewing.id ? 'armed' : ''} disabled={busy} onClick={() => remove(viewing)}>
                 {armed === viewing.id ? 'Bấm lần nữa để xoá' : '🗑 Xoá'}
               </button>
             </div>
           ) : (
-            <div className="row">
+            <div className="row" style={{ flexWrap: 'wrap', gap: '8px' }}>
               <button className="primary" disabled={busy || isWorking(curJob) || !prompt.trim()} onClick={() => clean(cur)}>
                 ✨ Làm sạch ảnh này {engine === 'mock' ? '(engine giả)' : '(Flow, 0 credit)'}
+              </button>
+              <button disabled={busy} onClick={() => importFromFlow()} title="Tải ảnh mới nhất vừa render xong trong cửa sổ Chrome của Google Flow về làm ảnh sạch cho ảnh này (dùng khi bạn tự render bằng tay trên Flow hoặc Flow tải về bị lỗi)">
+                📥 Tải ảnh từ Flow
               </button>
               <button disabled={busy} onClick={pickSource} title="Dùng nguyên ảnh này, không làm sạch">✓ Chọn ảnh này</button>
             </div>
           )}
-          {isWorking(curJob) && <small className="muted">⏳ {curJob.attempts?.at(-1)?.progress || 'Đang chờ đến lượt…'}</small>}
-          {curJob?.status === 'failed' && !isWorking(curJob) && <div className="err small">{curJob.error}</div>}
+          {isWorking(curJob) && (
+            <div className="row between" style={{ alignItems: 'center' }}>
+              <small className="muted">⏳ {curJob.attempts?.at(-1)?.progress || 'Đang chờ đến lượt…'}</small>
+              <button className="small-btn" disabled={busy} onClick={() => importFromFlow()} title="Lấy ngay kết quả Flow đã tạo về">
+                📥 Lấy từ Flow
+              </button>
+            </div>
+          )}
+          {curJob?.status === 'failed' && !isWorking(curJob) && (
+            <div className="stack" style={{ gap: '6px' }}>
+              <div className="err small">{curJob.error}</div>
+              <div>
+                <button className="small-btn" disabled={busy} onClick={() => importFromFlow()} title="Nếu bạn đã render bằng tay trong Chrome Flow, bấm vào đây để tải ảnh về">
+                  📥 Tải ảnh từ Flow
+                </button>
+              </div>
+            </div>
+          )}
 
           <label>
             <div className="row between" style={{ alignItems: 'center' }}>

@@ -37,6 +37,7 @@ export const api = {
   },
   deleteAsset: (id) => req('DELETE', `/api/assets/${id}`),
   cleanAsset: (id, prompt) => req('POST', `/api/assets/${id}/clean`, { prompt }),
+  cleanFromFlow: (id) => req('POST', `/api/assets/${id}/clean-from-flow`),
   copyAsset: (id, kind) => req('POST', `/api/assets/${id}/copy`, { kind }),
   fetchProduct: (url) => req('POST', '/api/product/fetch', { url }),
   // product = kết quả bóc tách (found) để server lưu metadata (tên, giá, mô tả, link…) vào asset.product

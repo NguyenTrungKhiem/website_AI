@@ -360,6 +360,52 @@ app.post('/api/assets/:id/clean', wrap(async (req, res) => {
   res.json(viewJob(job));
 }));
 
+// Lấy ảnh MỚI NHẤT đã render xong trên Flow về làm ảnh sạch cho ảnh :id (khi tạo ảnh sạch trên Flow bị lỗi,
+// hoặc người dùng tự render ảnh sạch bằng tay trong cửa sổ Chrome).
+app.post('/api/assets/:id/clean-from-flow', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  const id = newId();
+  const dest = path.join(DIRS.assets, `${id}.png`);
+  let flowSrc = null;
+  const result = await flow.downloadLatestFromFlow(dest, 'image', (src) => { flowSrc = src; });
+  const base = (a.name || 'ảnh').replace(/ \((Flow|Mặt sau Flow)\)( #\d+)?$/, '');
+  const n = db.assets.filter((x) => x.fromAssetId === a.id).length + 1;
+  const asset = {
+    id,
+    kind: a.kind || 'product',
+    name: `${base} (Flow)${n > 1 ? ` #${n}` : ''}`,
+    path: dest,
+    createdAt: Date.now(),
+    fromAssetId: a.id,
+    staging: true,
+    isBackView: false,
+    flowTitle: result.title || null,
+    flowSrc,
+    product: a.product ? structuredClone(a.product) : undefined,
+  };
+  db.assets.unshift(asset);
+
+  // Đánh dấu các job làm sạch liên quan đang chạy hoặc failed thành done
+  for (const j of db.jobs.filter((j) => j.meta?.cleanOf === a.id && j.status !== 'done')) {
+    j.status = 'done';
+    j.outputPath = dest;
+    j.thumbPath = dest;
+    j.error = null;
+    const lastAttempt = j.attempts.at(-1);
+    if (lastAttempt && lastAttempt.status !== 'done') {
+      lastAttempt.status = 'done';
+      lastAttempt.outputPath = dest;
+      lastAttempt.thumbPath = dest;
+      lastAttempt.flowTitle = result.title;
+      lastAttempt.finishedAt = Date.now();
+    }
+  }
+
+  save();
+  res.json({ ...asset, url: mediaUrl(dest) });
+}));
+
 // Tạo ảnh mặt sau của trang phục dựa trên ảnh mặt trước bằng Flow
 app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
   const a = db.assets.find((x) => x.id === req.params.id);
