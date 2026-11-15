@@ -29,9 +29,11 @@ export const api = {
   mergeSource: (id, body) => req('POST', `/api/sources/${id}/merge`, body),
   deleteMergedSource: (id) => req('DELETE', `/api/sources/${id}/merge`),
   deleteClip: (id) => req('DELETE', `/api/clips/${id}`),
-  uploadAsset: (kind, file) => {
+  // extra (tuỳ chọn): { backOf: id ảnh mặt trước } hoặc { isBackView: '1' } -> ảnh tải lên là ảnh MẶT SAU
+  uploadAsset: (kind, file, extra = {}) => {
     const f = new FormData();
     f.append('kind', kind);
+    for (const [k, v] of Object.entries(extra)) if (v != null) f.append(k, v);
     f.append('file', file);
     return req('POST', '/api/assets', f);
   },
@@ -113,5 +115,11 @@ export const api = {
   cropAsset: (body) => req('POST', '/api/assets/crop', body),
   renderBackAsset: (id, prompt) => req('POST', `/api/assets/${id}/render-back`, { prompt }),
   backFromFlow: (id) => req('POST', `/api/assets/${id}/back-from-flow`),
+  // Tab Nam: tạo ảnh KOL/KOC mặc đủ outfit ngay ở thẻ outfit (job ảnh Flow, 0 credit). body = { model, look: { items, style } }
+  lookPreview: (wfId, body) => req('POST', `/api/workflows/${wfId}/look-preview`, body),
+  // Tab Nam: lấy ảnh mới nhất đã tạo xong trên Flow về làm ảnh outfit (cùng body với lookPreview) -> trả ảnh đã lưu vào thư viện
+  lookFromFlow: (wfId, body) => req('POST', `/api/workflows/${wfId}/look-from-flow`, body),
+  // AI làm sạch ảnh mặt sau :id (frontId = ảnh mặt trước của món đó, nếu có) -> job ảnh Flow, kết quả là ảnh mặt sau mới
+  cleanBackAsset: (id, frontId, prompt) => req('POST', `/api/assets/${id}/clean-back`, { frontId: frontId || undefined, prompt }),
   analyzeFashionGarment: (body) => req('POST', '/api/fashion/analyze-and-prompt', body),
 };

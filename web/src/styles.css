@@ -374,3 +374,29 @@ button.big { padding: 10px 18px; font-size: 15px; }
 /* Ô giá trong kết quả bóc tách: lấy tự động (trang SP / Chrome của Flow), sửa được, nhập tay khi sàn không trả giá */
 .product-price-edit { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 12px; color: var(--muted); }
 .product-price-edit input { width: 120px; padding: 3px 6px; font-size: 13px; font-weight: 700; color: #4caf50; text-align: right; }
+
+/* Tab Nữ / Nam của nhóm quy trình (không voice) */
+.wf-tabs { margin-bottom: 12px; }
+.wf-tabs button { padding: 7px 20px; font-weight: 600; }
+/* Ảnh mặt sau dùng chung (BackViewControl) */
+.back-view .mini-thumb { width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #000; }
+.back-view .placeholder-thumb { display: inline-grid; place-items: center; color: var(--muted); border: 1px dashed var(--line); background: var(--panel); }
+.back-view .drop { border: 0; display: inline-block; border-radius: 8px; }
+/* Khối Outfit của tab Nam */
+.male-outfits { gap: 10px; }
+.outfit-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; gap: 8px; }
+.garment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 8px; }
+.garment-slot { background: var(--panel2); border-radius: 8px; padding: 8px 10px; gap: 6px; }
+.garment-slot .thumb.pick { width: 54px; height: 72px; flex-shrink: 0; }
+.garment-slot .thumb.pick img { width: 100%; height: 100%; object-fit: cover; }
+.garment-slot select { padding: 4px 6px; font-size: 12px; }
+.garment-slot.off { opacity: 0.55; border: 1px dashed var(--line); background: transparent; }
+/* Khối "Ảnh outfit" trong thẻ outfit (nút tạo ảnh KOL/KOC mặc đủ bộ) */
+.look-preview { gap: 12px; align-items: flex-start; flex-wrap: wrap; background: var(--panel2); border-radius: 8px; padding: 8px 10px; }
+.look-shot { width: 90px; aspect-ratio: 9 / 16; border-radius: 6px; overflow: hidden; background: #000; flex-shrink: 0; display: grid; place-items: center; cursor: zoom-in; }
+.look-shot img { width: 100%; height: 100%; object-fit: cover; }
+.look-shot.empty { background: var(--panel); border: 1px dashed var(--line); color: var(--muted); font-size: 11px; text-align: center; cursor: default; }
+.look-shot.stale img { opacity: 0.45; }
+.look-versions .mini-thumb { cursor: pointer; }
+.look-versions .mini-thumb:hover { outline: 2px solid var(--accent); }
+.output .preset-shot { width: 100%; border-radius: 6px; cursor: zoom-in; display: block; }

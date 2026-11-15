@@ -40,6 +40,8 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, cli
     const has = (id) => typeof id === 'string' && db.assets.some((a) => a.id === id);
     cleanInputs[wf.backInput] = Object.fromEntries(Object.entries(inputs[wf.backInput]).filter(([f, b]) => has(f) && has(b)));
   }
+  // Đầu vào có cấu trúc riêng của quy trình (vd. tab Nam: danh sách outfit nhiều món) do quy trình tự kiểm tra / làm sạch
+  if (wf.prepareInputs) Object.assign(cleanInputs, wf.prepareInputs(inputs, options));
   // Ảnh riêng cho từng đoạn (vd. Thay trang phục: mỗi đoạn một bộ trang phục): { [clipId]: { [key]: assetId } }
   const perClip = {};
   for (const clip of clips) {
@@ -537,7 +539,9 @@ export function viewRun(run) {
         : (run.status === 'cancelled' && st.status === 'running')
         ? 'cancelled'
         : st.status;
-      return { id: s.id, label: s.label, status: computedStatus, done: sj.filter((j) => j.status === 'done').length, total: sj.length };
+      // hidden: bước không áp dụng cho lần chạy này (vd. phân cảnh 2, 3 của chuyển động 1 phân cảnh) -> giao diện không vẽ
+      const hidden = !!(s.hideWhenSkipped && s.when && !s.when(run));
+      return { id: s.id, label: s.label, status: computedStatus, done: sj.filter((j) => j.status === 'done').length, total: sj.length, hidden, note: st.note || null };
     }),
     // Từng đoạn: video motion (hoặc video nhập thay thế), video đã thay nền, ảnh riêng của đoạn (nếu quy trình có)
     clipRows: run.clipIds.map((cid) => {
@@ -579,6 +583,26 @@ export function viewRun(run) {
     // Quy trình khai báo sceneJobs (vd. Video thời trang không voice): job đang dùng của từng phân cảnh, để giao diện hiện
     // thẻ video với các lần tạo (Thử lại / chọn bản tốt nhất) ngay trong lần chạy
     scenes: (wf?.sceneJobs || []).map((s) => ({ ...s, job: brief(byKey(s.key)) || null })).filter((s) => s.job),
+    // Quy trình khai báo previewJobs (vd. tab Nam: ảnh xem trước từng outfit): job đang dùng có khoá bắt đầu bằng prefix,
+    // để giao diện hiện thẻ ảnh (Thử lại / Sửa prompt / chọn lần tạo) trước khi người dùng duyệt
+    // wf.previewAssets(run) = ảnh có sẵn dùng thay cho job (vd. ảnh outfit người dùng tạo ở ô nhập trước khi chạy): hiện cùng
+    // nhóm, đánh dấu preset (không có Thử lại)
+    previews: (() => {
+      const preset = (wf?.previewAssets?.(run) || [])
+        .map((p) => {
+          const a = db.assets.find((x) => x.id === p.assetId);
+          return a && !active[p.key] ? [p.key, { id: null, type: 'image', status: 'done', thumbUrl: mediaUrl(a.path), outputUrl: mediaUrl(a.path), label: p.label, preset: true, assetId: a.id }] : null;
+        })
+        .filter(Boolean);
+      return (wf?.previewJobs || []).flatMap((p) =>
+        [...Object.entries(active).map(([k, j]) => [k, brief(j)]), ...preset]
+          .filter(([k]) => k.startsWith(p.prefix))
+          .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+          .map(([k, v]) => ({ key: k, group: p.label, ...v })),
+      );
+    })(),
+    reviewNote: wf?.reviewNote || null, // câu nhắc khi lần chạy dừng chờ duyệt
+    resumeLabel: wf?.resumeLabel || null, // chữ trên nút Tiếp tục khi đang dừng chờ duyệt
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
     background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)

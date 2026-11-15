@@ -10,7 +10,7 @@ import * as zernio from './zernio.js';
 import * as flow from './flow.js';
 import * as shopee from './shopee.js';
 import * as productScraper from './productScraper.js';
-import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT, DEFAULT_BACK_VIEW_PROMPT } from './prompts.js';
+import { DEFAULT_MOTION_TEMPLATE, DEFAULT_BACKGROUND_TEMPLATE, DEFAULT_PRODUCT_CLEAN_PROMPT, DEFAULT_BACK_VIEW_PROMPT, DEFAULT_ITEM_BACK_VIEW_PROMPT, DEFAULT_BACK_CLEAN_PROMPT } from './prompts.js';
 import { analyzeFashionGarment, generateFashionScenePrompts, DEFAULT_FASHION_SCENE1_TEMPLATE, DEFAULT_FASHION_SCENE2_TEMPLATE, DEFAULT_FASHION_AODAI_SCENE1_TEMPLATE, DEFAULT_FASHION_AODAI_SCENE2_TEMPLATE } from './geminiFashion.js';
 import { createMerge, rangeOf } from './merge.js';
 import { listWorkflows } from './workflows/index.js';
@@ -18,6 +18,7 @@ import { setWorkflowPrompts, listPromptVersions, rollbackPrompt, currentPrompt }
 import { assignCode, codeOfAsset, normalizeCode, isValidCode, listCodes, exportText, importText } from './productCodes.js';
 import { captionModeOf, cleanCaptionText } from './caption.js';
 import { writeExercisePrompt, GYM_BASE_PROMPT, GYM_REWRITE_PROMPT } from './workflows/video-tap-gym.js';
+import { lookPreviewSpec } from './workflows/video-thoi-trang-khong-voice-nam.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
 
@@ -97,6 +98,8 @@ app.get('/api/state', (req, res) => {
       backgroundTemplate: DEFAULT_BACKGROUND_TEMPLATE,
       productCleanPrompt: DEFAULT_PRODUCT_CLEAN_PROMPT,
       backViewPrompt: DEFAULT_BACK_VIEW_PROMPT,
+      itemBackViewPrompt: DEFAULT_ITEM_BACK_VIEW_PROMPT, // tạo mặt sau cho giày / túi
+      backCleanPrompt: DEFAULT_BACK_CLEAN_PROMPT, // làm sạch ảnh mặt sau
     },
     sources: db.sources.map((s) => ({
       ...s,
@@ -161,6 +164,62 @@ app.post('/api/workflows/video-tap-gym/exercise-prompt', wrap(async (req, res) =
   });
   res.json(out);
 }));
+
+// Tab Nam – nút "Tạo ảnh outfit" trong thẻ outfit (trước khi chạy quy trình): job ảnh Flow (0 credit) KOL/KOC mặc đủ bộ.
+// body = { model: id ảnh KOL/KOC, look: { items: { [ô]: { front, back } }, style } }. Prompt tự ghép từ món đã nhập, món AI tự
+// phối và phong cách (mẫu `look`, bản người dùng đã sửa nếu có). Ảnh kết quả được hook bên dưới lưu vào thư viện kèm lookSig.
+app.post('/api/workflows/video-thoi-trang-khong-voice-nam/look-preview', wrap(async (req, res) => {
+  const saved = db.settings?.workflows?.['video-thoi-trang-khong-voice-nam']?.prompts || {};
+  // motion = chuyển động đang chọn: chuyển động không túi thì ảnh outfit không có túi (ô Túi không dùng)
+  const job = createJob(lookPreviewSpec({ model: req.body?.model, look: req.body?.look, template: saved.look, motion: req.body?.motion }));
+  res.json(viewJob(job));
+}));
+// Tab Nam – nút "Lấy từ Flow" trong thẻ outfit: lấy ảnh MỚI NHẤT đã tạo xong trong dự án Flow về làm ảnh KOL/KOC mặc outfit này
+// (khi Flow tạo xong mà web báo lỗi / tải về lỗi, hoặc người dùng tự tạo / chỉnh ảnh bằng tay trên Flow). body như look-preview.
+// Ảnh được lưu như kết quả của "Tạo ảnh outfit": cùng chữ ký outfit (lookSig) nên lần chạy dùng đúng ảnh này.
+app.post('/api/workflows/video-thoi-trang-khong-voice-nam/look-from-flow', wrap(async (req, res) => {
+  const spec = lookPreviewSpec({ model: req.body?.model, look: req.body?.look, motion: req.body?.motion });
+  const id = newId();
+  const dest = path.join(DIRS.assets, `${id}.png`);
+  const result = await flow.downloadLatestFromFlow(dest, 'image', () => {}, { imageQuality: spec.meta.imageQuality || null });
+  const n = db.assets.filter((x) => x.lookSig === spec.meta.lookPreview).length + 1;
+  const asset = {
+    id,
+    kind: 'lookbook',
+    name: `${spec.videoLabel} (lấy từ Flow)${n > 1 ? ` #${n}` : ''}`,
+    path: dest,
+    createdAt: Date.now(),
+    fromAssetId: spec.meta.lookModel || null,
+    lookSig: spec.meta.lookPreview,
+    flowTitle: result.title || null,
+  };
+  db.assets.unshift(asset);
+  save();
+  res.json({ ...asset, url: mediaUrl(dest) });
+}));
+settledHooks.push((job) => {
+  if (job.type !== 'image' || job.status !== 'done' || !job.meta?.lookPreview || !job.outputPath) return;
+  if (job.meta.assetFrom === job.outputPath) return; // đã lưu rồi
+  const model = db.assets.find((x) => x.id === job.meta.lookModel);
+  const id = newId();
+  const dest = path.join(DIRS.assets, id + path.extname(job.outputPath));
+  fs.copyFileSync(job.outputPath, dest);
+  const n = db.assets.filter((x) => x.lookSig === job.meta.lookPreview).length + 1;
+  db.assets.unshift({
+    id,
+    kind: 'lookbook',
+    name: `${job.videoLabel}${n > 1 ? ` #${n}` : ''}`,
+    path: dest,
+    createdAt: Date.now(),
+    fromJobId: job.id,
+    fromAssetId: model?.id || null,
+    lookSig: job.meta.lookPreview, // chữ ký outfit: lần chạy chỉ dùng lại ảnh này khi KOL/KOC + món + phong cách còn khớp
+    flowTitle: job.attempts.find((a) => a.outputPath === job.outputPath)?.flowTitle || null,
+  });
+  job.meta.assetId = id;
+  job.meta.assetFrom = job.outputPath;
+  save();
+});
 
 // ---------- Google Flow (Playwright) ----------
 app.get('/api/flow/status', wrap(async (req, res) => res.json(await flow.status())));
@@ -339,6 +398,16 @@ app.post('/api/assets', upload.single('file'), wrap(async (req, res) => {
   const dest = path.join(DIRS.assets, id + ext);
   fs.renameSync(req.file.path, dest);
   const a = { id, kind, name: req.file.originalname, path: dest, createdAt: Date.now() };
+  // Ảnh MẶT SAU tải từ máy: backOf = id ảnh mặt trước (nếu có) -> gắn với ảnh đó và mang theo mã / metadata sản phẩm;
+  // isBackView -> không hiện lẫn trong các ô chọn ảnh mặt trước
+  const front = req.body.backOf ? db.assets.find((x) => x.id === req.body.backOf) : null;
+  if (front || req.body.isBackView === '1' || req.body.isBackView === 'true') {
+    a.isBackView = true;
+    if (front) {
+      a.fromAssetId = front.id;
+      if (front.product) a.product = structuredClone(front.product);
+    }
+  }
   db.assets.unshift(a);
   save();
   res.json({ ...a, url: mediaUrl(dest) });
@@ -417,6 +486,24 @@ app.post('/api/assets/:id/render-back', wrap(async (req, res) => {
     template: prompt,
     videoLabel: `Mặt sau – ${a.name}`,
     meta: { backOf: a.id, kind: 'product' },
+  });
+  res.json(viewJob(job));
+}));
+
+// AI làm sạch ảnh MẶT SAU :id (ảnh tải từ máy / lấy từ sàn còn dính người, tay, móc…): job ảnh Flow giữ đúng góc mặt sau.
+// body.frontId = ảnh mặt trước của món đó (nếu có). Kết quả được hook bên dưới lưu thành ảnh mặt sau mới (isBackView,
+// fromAssetId = ảnh mặt trước, hoặc chính ảnh mặt sau gốc khi món không có ảnh mặt trước).
+app.post('/api/assets/:id/clean-back', wrap(async (req, res) => {
+  const back = db.assets.find((x) => x.id === req.params.id);
+  if (!back) throw new Error('Không tìm thấy ảnh mặt sau');
+  const front = req.body?.frontId ? db.assets.find((x) => x.id === req.body.frontId) : null;
+  const prompt = (req.body?.prompt || '').trim() || DEFAULT_BACK_CLEAN_PROMPT;
+  const job = createJob({
+    type: 'image',
+    imagePaths: [back.path],
+    template: prompt,
+    videoLabel: `Mặt sau sạch – ${back.name}`,
+    meta: { backOf: front?.id || back.id, cleanedBack: back.id, kind: back.kind || 'product' },
   });
   res.json(viewJob(job));
 }));

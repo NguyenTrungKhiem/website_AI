@@ -32,6 +32,19 @@ Show the back details naturally (e.g. back zipper, back seams, back cut, back bu
 If the reference contains a person, mannequin, hands, or any other objects, text or props, remove them and show only the back view of the garment by itself.
 Present the back-view garment cleanly on a plain, neutral, evenly lit background, fully visible, centered, with natural shadows and no cropping.`;
 
+// Tạo ảnh mặt sau cho món không phải quần áo (giày, túi, phụ kiện…) từ ảnh mặt trước
+export const DEFAULT_ITEM_BACK_VIEW_PROMPT = `Create a clean, photorealistic product photo of the BACK VIEW of the exact item shown in the reference image (front view): the same item turned 180 degrees.
+Keep the exact same item: same shape, color, material, texture, pattern, stitching, hardware, logo placement and proportions.
+Show the back details naturally (e.g. heel counter and back tab of shoes, back panel, straps and zipper of a bag) faithful to the item's design.
+If the reference contains a person, mannequin, hands, or any other objects, text or props, remove them and show only the back view of the item by itself.
+Present it cleanly on a plain, neutral, evenly lit background, fully visible, centered, with natural shadows and no cropping.`;
+
+// Làm sạch ảnh MẶT SAU (ảnh tải từ máy / lấy từ sàn còn dính người, tay, móc, chữ…): giữ đúng góc nhìn mặt sau, không lật về mặt trước
+export const DEFAULT_BACK_CLEAN_PROMPT = `Recreate a sharp, high-resolution product photo that is faithful to the provided reference image, which shows the BACK VIEW of a product.
+Keep the exact same product seen from the back: same design, cut, color, pattern, fabric texture, print, logo, seams, zipper and back details. Do not redesign or alter it, and do NOT turn it around to its front.
+If the reference contains a person, mannequin, hands, hangers, or any other objects, text or props, remove them and show only the back view of the product by itself.
+Present it cleanly on a plain, neutral, evenly lit background, back view, fully visible, centered, with natural shadows and no cropping.`;
+
 export function fillTemplate(template, userPrompt) {
   const p = (userPrompt || '').trim();
   const out = template.includes('{prompt}') ? template.replace('{prompt}', p) : `${template}\n${p}`;

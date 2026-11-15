@@ -10,6 +10,8 @@
 // cho các trang phục còn lại và co giãn mốc giây của khối theo thời lượng được chia. Prompt cố ý ngắn gọn: Flow từ chối
 // prompt quá dài, nên mỗi mốc chỉ ghi đúng động tác tay / chân / đầu, không lặp lại ràng buộc.
 // Thêm chuyển động mới = thêm 1 mục vào MOTIONS (và prompts tương ứng).
+// Đây là tab NỮ của nhóm "không voice" (Chuyển động 1–4). Tab NAM là quy trình riêng: ./video-thoi-trang-khong-voice-nam.js
+// (nhiều outfit, ảnh xem trước full outfit, số phân cảnh động). Chuyển động 5 (nam) cũ chỉ còn giữ cho các LẦN CHẠY CŨ (legacy).
 //
 // Chỗ điền: {MODEL} = @Image1 · {OUTFIT} = tag ảnh mặt trước của bộ đang viết · {BACK} = tag ảnh mặt sau của bộ đó ·
 // {OUTFITS} = các ảnh mặt trước trên móc ("@Image2, @Image4 and @Image5") · {BG} = bối cảnh · {START} = khung hình cuối Part 1
@@ -157,7 +159,7 @@ const WARDROBE_WORN = `Wardrobe: use {MODEL} for face, hair and body only, never
 // Video mẫu đổi chỗ liên tục (đường, mép đường, lan can, cột, gốc cây): prompt viết chung chung "các chỗ khác nhau của
 // cùng bối cảnh {BG}" (lối đi, gờ thấp / bậc để ngồi, cột / tường để tựa) để hợp với mọi ảnh bối cảnh.
 // Mốc giây: bản 10s đúng nhịp video mẫu; bản 15s cùng trình tự, mỗi mốc dài gấp 1.5.
-const M5_BEATS = [
+export const M5_BEATS = [
   [0.0, 2.0, 'Medium-full shot on the path: he walks slowly toward the camera with a relaxed swagger, right hand tipping his cap brim then sliding into his pocket, shoulders swaying, playful smile.'],
   [2.0, 2.6, 'Jump cut, full body: mid-step he crosses one leg in front, right hand on top of his cap, grinning at the camera.'],
   [2.6, 3.2, 'Jump cut, medium: both hands pull the cap down by its sides, head bowed, then he peeks up.'],
@@ -180,9 +182,9 @@ const M5_10S = m5Text(1);
 const M5_15S = m5Text(1.5);
 
 // Bản NAM của phần mở đầu / khoá trang phục (mặc sẵn) / dòng quy tắc: "he", khoá vóc dáng nam, phụ kiện mũ + ba lô
-const SETUP_MALE = `{PART} of a silent {DUR} Korean menswear lookbook clip: static camera, no voice, no lip-sync, mouth closed. Caption: small white serif product code at the top-center. Face, hairstyle and head-to-body ratio locked 1:1 to {MODEL}. Keep his real body exactly as in {MODEL} in every frame: same height, shoulder width, chest, waist and leg proportions; never slim, bulk up or reshape him; the outfit is fitted to this body. Background: {BG}; each jump cut is a different spot of this same place (the path, a low ledge to sit on, a post or wall to lean on, under trees) with the same light. Left/right are the model's own.`;
+export const SETUP_MALE = `{PART} of a silent {DUR} Korean menswear lookbook clip: static camera, no voice, no lip-sync, mouth closed. Caption: small white serif product code at the top-center. Face, hairstyle and head-to-body ratio locked 1:1 to {MODEL}. Keep his real body exactly as in {MODEL} in every frame: same height, shoulder width, chest, waist and leg proportions; never slim, bulk up or reshape him; the outfit is fitted to this body. Background: {BG}; each jump cut is a different spot of this same place (the path, a low ledge to sit on, a post or wall to lean on, under trees) with the same light. Left/right are the model's own.`;
 const WARDROBE_MALE = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. From the very first frame to the end he wears {OUTFIT} exactly (back {BACK}); no part of the clothes in {MODEL} shows under, over or beside it, back and side views included. Accessories in every shot: a casual cap (the one in {OUTFIT} if it has one, otherwise a plain cap) and a black backpack, both identical throughout.`;
-const RULE_MALE = `Jump cuts are instant cuts; the camera never moves within a shot. The cap and backpack stay consistent and never hide the outfit. Natural hands, relaxed natural motion, no text except the caption.`;
+export const RULE_MALE = `Jump cuts are instant cuts; the camera never moves within a shot. The cap and backpack stay consistent and never hide the outfit. Natural hands, relaxed natural motion, no text except the caption.`;
 
 const COMMON_RULE = `Jump cuts are instant cuts; the camera never moves. One small bag per outfit, kept consistent, never hiding the garment. Natural hands, smooth motion, no text except the caption.`;
 
@@ -240,6 +242,8 @@ export const MOTIONS = {
     },
     single: true,
     male: true, // dùng setup_male / wardrobe_male / rule_male
+    // Chỉ giữ cho lần chạy cũ: không còn trong ô chọn / prompt mẫu của tab Nữ (tab Nam dùng quy trình riêng)
+    legacy: true,
     durations: { '15s': { prompt: 'm5_15s', cuts: [] }, '10s': { prompt: 'm5_10s', cuts: [] } },
     minOutfits: 1,
     maxOutfits: 1,
@@ -263,18 +267,18 @@ const outfitCountError = (motion, n) => {
   return `"${motion.name.split(' – ')[0]}" cần ${need} trang phục (đang chọn ${n}) — ${n > max ? 'bỏ bớt' : 'chọn thêm'} trang phục hoặc đổi sang chuyển động khác`;
 };
 
-const fmtT = (t) => (Math.round(t * 10) / 10).toFixed(1);
-const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
+export const fmtT = (t) => (Math.round(t * 10) / 10).toFixed(1);
+export const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
 
 // Chữ trên video (../caption.js): 'code' = mã sản phẩm (mặc định) · 'text' = chữ tuỳ ý · 'none' = không chữ.
 // Prompt mẫu viết cho chế độ mã -> đổi đúng câu về chữ trong phần mở đầu / dòng quy tắc, không đụng mốc động tác.
 const CAPTION_SENTENCE = /Caption:[^.]*\./;
-function setupFor(setup, mode) {
+export function setupFor(setup, mode) {
   if (mode === 'code') return setup;
   const sentence = mode === 'text' ? 'Caption: small white serif text at the top-center.' : NO_TEXT_RULE;
   return CAPTION_SENTENCE.test(setup) ? setup.replace(CAPTION_SENTENCE, sentence) : `${setup} ${sentence}`;
 }
-const ruleFor = (rule, mode) => (mode === 'none' ? rule.replace(/,?\s*no text except the caption/i, ', no on-screen text at all') : rule);
+export const ruleFor = (rule, mode) => (mode === 'none' ? rule.replace(/,?\s*no text except the caption/i, ', no on-screen text at all') : rule);
 const captionLine = (o, mode) => (mode === 'none' ? null : `Caption: "${o.caption}" for the whole clip.`);
 
 /**
@@ -312,7 +316,7 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
     fill(setup, vars),
     caption,
     wardrobe,
-    fill(prompt(d.prompt), vars),
+    fill(prompt(d.prompt) || motion.prompts[d.prompt]?.text || '', vars),
     `${rule}${cutNote} Sharp final frame at ${fmtT(total)}s.`.trim(),
   ].filter(Boolean).join('\n');
 }
@@ -406,6 +410,8 @@ export default {
   name: 'Video bán hàng thời trang không voice',
   icon: '🤫',
   noVideo: true,
+  // Nhóm tab trên giao diện: các quy trình cùng `group` gom thành 1 mục menu (tên = title), trong trang có nút tab theo `label`
+  tab: { group: 'khong-voice', label: '👩 Nữ', title: 'Video bán hàng thời trang không voice' },
   codedInput: 'outfits', // input có mã sản phẩm theo từng ảnh (giao diện hiện ô sửa mã)
   // Giao diện cho chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ (options.captionMode, options.captionTexts)
   captionModes: true,
@@ -427,11 +433,8 @@ export default {
     wardrobe: { label: 'Khoá trang phục – Part 1 / video 1 phân cảnh: sau match cut ({CUT}s) không còn đồ cũ của model ({OUTFIT}/{BACK})', text: WARDROBE },
     wardrobe2: { label: 'Khoá trang phục – Part 2 ({WEAR} = trang phục theo từng khoảng thời gian)', text: WARDROBE_PART2 },
     wardrobe0: { label: 'Khoá trang phục – chuyển động mặc sẵn từ khung hình đầu (Chuyển động 4: {OUTFIT}/{BACK})', text: WARDROBE_WORN },
-    ...Object.fromEntries(Object.values(MOTIONS).flatMap((m) => Object.entries(m.prompts))),
+    ...Object.fromEntries(Object.values(MOTIONS).filter((m) => !m.legacy).flatMap((m) => Object.entries(m.prompts))),
     rule: { label: 'Dòng quy tắc ngắn cuối mỗi phân cảnh (để trống nếu không cần)', text: COMMON_RULE },
-    setup_male: { label: 'Phần mở đầu – bản NAM (Chuyển động 5: "he", khoá vóc dáng nam, các góc khác nhau của cùng bối cảnh)', text: SETUP_MALE },
-    wardrobe_male: { label: 'Khoá trang phục – bản NAM, mặc sẵn từ khung hình đầu (giữ mũ + ba lô giống nhau mọi cảnh)', text: WARDROBE_MALE },
-    rule_male: { label: 'Dòng quy tắc cuối – bản NAM', text: RULE_MALE },
   },
   options: [
     // minOutfits / maxOutfits: số trang phục chuyển động đó nhận (giao diện giới hạn ô chọn và báo thiếu / thừa);
@@ -439,10 +442,10 @@ export default {
     {
       key: 'motion',
       label: 'Chuyển động (kịch bản tay chân)',
-      options: Object.entries(MOTIONS).map(([k, m]) => ({ value: k, label: m.name, minOutfits: m.minOutfits || 1, maxOutfits: m.maxOutfits || MAX_OUTFITS, durations: Object.keys(m.durations || {}) })),
+      options: Object.entries(MOTIONS).filter(([, m]) => !m.legacy).map(([k, m]) => ({ value: k, label: m.name, minOutfits: m.minOutfits || 1, maxOutfits: m.maxOutfits || MAX_OUTFITS, durations: Object.keys(m.durations || {}) })),
       default: DEFAULT_MOTION,
     },
-    { key: 'duration', label: 'Thời lượng (Chuyển động 2: 15s đúng nhịp video mẫu, 10s rút gọn · Chuyển động 5: 10s đúng nhịp video mẫu, 15s chậm hơn · Chuyển động 3, 4: chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d })), default: SINGLE_DURATIONS[0] },
+    { key: 'duration', label: 'Thời lượng (Chuyển động 2: 15s đúng nhịp video mẫu, 10s rút gọn · Chuyển động 3, 4: chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d })), default: SINGLE_DURATIONS[0] },
     { key: 'flowModel', label: 'Mô hình Flow', options: FASHION_MODELS.map((m) => ({ value: m, label: m })), default: FASHION_MODELS[0] },
     { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
     { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },

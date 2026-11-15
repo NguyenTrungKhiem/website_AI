@@ -6,6 +6,7 @@ import anhModel from './anh-model.js';
 import fashionV2v from './fashion-v2v.js';
 import videoThoiTrang from './video-thoi-trang.js';
 import videoThoiTrangKhongVoice from './video-thoi-trang-khong-voice.js';
+import videoThoiTrangKhongVoiceNam from './video-thoi-trang-khong-voice-nam.js';
 import videoTapGym from './video-tap-gym.js';
 import { db } from '../db.js';
 
@@ -14,6 +15,7 @@ export const WORKFLOWS = {
   [thayTrangPhuc.id]: thayTrangPhuc,
   [videoThoiTrang.id]: videoThoiTrang,
   [videoThoiTrangKhongVoice.id]: videoThoiTrangKhongVoice,
+  [videoThoiTrangKhongVoiceNam.id]: videoThoiTrangKhongVoiceNam,
   [videoTapGym.id]: videoTapGym,
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
@@ -44,6 +46,11 @@ export const listWorkflows = () =>
       captionModes: !!w.captionModes, // chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ
       // Ô nhập tên động tác + nút gọi Gemini viết prompt mới từ prompt gốc (vd. Video tập gym): { baseKey, defaultExercise, placeholder }
       promptWriter: w.promptWriter || null,
+      // Nhóm tab: các quy trình cùng tab.group gom thành 1 mục menu (tên tab.title), trong trang có nút tab theo tab.label
+      tab: w.tab || null,
+      // Khối outfit nhiều món (tab Nam): { key, slots: [{ key, label }] } -> inputs[key] = [{ items: { slot: { front, back } }, style, main }]
+      outfitSets: w.outfitSets || null,
+      runLabel: w.runLabel || null, // chữ trên nút chạy (mặc định "▶ Chạy <tên quy trình>")
       inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id); max = số ảnh tối đa
       perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)
       prompts: mergedPrompts,

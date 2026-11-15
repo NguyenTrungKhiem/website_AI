@@ -7,11 +7,22 @@ import SettingsPage from './pages/SettingsPage.jsx';
 import WorkflowPage from './pages/WorkflowPage.jsx';
 import { MediaLightbox } from './components.jsx';
 
-// Menu: các bước dùng chung (Cắt / Ghép / Đăng) + mỗi quy trình tự động 1 mục (lấy từ server)
+// Menu: các bước dùng chung (Cắt / Ghép / Đăng) + mỗi quy trình tự động 1 mục (lấy từ server).
+// Các quy trình cùng nhóm tab (w.tab.group, vd. "không voice" Nữ / Nam) gom thành 1 mục; trong trang có nút đổi tab.
+const groupKey = (g) => `wf_group_tab_${g}`;
 function buildTabs(workflows = []) {
+  const items = [];
+  const groups = new Map();
+  for (const w of workflows) {
+    const g = w.tab?.group;
+    if (g && groups.has(g)) { groups.get(g).members.push(w); continue; }
+    const item = { id: 'wf:' + w.id, label: w.tab?.title || w.name, icon: w.icon, wf: w, group: null, wfGroup: g || null, members: [w] };
+    if (g) groups.set(g, item);
+    items.push(item);
+  }
   return [
     { id: 'cut', label: 'Cắt video', icon: '✂️' },
-    ...workflows.map((w) => ({ id: 'wf:' + w.id, label: w.name, icon: w.icon, wf: w })),
+    ...items,
     { id: 'merge', label: 'Ghép video', icon: '🎞️' },
     { id: 'publish', label: 'Đăng video', icon: '🚀' },
     { id: 'soon', group: 'Sắp có' },
@@ -63,7 +74,20 @@ export default function App() {
   const tabs = buildTabs(state?.workflows);
   const running = [...(state?.jobs || []), ...(state?.merges || [])].filter((j) => j.status === 'running' || j.status === 'queued').length;
   const props = { state, refresh, go, handoff };
-  const wfTab = tabs.find((t) => t.id === tab && t.wf);
+  // Mục menu của quy trình đang mở (1 mục có thể gồm nhiều tab: Nữ / Nam) và quy trình đang mở
+  const wfTab = tabs.find((t) => t.members?.some((m) => 'wf:' + m.id === tab));
+  const curWf = wfTab?.members.find((m) => 'wf:' + m.id === tab);
+  // Nhớ tab vừa mở của nhóm để lần sau bấm mục menu quay lại đúng tab đó
+  useEffect(() => {
+    if (!curWf?.tab?.group) return;
+    try { localStorage.setItem(groupKey(curWf.tab.group), curWf.id); } catch {}
+  }, [curWf?.id]);
+  const openTab = (t) => {
+    if (!t.wfGroup) return setTab(t.id);
+    let last = null;
+    try { last = localStorage.getItem(groupKey(t.wfGroup)); } catch {}
+    setTab('wf:' + (t.members.find((m) => m.id === last) || t.members[0]).id);
+  };
 
   return (
     <div className="layout">
@@ -75,8 +99,8 @@ export default function App() {
           ) : (
             <button
               key={t.id}
-              className={'nav' + (tab === t.id ? ' active' : '') + (t.sub ? ' sub' : '')}
-              onClick={() => setTab(t.id)}
+              className={'nav' + (tab === t.id || t === wfTab ? ' active' : '') + (t.sub ? ' sub' : '')}
+              onClick={() => openTab(t)}
             >
               <span>{t.icon}</span> {t.label}
               {t.soon && <span className="soon">sắp có</span>}
@@ -92,7 +116,7 @@ export default function App() {
         ) : (
           <>
             {tab === 'cut' && <CutPage {...props} />}
-            {wfTab && <WorkflowPage key={wfTab.id} {...props} wf={wfTab.wf} />}
+            {curWf && <WorkflowPage key={curWf.id} {...props} wf={curWf} siblings={wfTab.members} />}
             {tab === 'merge' && <MergePage {...props} />}
             {tab === 'publish' && <PublishPage {...props} />}
             {tab === 'settings' && <SettingsPage {...props} />}

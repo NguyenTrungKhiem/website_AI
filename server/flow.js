@@ -209,7 +209,7 @@ async function fillPromptWithMentions(page, prompt, items, log) {
     const m = part.match(/^@Image(\d+)$/);
     if (!m) return null;
     const target = items[parseInt(m[1], 10) - 1];
-    return target ? (target.title || path.parse(target.file || target.src).name) : null;
+    return target ? path.parse(target.file || target.src).name : null;
   };
   // Thẻ không ứng với ảnh nào (vd. @Image5 mà chỉ có 4 ảnh) -> giữ chữ thường.
   // Flow tự thêm dấu cách sau chip, xuống dòng (<br>) không có trong textContent -> so sánh bỏ hết khoảng trắng
@@ -275,8 +275,7 @@ async function fillPromptWithMentions(page, prompt, items, log) {
   throw new Error(`Prompt gõ vào Flow bị lệch sau 2 lần thử (${lastDiff.replace(/\u0001/g, '[chip]')}) — không bấm tạo để khỏi tốn credit`);
 }
 
-// flowRefs: { đường dẫn ảnh: tên trên Flow } cho ảnh do Flow tạo -> thêm thẳng từ thư viện dự án, không tải lên lại
-async function generateOnPage({ settings, prompt, video, images = [], flowRefs = {}, outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled, imageQuality = null }) {
+async function generateOnPage({ settings, prompt, video, images = [], outputFile, log = () => {}, onResult = () => {}, dryRun = false, kind = 'video', isCancelled, imageQuality = null }) {
   const page = await flowPage();
   await page.bringToFront();
   if (page.url().includes('/about') || page.url().includes('accounts.google.com')) {
@@ -289,9 +288,9 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
     if (audio) log(`Âm thanh video: ${audio}`);
   }
 
-  // Mỗi nguyên liệu: file tải lên (tên = mã băm nội dung -> cùng 1 ảnh/video thì luôn cùng tên trên Flow,
-  // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại), hoặc ảnh do Flow tạo (title)
-  // dùng thẳng từ thư viện dự án. Thứ tự trong ô prompt: ảnh model -> ảnh sản phẩm (hoặc ảnh bối cảnh) -> video gốc
+  // Mỗi nguyên liệu là 1 file tải lên (tên = mã băm nội dung -> cùng 1 ảnh/video thì luôn cùng tên trên Flow,
+  // nhờ đó lần sau nhận ra file đã có trong thư viện và không tải lên lại).
+  // Thứ tự trong ô prompt: ảnh model -> ảnh sản phẩm (hoặc ảnh bối cảnh) -> video gốc
   const toUpload = (f) => {
     let ext = path.extname(f).toLowerCase();
     if (['.jfif', '.jif', '.jpe'].includes(ext)) ext = '.jpg';
@@ -299,9 +298,13 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
     fs.copyFileSync(f, dest);
     return dest;
   };
-  const items = [...images, video].filter(Boolean).map((f) => (flowRefs[f] ? { src: f, title: flowKey(flowRefs[f]) } : { src: f, file: toUpload(f) }));
-  const keyOf = (it) => it.title || path.parse(it.file).name;
-  let names = items.map(keyOf);
+  // KHÔNG dùng lại ảnh do Flow tạo theo tên của nó trên Flow (trước đây: flowRefs / flowTitle): tên do Flow tự đặt theo nội
+  // dung nên không định danh được ảnh — nhiều ảnh trùng tên, và tên lưu trong thư viện web có thể đang thuộc về một ảnh KHÁC
+  // trên Flow (ảnh gốc đã xoá / ở dự án khác): áo khoác navy từng bị thay bằng hoodie xám cùng tên "Recreate clean product photo",
+  // 2 ảnh outfit cùng tên thì video mất hẳn 1 outfit. Mọi ảnh đều gắn theo tên file = mã băm nội dung.
+  const items = [...images, video].filter(Boolean).map((f) => ({ src: f, file: toUpload(f) }));
+  const keyOf = (it) => path.parse(it.file).name;
+  const names = items.map(keyOf);
   const tag = names.join('+');
 
   try {
@@ -311,16 +314,7 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
     // Ô prompt còn ở chế độ Frames từ lần trước thì không có nút mở thư viện -> về Ingredients trước
     await ensureIngredientsButton(page);
 
-    // Ảnh Flow tạo mà không còn trong dự án (đã xoá / dự án khác) -> tải lên như file thường
-    for (const it of items) {
-      if (it.title && !(await hasAsset(page, it.title))) {
-        log(`Không thấy "${it.title}" trên Flow, tải ảnh lên`);
-        it.file = toUpload(it.src);
-        it.title = null;
-      }
-    }
-    names = items.map(keyOf);
-    const files = items.filter((it) => it.file).map((it) => it.file);
+    const files = [...new Set(items.map((it) => it.file))];
     const missing = [];
     for (const f of files) {
       if (!(await hasAsset(page, path.parse(f).name))) missing.push(f);
@@ -331,14 +325,14 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
         : `Tải ${missing.length}/${files.length} file lên Flow (còn lại đã có sẵn)`);
       await uploadFiles(page, missing, settings);
     } else {
-      log(files.length ? 'File đã có sẵn trên Flow, không tải lại' : 'Dùng lại ảnh có sẵn trên Flow, không tải lên');
+      log('File đã có sẵn trên Flow, không tải lại');
     }
     const isFrames = settings.flowVideoMode === 'frames' || settings.isFramesMode;
     const hasMentions = /@Image\d+/.test(prompt);
 
     if (!hasMentions) {
       for (const it of items) {
-        log(`Thêm vào prompt: ${it.title ? `${it.title} (ảnh Flow tạo)` : path.basename(it.file)}`);
+        log(`Thêm vào prompt: ${path.basename(it.file)}`);
         await addIngredient(page, keyOf(it), isFrames);
       }
     }
@@ -380,8 +374,6 @@ async function generateOnPage({ settings, prompt, video, images = [], flowRefs =
   }
 }
 
-// Tên hiển thị của ảnh trên Flow bị cắt bớt với "…" -> tìm theo phần đầu
-const flowKey = (title) => String(title).replace(/…\s*$/, '').trim();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Mọi bộ chọn trong file này theo giao diện tiếng Anh của Flow -> luôn mở Flow với ?hl=en
@@ -919,6 +911,22 @@ const tiles = (page) =>
       };
     }),
   );
+// Câu báo lỗi cho người dùng từ chữ trên ô / thông báo lỗi của Flow. Chữ thô có dạng "warning\nFailed\n<lý do>…\nYou will be
+// refunded…\nrefresh\nundo…" (tên icon lẫn vào): bỏ tên icon, giữ nguyên câu LÝ DO của Flow (trước đây chỉ lấy 2 dòng đầu nên
+// chỉ còn "warning Failed", không biết vì sao lỗi), thêm gợi ý cho lỗi hay gặp.
+const ICON_WORD = /^(warning|error|error_outline|info|refresh|undo|delete_forever|image|videocam|movie|more_vert|close)$/i;
+export function flowFailure(raw) {
+  const lines = String(raw || '').split('\n').map((l) => l.trim()).filter((l) => l && !ICON_WORD.test(l));
+  const text = lines.join(' ');
+  const reason = text.replace(/^Failed\s*/i, '').split(/\s*(?:You will be refunded|It may take several minutes|Track status)/i)[0].trim().slice(0, 300);
+  let msg = 'Flow báo lỗi: ' + (reason || lines[0] || 'Failed');
+  if (/prominent people/i.test(text)) {
+    msg += ' — Bộ lọc "người nổi tiếng" của Flow: Flow cho rằng người trong ảnh tham chiếu (ảnh KOL / ảnh outfit) giống một người nổi tiếng (thường do khuôn mặt trong ảnh, không phải do các mốc động tác). Thử lại 1 lần; nếu vẫn lỗi thì đổi ảnh KOL khác.';
+  }
+  if (/will be refunded/i.test(text)) msg += ' (Flow sẽ hoàn lại credit cho lần lỗi này)';
+  return msg;
+}
+
 const FAILED_RE = /couldn.t generate|failed|something went wrong|try again|violat|policy|error|unable to generate|not allowed/i;
 const isFailed = (t) => FAILED_RE.test(t.text) || FAILED_RE.test(t.key) || (t.icons && /error|warning/i.test(t.icons));
 const isGenerating = (t) => /\d+\s*%/.test(t.text);
@@ -946,6 +954,9 @@ async function detectFlowPageError(page) {
       ];
       for (const sel of selectors) {
         for (const el of document.querySelectorAll(sel)) {
+          // Ô kết quả bị lỗi của một lần tạo CŨ vẫn nằm trong dự án (flow-error-tile có class .error-message): không phải
+          // lỗi của lần tạo này. Lỗi của đúng ô đang chờ do waitForResult xét riêng (isFailed).
+          if (el.closest('flow-tile-container, flow-error-tile')) continue;
           const text = (el.innerText || el.textContent || '').trim();
           if (
             text &&
@@ -1020,7 +1031,7 @@ async function waitForResult(page, before, log, names, kind = 'video', isCancell
     // 1. Kiểm tra ngay lập tức xem Flow có bật thông báo lỗi / toast / alert / dialog không
     const pageErr = await detectFlowPageError(page);
     if (pageErr) {
-      throw new Error('Flow báo lỗi: ' + pageErr.split('\n').filter(Boolean).slice(0, 2).join(' '));
+      throw new Error(flowFailure(pageErr));
     }
 
     await scrollTilesTop(page);
@@ -1053,8 +1064,7 @@ async function waitForResult(page, before, log, names, kind = 'video', isCancell
       continue;
     }
     if (isFailed(t)) {
-      const refunded = /will be refunded/i.test(t.text);
-      throw new Error('Flow báo lỗi: ' + (t.text || t.key).split('\n').slice(0, 2).join(' ') + (refunded ? ' (Flow sẽ hoàn lại credit cho lần lỗi này)' : ''));
+      throw new Error(flowFailure(t.text || t.key));
     }
     const pct = t.text.match(/\d+\s*%/)?.[0];
     if (pct) {
@@ -1147,7 +1157,10 @@ async function downloadTile(page, tile, outputFile, kind = 'video', onResult = (
       await dismissOverlays(page);
     }
   }
-  if (src) {
+  // Ô ảnh CŨ trong lưới (dự án vừa tải lại) chỉ còn ảnh thu nhỏ: src kết thúc bằng "=s512-rw" (286×512 webp) -> không lấy
+  // thẳng src mà tải bản gốc qua menu Download ("1K Original size"). Ô vừa tạo xong thì src là ảnh gốc 1K, lấy thẳng được.
+  const isThumb = kind === 'image' && /=s\d+(-[a-z0-9]+)*(\?|$)/i.test(src || '');
+  if (src && !isThumb) {
     try {
       await fetchToFile(src, outputFile);
       return;
@@ -1155,8 +1168,34 @@ async function downloadTile(page, tile, outputFile, kind = 'video', onResult = (
       console.error('Tải thẳng từ Flow lỗi, chuyển sang menu Download:', e.message);
     }
   }
-  // Cách 2: menu "More options" -> Download
-  await downloadViaMenu(page, tile, outputFile, /720p|Original|1080p/i, 120_000);
+  // Cách 2: menu "More options" -> Download (ảnh: "1K Original size", video: bản gốc)
+  try {
+    await downloadViaMenu(page, tile, outputFile, /720p|Original|1080p/i, 120_000);
+  } catch (e) {
+    if (!isThumb) throw e;
+    // Menu cũng lỗi -> đành lấy ảnh thu nhỏ còn hơn không có gì
+    console.error('Tải ảnh gốc qua menu Download lỗi, dùng ảnh thu nhỏ:', e.message);
+    log('Không tải được ảnh gốc từ Flow, dùng ảnh thu nhỏ');
+    await dismissOverlays(page);
+    await fetchToFile(src, outputFile);
+  }
+}
+
+// Flow báo lỗi ngay khi không phóng to / không tải được ("Upscaling failed!") nhưng không bao giờ trả file -> không chờ hết giờ.
+// Trả về câu báo lỗi (và bấm Dismiss để thông báo không bị đọc nhầm thành lỗi của lần tạo sau), hoặc null.
+async function downloadFailureNotice(page) {
+  const text = await page.evaluate(() => {
+    const els = document.querySelectorAll('.mat-mdc-snack-bar-label, mat-snack-bar-container, [role="alert"], [role="status"], .cdk-overlay-pane');
+    for (const el of els) {
+      if (el.closest('flow-tile-container')) continue;
+      const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      if (/upscal\w* failed|download failed|couldn.t (upscale|download)|failed to (upscale|download)/i.test(t)) return t;
+    }
+    return null;
+  }).catch(() => null);
+  if (!text) return null;
+  await page.getByRole('button', { name: 'Dismiss' }).first().click({ timeout: 2000 }).catch(() => {});
+  return text.replace(/^(error|warning)\s+/i, '').replace(/\s*Dismiss$/i, '');
 }
 
 // Menu "More options" -> Download (-> mục chất lượng nếu có) của 1 ô kết quả, lưu file tải về vào outputFile
@@ -1167,6 +1206,8 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
   // (lúc tải thường là vài phút sau khi bấm tạo, người dùng có thể đã chuyển tab)
   await page.bringToFront().catch(() => {});
   await dismissOverlays(page);
+  // Thông báo lỗi tải của lần trước còn treo trên màn hình -> đóng đi để không tính nhầm cho lần tải này
+  if (await downloadFailureNotice(page)) await sleep(600);
   await tile.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   await tile.hover({ timeout: 5000 }).catch(() => {});
   await tile.getByRole('button', { name: 'More options' }).click({ timeout: 10_000 });
@@ -1190,8 +1231,23 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
     await dismissOverlays(page);
     throw new Error(`Flow không có mục tải "${qualityRe.source.slice(1)}" cho kết quả này`);
   }
-  const dl = await waitDownload;
-  await dl.saveAs(outputFile);
+  // Chờ file tải về; song song để ý thông báo lỗi của Flow để dừng ngay thay vì chờ hết `timeout`
+  let settled = false;
+  const failure = (async () => {
+    while (!settled) {
+      await sleep(1500);
+      const notice = settled ? null : await downloadFailureNotice(page);
+      if (notice) throw new Error(`Flow báo: ${notice}`);
+    }
+    return null;
+  })();
+  failure.catch(() => {});
+  try {
+    const dl = await Promise.race([waitDownload, failure]);
+    await dl.saveAs(outputFile);
+  } finally {
+    settled = true;
+  }
 }
 
 /**
@@ -1202,6 +1258,12 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
 export async function downloadLatestFromFlow(outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, videoQuality = videoDownloadOf(), log = () => {} } = {}) {
   const page = await flowPage();
   await page.bringToFront();
+  // Cửa sổ Flow đang ở trang chủ (vd. vừa mở lại Chrome) thì chưa có lưới kết quả -> mở dự án dùng chung trước.
+  // Đang ở một dự án bất kỳ (kể cả dự án người dùng tự mở để tạo bằng tay) thì giữ nguyên.
+  if (!page.url().includes('/project/') && db.settings?.flowProjectUrl) {
+    await openProject(page, db.settings);
+    await sleep(1500);
+  }
   await scrollTilesTop(page);
   await sleep(600);
 

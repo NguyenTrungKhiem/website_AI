@@ -228,7 +228,8 @@ export function FileDrop({ accept, multiple, onFiles, children }) {
 // Chọn 1 ảnh (model / sản phẩm / bối cảnh) từ thư viện hoặc tải ảnh mới.
 // state (tuỳ chọn) = state toàn app, để popup xem ảnh to biết job/cài đặt/prompt mặc định.
 // multiple = chọn nhiều ảnh: value là mảng id (theo thứ tự chọn), bấm ảnh để thêm/bỏ, có số thứ tự trên ảnh.
-export function AssetPicker({ kind, label, assets, value, onChange, refresh, state, multiple = false, hide = null }) {
+// storageKey = khoá lưu kết quả bóc tách link (mặc định theo kind); ô nào cần kết quả riêng (vd. từng ô món của tab Nam) thì truyền khoá riêng.
+export function AssetPicker({ kind, label, assets, value, onChange, refresh, state, multiple = false, hide = null, storageKey = null }) {
   // Ảnh nháp (bóc tách / kết quả làm sạch chưa bấm Dùng) không hiện trong thư viện; hide(a) = ẩn thêm theo quy trình
   const list = assets.filter((a) => a.kind === kind && !a.staging && !(hide && hide(a)));
   const { busy, error, run } = useAction();
@@ -237,7 +238,7 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
   // Lưu kết quả bóc tách sản phẩm theo kind vào localStorage để không bị mất khi chuyển qua Cài đặt hoặc module khác
   const [found, setFound] = useState(() => {
     try {
-      const raw = localStorage.getItem(`last_scraped_product_${kind}`);
+      const raw = localStorage.getItem(`last_scraped_product_${storageKey || kind}`);
       return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
@@ -247,12 +248,12 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
   useEffect(() => {
     try {
       if (found) {
-        localStorage.setItem(`last_scraped_product_${kind}`, JSON.stringify(found));
+        localStorage.setItem(`last_scraped_product_${storageKey || kind}`, JSON.stringify(found));
       } else {
-        localStorage.removeItem(`last_scraped_product_${kind}`);
+        localStorage.removeItem(`last_scraped_product_${storageKey || kind}`);
       }
     } catch {}
-  }, [found, kind]);
+  }, [found, kind, storageKey]);
 
   const [slider, setSlider] = useState(null); // { images, startIdx } popup trượt + làm sạch
   const viewingAsset = list.find((a) => a.id === viewing);
@@ -350,6 +351,99 @@ export function AssetPicker({ kind, label, assets, value, onChange, refresh, sta
           product={found && slider.images === found.images ? productMeta(found) : null}
         />
       )}
+    </div>
+  );
+}
+
+// Ảnh MẶT SAU của 1 món / 1 bộ trang phục (dùng chung: Video thời trang không voice Nữ / Nam, Video tập gym).
+// frontId = ảnh mặt trước (tab Nam có thể chưa có) · backId = ảnh mặt sau người dùng đã chọn (null = chưa chọn) ·
+// auto = chưa chọn thì tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước (giống server) · onChange(id | null).
+// Nguồn ảnh mặt sau: chọn trong thư viện · 📁 tải từ máy · ✨ AI tạo từ mặt trước (Flow, 0 credit) · 🧹 AI làm sạch ảnh mặt sau
+// đang chọn (bỏ người / tay / móc, giữ đúng góc mặt sau; Flow, 0 credit) · 📥 lấy ảnh mới nhất đã xong trên Flow.
+export function BackViewControl({ frontId, backId, auto = false, onChange, state, refresh, backPrompt, label = 'Mặt sau:', allowClear = false }) {
+  const { busy, error, run } = useAction();
+  const [pending, setPending] = useState(null); // { jobId, what: 'create' | 'clean' } job Flow đang chạy
+  const [failMsg, setFailMsg] = useState('');
+  const assetOf = (id) => state.assets.find((a) => a.id === id);
+  const isBack = (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '');
+  const generated = frontId ? state.assets.filter((a) => a.fromAssetId === frontId && isBack(a) && !a.staging) : [];
+  const effectiveId = (backId && assetOf(backId) ? backId : null) || (auto ? generated[0]?.id : null) || null;
+  const back = effectiveId && assetOf(effectiveId);
+  const others = state.assets.filter((a) => a.kind === 'product' && !a.staging && a.id !== frontId && !generated.includes(a));
+  const choices = [...generated, ...others.filter(isBack), ...others.filter((a) => !isBack(a))];
+  const job = pending && state.jobs?.find((j) => j.id === pending.jobId);
+
+  // Job Flow xong -> gắn luôn ảnh mới làm mặt sau
+  useEffect(() => {
+    if (!pending) return;
+    const j = state.jobs?.find((x) => x.id === pending.jobId);
+    if (!j || j.status === 'running' || j.status === 'queued') return;
+    const a = state.assets.find((x) => x.fromJobId === pending.jobId) || (j.meta?.assetId && assetOf(j.meta.assetId));
+    if (a) onChange(a.id);
+    else if (j.status === 'failed') setFailMsg(j.error || 'Flow lỗi');
+    setPending(null);
+  }, [state.jobs, state.assets]);
+  // Đang tạo thì làm mới nhanh để thấy tiến trình
+  useEffect(() => {
+    if (!pending) return;
+    const t = setInterval(refresh, 1500);
+    return () => clearInterval(t);
+  }, [pending?.jobId, refresh]);
+
+  const start = (what, call) =>
+    run(async () => {
+      setFailMsg('');
+      const res = await call();
+      setPending({ jobId: res.id, what });
+      await refresh();
+    });
+  const upload = (files) =>
+    run(async () => {
+      if (!files[0]) return;
+      setFailMsg('');
+      const a = await api.uploadAsset('product', files[0], frontId ? { backOf: frontId } : { isBackView: '1' });
+      await refresh();
+      onChange(a.id);
+    });
+  // Ảnh mới nhất đã xong trên Flow -> lưu làm mặt sau (khi Flow tạo xong mà tải về lỗi, hoặc tự tạo bằng tay)
+  const fromFlow = () =>
+    run(async () => {
+      setFailMsg('');
+      const a = await api.backFromFlow(frontId);
+      onChange(a.id);
+      await refresh();
+    });
+  const progress = job?.attempts?.at(-1)?.progress || 'Đang chạy…';
+
+  return (
+    <div className="row back-view" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      {label && <span className="small muted">{label}</span>}
+      {back ? <img src={back.url} alt="" className="mini-thumb" title={back.name} /> : <span className="mini-thumb placeholder-thumb" title="Chưa có ảnh mặt sau">?</span>}
+      <select
+        value={effectiveId || ''}
+        onChange={(e) => onChange(e.target.value || null)}
+        title="Chọn ảnh mặt sau trong thư viện (ảnh tạo từ mặt trước được xếp đầu, rồi tới các ảnh mặt sau khác)"
+        style={{ maxWidth: 170 }}
+      >
+        <option value="">— chọn ảnh mặt sau —</option>
+        {choices.map((p) => (
+          <option key={p.id} value={p.id}>{(isBack(p) ? '↩ ' : '') + p.name.slice(0, 40)}</option>
+        ))}
+      </select>
+      <FileDrop accept="image/*" onFiles={upload}>
+        <button type="button" className="small-btn" disabled={busy} title="Tải ảnh mặt sau từ máy lên (kéo thả ảnh vào nút cũng được)">📁 Tải từ máy</button>
+      </FileDrop>
+      <button type="button" className="small-btn" disabled={busy || !!pending || !frontId} onClick={() => start('create', () => api.renderBackAsset(frontId, backPrompt))} title={frontId ? 'AI tạo ảnh mặt sau từ ảnh mặt trước bằng Flow (Nano Banana, 0 credit)' : 'Cần có ảnh mặt trước để AI tạo mặt sau'}>
+        {pending?.what === 'create' ? `⏳ ${progress}` : '✨ AI tạo mặt sau'}
+      </button>
+      <button type="button" className="small-btn" disabled={busy || !!pending || !effectiveId} onClick={() => start('clean', () => api.cleanBackAsset(effectiveId, frontId))} title={effectiveId ? 'AI làm sạch ảnh mặt sau đang chọn: bỏ người / tay / móc / chữ, giữ đúng góc mặt sau (Flow, 0 credit)' : 'Chọn hoặc tải ảnh mặt sau trước'}>
+        {pending?.what === 'clean' ? `⏳ ${progress}` : '🧹 AI làm sạch'}
+      </button>
+      <button type="button" className="small-btn" disabled={busy || !frontId} onClick={fromFlow} title="Lấy ảnh mới nhất đã render xong trong cửa sổ Chrome Google Flow về làm mặt sau (khi Flow tạo xong mà tải về lỗi, hoặc bạn tự tạo bằng tay)">
+        📥 Lấy từ Flow
+      </button>
+      {allowClear && backId && <a onClick={() => onChange(null)} title="Bỏ ảnh mặt sau này">Bỏ</a>}
+      {(error || failMsg) && <span className="err small">{error || failMsg}</span>}
     </div>
   );
 }

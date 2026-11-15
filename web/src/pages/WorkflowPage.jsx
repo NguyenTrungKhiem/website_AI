@@ -2,10 +2,12 @@
 // nên thêm quy trình mới ở server/workflows là tự có trang riêng.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { AssetPicker, CaptionModePicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, MAX_CAPTION_TEXT, PromptVersionPicker, cleanCaptionText, fmt, useAction } from '../components.jsx';
+import { AssetPicker, BackViewControl, CaptionModePicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, MAX_CAPTION_TEXT, PromptVersionPicker, cleanCaptionText, fmt, useAction } from '../components.jsx';
 import FashionSalesView from './FashionSalesView.jsx';
+import MaleOutfits, { emptyLook } from './MaleOutfits.jsx';
 
-export default function WorkflowPage({ state, refresh, go, wf }) {
+// siblings = các quy trình cùng nhóm tab (wf.tab.group, vd. không voice Nữ / Nam): hiện thanh tab trên đầu trang
+export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) {
   if (wf?.id === 'video-thoi-trang') {
     return <FashionSalesView wf={wf} state={state} refresh={refresh} go={go} />;
   }
@@ -80,8 +82,15 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
   }
   // Tuỳ chọn đang chọn có ràng buộc riêng (vd. Chuyển động 3: ĐÚNG 2 trang phục, chỉ có bản 15s): giới hạn ô chọn trang phục,
   // báo thiếu / thừa, và chỉ cho chọn các thời lượng chuyển động đó có
+  // Giá trị đang chọn của tuỳ chọn dạng danh sách; giá trị không còn trong danh sách (nháp cũ, vd. Chuyển động 5 đã chuyển
+  // sang tab Nam) thì về mặc định
+  const choiceOf = (o) => {
+    const v = options[o.key] ?? o.default;
+    return o.options.some((x) => (typeof x === 'string' ? x : x.value) === v) ? v : o.default;
+  };
+  const validOptions = { ...options, ...Object.fromEntries(wf.options.filter((o) => Array.isArray(o.options)).map((o) => [o.key, choiceOf(o)])) };
   const rule = wf.options
-    .map((o) => (Array.isArray(o.options) ? o.options.find((x) => typeof x === 'object' && x.value === (options[o.key] ?? o.default)) : null))
+    .map((o) => (Array.isArray(o.options) ? o.options.find((x) => typeof x === 'object' && x.value === validOptions[o.key]) : null))
     .find((x) => x && x.minOutfits) || null;
   const ruleName = rule ? rule.label.split(' – ')[0] : '';
   const ruleNeed = rule ? (rule.minOutfits === rule.maxOutfits ? `đúng ${rule.minOutfits}` : `${rule.minOutfits}–${rule.maxOutfits}`) : '';
@@ -90,13 +99,19 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
     missing.push(`${ruleName} cần ${ruleNeed} trang phục (đang chọn ${pickedCount})`);
   }
   const allowedDurations = rule?.durations || null; // [] = chuyển động 2 phân cảnh, không dùng ô Thời lượng
-  const effectiveOptions = allowedDurations?.length && !allowedDurations.includes(options.duration)
-    ? { ...options, duration: allowedDurations[0] }
-    : options;
+  const effectiveOptions = allowedDurations?.length && !allowedDurations.includes(validOptions.duration)
+    ? { ...validOptions, duration: allowedDurations[0] }
+    : validOptions;
   // Chữ trên video = chữ tuỳ ý: bộ 1 phải có chữ (các bộ sau để trống thì dùng chữ của bộ trước)
   const captionMode = wf.captionModes ? options.captionMode || 'code' : null;
   const firstOutfit = wf.codedInput && inputs[wf.codedInput]?.[0];
   if (captionMode === 'text' && firstOutfit && !cleanCaptionText(options.captionTexts?.[firstOutfit]).trim()) missing.push('Chữ trên video (bộ 1)');
+  // Quy trình có khối outfit nhiều món (tab Nam): inputs[key] = [{ items, style, main, text }], luôn có ít nhất 1 outfit
+  const looksKey = wf.outfitSets?.key || null;
+  const looks = looksKey ? (Array.isArray(inputs[looksKey]) && inputs[looksKey].length ? inputs[looksKey] : [emptyLook()]) : null;
+  const maxLooks = rule?.maxOutfits || 3;
+  if (looks && looks.length > maxLooks) missing.push(`${ruleName} nhận tối đa ${maxLooks} outfit (đang có ${looks.length})`);
+  if (looks && captionMode === 'text' && !cleanCaptionText(looks[0]?.text).trim()) missing.push('Chữ trên video (outfit 1)');
   const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
   const missingClips = perClip.length
     ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
@@ -104,13 +119,22 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 
   const start = () =>
     run(async () => {
-      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs, clipInputs, options: effectiveOptions });
+      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs: looksKey ? { ...inputs, [looksKey]: looks } : inputs, clipInputs, options: effectiveOptions });
       await refresh();
     });
 
   return (
     <section>
-      <h1>{wf.icon} {wf.name}</h1>
+      {siblings.length > 1 && (
+        <div className="tabs wf-tabs" role="tablist" aria-label="Chọn tab của quy trình">
+          {siblings.map((sib) => (
+            <button key={sib.id} type="button" role="tab" aria-selected={sib.id === wf.id} className={sib.id === wf.id ? 'on' : ''} onClick={() => go('wf:' + sib.id)}>
+              {sib.tab?.label || sib.name}
+            </button>
+          ))}
+        </div>
+      )}
+      <h1>{wf.icon} {wf.tab ? `${wf.tab.title} – ${wf.tab.label}` : wf.name}</h1>
       <p className="muted">{wf.description}</p>
       <p className="small muted">
         Đang tạo bằng: <b>{engine === 'mock' ? 'engine giả (thử nghiệm)' : 'Google Flow tự động'}</b>
@@ -189,6 +213,22 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
             refresh={refresh}
           />
         )}
+        {looks && (
+          <MaleOutfits
+            slots={wf.outfitSets.slots}
+            value={looks}
+            onChange={(v) => setInputs((st) => ({ ...st, [looksKey]: typeof v === 'function' ? v(st[looksKey]) : v }))}
+            modelId={inputs.model || null}
+            wfId={wf.id}
+            bag={rule?.bag !== false}
+            motion={rule?.value || null}
+            max={maxLooks}
+            captionMode={captionMode || 'code'}
+            onCaptionMode={(v) => setOptions((st) => ({ ...st, captionMode: v }))}
+            state={state}
+            refresh={refresh}
+          />
+        )}
       </div>
 
       {wf.promptWriter && (
@@ -230,7 +270,7 @@ export default function WorkflowPage({ state, refresh, go, wf }) {
 
       <div className="row">
         <button className="primary big" disabled={busy || (!noVideo && !clipIds.length) || missing.length > 0 || missingClips > 0} onClick={start}>
-          ▶ Chạy {wf.name} {noVideo ? (outfitCount ? `– ${outfitCount} ảnh` : '') : `cho ${clipIds.length} đoạn`}
+          {wf.runLabel || <>▶ Chạy {wf.name} {noVideo ? (outfitCount ? `– ${outfitCount} ảnh` : '') : `cho ${clipIds.length} đoạn`}</>}
         </button>
         {missing.length > 0 && <span className="muted small">Cần chọn: {missing.join(', ')}</span>}
         {missingClips > 0 && <span className="muted small">Còn {missingClips} đoạn chưa chọn trang phục</span>}
@@ -310,7 +350,7 @@ function ExercisePromptBox({ wf, value, onChange }) {
 
 // Từng ảnh trang phục đã chọn (quy trình có codedInput, vd. Video thời trang không voice): mã sản phẩm in làm caption
 // (ảnh chưa có mã thì server tự cấp khi chạy; sửa ở đây lưu lên ảnh) và, khi quy trình cần (backInput), ảnh MẶT SAU của bộ đó:
-// tự lấy ảnh mặt sau đã tạo từ ảnh mặt trước, hoặc bấm "Tạo mặt sau" (Flow, 0 credit, như quy trình có voice), hoặc chọn ảnh khác.
+// tự lấy ảnh mặt sau đã tạo từ ảnh mặt trước, hoặc chọn / tải từ máy / AI tạo / AI làm sạch / lấy từ Flow (BackViewControl).
 // caption (quy trình có captionModes): { mode: 'code' | 'text' | 'none', texts: { [ảnh mặt trước]: chữ } } — chọn in mã sản
 // phẩm, chữ tuỳ ý hay không chữ; onCaption(patch) ghi vào options (captionMode, captionTexts).
 function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }) {
@@ -318,13 +358,8 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
   const setText = (id, v) => onCaption({ captionTexts: { ...(caption?.texts || {}), [id]: cleanCaptionText(v) } });
   const { busy, error, run } = useAction();
   const [drafts, setDrafts] = useState({});
-  const [pendingBack, setPendingBack] = useState({}); // { frontId: jobId } đang tạo mặt sau
   const normalize = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toUpperCase().replace(/[\s.]+/g, '_').replace(/[^A-Z0-9_-]/g, '');
   const assetOf = (id) => state.assets.find((a) => a.id === id);
-  const isBack = (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '');
-  const generatedBacks = (frontId) => state.assets.filter((a) => a.fromAssetId === frontId && isBack(a));
-  const backOf = (frontId) => backs?.[frontId] || generatedBacks(frontId)[0]?.id || null;
-  const products = state.assets.filter((a) => a.kind === 'product' && !a.staging);
   const save = (id) =>
     run(async () => {
       const code = normalize(drafts[id]);
@@ -334,35 +369,6 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
       await refresh();
     });
   const assign = (id) => run(async () => { await api.assignCode(id); await refresh(); });
-  const renderBack = (id) =>
-    run(async () => {
-      const res = await api.renderBackAsset(id, state.defaults?.backViewPrompt);
-      setPendingBack((p) => ({ ...p, [id]: res.id }));
-      await refresh();
-    });
-  // Ảnh mới nhất đã xong trên Flow -> lưu làm mặt sau của bộ này và chọn luôn (khi Flow tạo xong mà tải về lỗi / tạo tay)
-  const backFromFlow = (id) =>
-    run(async () => {
-      const a = await api.backFromFlow(id);
-      if (onBacks) onBacks({ ...(backs || {}), [id]: a.id });
-      await refresh();
-    });
-  // Job tạo mặt sau xong -> gắn luôn ảnh mới vào bộ đó
-  useEffect(() => {
-    for (const [frontId, jobId] of Object.entries(pendingBack)) {
-      const job = state.jobs?.find((j) => j.id === jobId);
-      if (!job || job.status === 'running' || job.status === 'queued') continue;
-      setPendingBack((p) => { const n = { ...p }; delete n[frontId]; return n; });
-      const a = state.assets.find((x) => x.fromJobId === jobId) || (job.meta?.assetId && assetOf(job.meta.assetId));
-      if (a && onBacks) onBacks({ ...(backs || {}), [frontId]: a.id });
-    }
-  }, [state.jobs, state.assets]);
-  // Đang tạo thì làm mới nhanh để thấy tiến trình
-  useEffect(() => {
-    if (!Object.keys(pendingBack).length) return;
-    const t = setInterval(refresh, 1500);
-    return () => clearInterval(t);
-  }, [Object.keys(pendingBack).join(','), refresh]);
 
   return (
     <div className="stack outfit-codes">
@@ -378,9 +384,6 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
           const a = assetOf(id);
           if (!a) return null;
           const value = drafts[id] ?? a.productCode ?? '';
-          const backId = backs ? backOf(id) : null;
-          const back = backId && assetOf(backId);
-          const job = pendingBack[id] && state.jobs?.find((j) => j.id === pendingBack[id]);
           return (
             <div key={id} className="row outfit-code" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <img src={a.url} alt="" className="mini-thumb" title={a.name} />
@@ -415,28 +418,15 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
                 {mode === 'none' && <span className="small muted">Không in chữ</span>}
               </div>
               {backs && (
-                <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                  <span className="small muted">Mặt sau:</span>
-                  {back ? <img src={back.url} alt="" className="mini-thumb" title={back.name} /> : <span className="mini-thumb placeholder-thumb" title="Chưa có ảnh mặt sau">?</span>}
-                  <select
-                    value={backId || ''}
-                    onChange={(e) => onBacks({ ...(backs || {}), [id]: e.target.value || undefined })}
-                    title="Chọn ảnh mặt sau trong thư viện (ảnh tạo từ mặt trước được xếp đầu)"
-                    style={{ maxWidth: 180 }}
-                  >
-                    <option value="">— chọn ảnh mặt sau —</option>
-                    {[...generatedBacks(id), ...products.filter((p) => p.id !== id && !generatedBacks(id).includes(p))].map((p) => (
-                      <option key={p.id} value={p.id}>{(isBack(p) ? '↩ ' : '') + p.name.slice(0, 40)}</option>
-                    ))}
-                  </select>
-                  <button className="small-btn" disabled={busy || !!job} onClick={() => renderBack(id)} title="Tạo ảnh mặt sau từ ảnh mặt trước bằng Flow (Nano Banana, 0 credit)">
-                    {job ? `⏳ ${job.attempts?.at(-1)?.progress || 'Đang tạo…'}` : '✨ Tạo mặt sau'}
-                  </button>
-                  <button className="small-btn" disabled={busy} onClick={() => backFromFlow(id)} title="Lấy ảnh mới nhất đã render xong trong cửa sổ Chrome Google Flow về làm mặt sau của bộ này (khi Flow tạo xong mà tải về lỗi, hoặc bạn tự tạo bằng tay)">
-                    📥 Lấy mặt sau từ Flow
-                  </button>
-                  {job?.status === 'failed' && <span className="err small">{job.error}</span>}
-                </div>
+                <BackViewControl
+                  frontId={id}
+                  backId={backs[id] || null}
+                  auto
+                  onChange={(v) => onBacks({ ...(backs || {}), [id]: v || undefined })}
+                  state={state}
+                  refresh={refresh}
+                  backPrompt={state.defaults?.backViewPrompt}
+                />
               )}
             </div>
           );
@@ -446,7 +436,7 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
         {mode === 'code' && 'Mã: ảnh chưa có mã sẽ được cấp tự động khi chạy; mã gắn với ảnh nên lần sau dùng lại là có.'}
         {mode === 'text' && `Chữ tuỳ ý: tối đa ${MAX_CAPTION_TEXT} ký tự, in ở giữa phía trên video; bộ để trống dùng chữ của bộ trên. Model video hay vẽ sai chữ có dấu — nên viết ngắn, không dấu.`}
         {mode === 'none' && 'Không chữ: prompt dặn video không có chữ nào trên màn hình.'}
-        {backs && <> Mặt sau: không chọn thì quy trình tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước đó; chưa có thì phải tạo trước khi chạy.</>}
+        {backs && <> Mặt sau: không chọn thì quy trình tự lấy ảnh mặt sau mới nhất đã tạo từ ảnh mặt trước đó; chưa có thì chọn trong thư viện, tải ảnh từ máy hoặc để AI tạo trước khi chạy. Ảnh mặt sau còn dính người / tay / móc thì bấm 🧹 AI làm sạch.</>}
       </small>
       {error && <div className="err small">{error}</div>}
     </div>
@@ -767,6 +757,51 @@ function OutputGallery({ run: r, jobs, refresh }) {
         </ImageZoom>
       )}
       <small className="muted">Bấm vào ảnh hoặc 🔍 để phóng to. Ảnh được tải về từ Flow ở bản 2K Upscaled (≈1536×2752). Mỗi ảnh có nút Thử lại / chọn lần tạo như video. Ảnh kết quả đã được lưu vào thư viện (loại lookbook); bấm "Lưu làm ảnh model" nếu muốn dùng nó cho các quy trình video.{r.hasProductInputs && <> Bấm <b>🏷️ Mã & sản phẩm</b> để đặt mã in lên từng ảnh và tải Excel (tên, giá, link Shopee có sẵn từ lúc lấy ảnh trang phục) cho DiamondShop.</>}</small>
+    </div>
+  );
+}
+
+// Ảnh xem trước của lần chạy (quy trình khai báo previewJobs, vd. tab Nam: KOL/KOC mặc từng outfit, mặt trước + mặt sau):
+// mỗi ảnh là thẻ job thu gọn (Thử lại / Sửa prompt / chọn lần tạo), bấm ảnh hoặc 🔍 để phóng to. Người dùng duyệt xong mới
+// bấm Tiếp tục trên thẻ lần chạy.
+function PreviewGallery({ run: r, jobs, refresh }) {
+  const byId = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
+  const [zoom, setZoom] = useState(null); // key ảnh đang phóng to
+  const groups = [...new Set(r.previews.map((p) => p.group))];
+  const zoomed = zoom && r.previews.find((p) => p.key === zoom);
+  return (
+    <div className="stack">
+      <b>Ảnh xem trước ({r.previews.filter((p) => p.status === 'done').length}/{r.previews.length})</b>
+      {groups.map((g) => (
+        <div key={g} className="stack" style={{ gap: 4 }}>
+          <small className="muted">{g}</small>
+          <div className="outputs">
+            {r.previews.filter((p) => p.group === g).map((p) => {
+              const job = byId[p.id];
+              return (
+                <div key={p.key} className="output stack">
+                  <small className="ellipsis" title={p.label}>{p.label}</small>
+                  {job ? (
+                    <div className="zoomable" onClick={(e) => { if (p.outputUrl && e.target.tagName === 'IMG') setZoom(p.key); }} title={p.outputUrl ? 'Bấm vào ảnh để phóng to' : undefined}>
+                      <JobCard compact job={job} refresh={refresh} />
+                    </div>
+                  ) : p.preset && p.outputUrl ? (
+                    // Ảnh outfit người dùng tạo sẵn ở ô nhập: lần chạy dùng thẳng, không có job nên không có Thử lại
+                    <img className="preset-shot" src={p.outputUrl} alt="" onClick={() => setZoom(p.key)} title="Ảnh tạo sẵn ở thẻ outfit — muốn đổi thì tạo lại ở đó rồi chạy lần mới. Bấm để phóng to" />
+                  ) : <span className="muted">–</span>}
+                  {p.outputUrl && (
+                    <div className="row gap-xs" style={{ flexWrap: 'wrap' }}>
+                      <a onClick={() => setZoom(p.key)} title="Xem ảnh to">🔍 Phóng to</a>
+                      <a href={p.outputUrl} download>Tải về</a>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {zoomed?.outputUrl && <ImageZoom url={zoomed.outputUrl} name={zoomed.label} downloadUrl={zoomed.outputUrl} onClose={() => setZoom(null)} />}
     </div>
   );
 }
@@ -1128,13 +1163,13 @@ function RunCard({ run: r, state, refresh, go }) {
       <div className="row between">
         <div>
           <b>{r.sourceId ? (source?.name || 'Video gốc đã xoá') : r.workflowName}</b>{' '}
-          <small className="muted">· {r.sourceId ? `${r.clipIds.length} đoạn` : `${r.outputs?.length || 0} ảnh`} · {new Date(r.createdAt).toLocaleString('vi-VN')}</small>
+          <small className="muted">· {r.sourceId ? `${r.clipIds.length} đoạn` : r.previews?.length ? `${r.previews.length} ảnh xem trước` : `${r.outputs?.length || 0} ảnh`} · {new Date(r.createdAt).toLocaleString('vi-VN')}</small>
         </div>
         <span className={`badge ${color}`}>{label}</span>
       </div>
 
       <div className="stages">
-        {r.stageList.map((s, i) => (
+        {r.stageList.filter((s) => !s.hidden).map((s, i) => (
           <React.Fragment key={s.id}>
             {i > 0 && <span className="arrow">→</span>}
             <span className={'stage ' + s.status} title={s.label}>
@@ -1177,8 +1212,15 @@ function RunCard({ run: r, state, refresh, go }) {
         </div>
       )}
 
+      {r.stageList.filter((s) => s.note && !s.hidden).map((s) => (
+        <small key={s.id} className="muted">ℹ {s.label}: {s.note}</small>
+      ))}
+      {r.previews?.length > 0 && <PreviewGallery run={r} jobs={jobs} refresh={refresh} />}
+
       {r.error && <div className="err">{r.error}</div>}
-      {r.status === 'paused' && (pausedBeforeMotion ? (
+      {r.status === 'paused' && (r.reviewNote ? (
+        <div className="alert warn small">⏸ {r.reviewNote}</div>
+      ) : pausedBeforeMotion ? (
         <div className="alert warn small">
           ⏸ Ảnh vóc dáng 16:9 đã tạo xong (0 credit). Xem ảnh ở trên; chưa ưng thì <b>Thử lại</b> / <b>Sửa prompt</b> hoặc chọn lần tạo khác.
           Ưng rồi bấm <b>▶ Tiếp tục</b> để tạo video cho từng đoạn (bước này bắt đầu tốn credit, ≈20 credit/đoạn).
@@ -1198,7 +1240,7 @@ function RunCard({ run: r, state, refresh, go }) {
       <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         {r.status === 'paused' && (
           <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>
-            {pausedBeforeMotion ? '▶ Tiếp tục: tạo video' : '▶ Tiếp tục: thay bối cảnh'}
+            {r.resumeLabel || (pausedBeforeMotion ? '▶ Tiếp tục: tạo video' : '▶ Tiếp tục: thay bối cảnh')}
           </button>
         )}
         {r.status === 'failed' && <button className="primary" disabled={busy} onClick={() => act(() => api.resumeRun(r.id))}>▶ Tiếp tục</button>}
