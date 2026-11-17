@@ -25,7 +25,8 @@ const isBack = (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '');
 
 // Chữ ký outfit = KOL/KOC | phong cách | ảnh dùng cho từng ô (mặt trước, không có thì mặt sau). PHẢI tính giống server
 // (server/workflows/video-thoi-trang-khong-voice-nam.js: lookSig) — ảnh outfit chỉ được dùng khi chữ ký còn khớp.
-// bag = chuyển động đang chọn có túi; không túi thì ô Túi không tính và chữ ký có đuôi "|nobag".
+// bag = outfit này có túi (true / false — chuyển động túi tuỳ outfit đã quy về từng outfit, xem bagOfLook); không túi thì ô Túi
+// không tính và chữ ký có đuôi "|nobag".
 const lookSigOf = (modelId, look, slots, has, bag = true) =>
   [
     has(modelId) ? modelId : '',
@@ -36,6 +37,13 @@ const lookSigOf = (modelId, look, slots, has, bag = true) =>
       return (has(it.front) && it.front) || (has(it.back) && it.back) || '';
     }),
   ].join('|') + (bag ? '' : '|nobag');
+
+// Túi của 1 outfit theo kiểu túi của chuyển động (giống server: bagForLook): 'optional' = outfit có ảnh túi mới có túi
+const bagOfLook = (motionBag, look, has) => {
+  if (motionBag !== 'optional') return motionBag !== false;
+  const it = look.items?.bag || {};
+  return has(it.front) || has(it.back);
+};
 
 // Khối "Ảnh outfit" của 1 outfit: tạo ảnh KOL/KOC mặc đủ bộ (món đã nhập giữ đúng, món thiếu AI tự phối theo phong cách).
 // patch(fn) = cập nhật danh sách outfit bằng hàm (an toàn khi nhiều job xong cùng lúc).
@@ -136,7 +144,7 @@ function LookPreview({ index, look, slots, given, auto, modelId, wfId, bag, moti
         <small className="muted">
           Ảnh gồm: KOL/KOC{given.length ? ` + giữ đúng ${given.map((s) => s.label.toLowerCase()).join(', ')} bạn đã nhập` : ''}
           {auto.length ? ` · AI tự phối ${auto.map((s) => s.label.toLowerCase()).join(', ')}` : ''}
-          {bag ? '' : ' · KHÔNG có túi (theo chuyển động)'}
+          {bag ? '' : ' · KHÔNG có túi'}
           {` · phong cách: ${(look.style || '').trim() || 'AI tự chọn'}`}
         </small>
         {versions.length > 0 && (
@@ -156,7 +164,13 @@ function LookPreview({ index, look, slots, given, auto, modelId, wfId, bag, moti
 
 // bag = chuyển động đang chọn có túi (server khai báo theo từng chuyển động): không túi thì ô Túi tắt (ảnh đã chọn vẫn giữ),
 // ảnh outfit và video không có túi · motion = khoá chuyển động đang chọn (gửi kèm khi tạo ảnh outfit).
-export default function MaleOutfits({ slots, value, onChange, max = 3, captionMode = 'code', onCaptionMode, modelId = null, wfId, bag = true, motion = null, state, refresh }) {
+// backOutfits = thứ tự (0, 1, 2…) các outfit có mốc QUAY LƯNG trong chuyển động đang chọn với số outfit hiện tại; outfit không
+// nằm trong danh sách thì không cần ảnh mặt sau (không tạo ảnh xem trước mặt sau, không gửi lên Flow). null = không rõ.
+// bag = kiểu túi của chuyển động: true (luôn có túi) · false (không túi) · 'optional' (túi tuỳ outfit: outfit nào có ảnh túi mới
+// đeo túi đó, AI không tự thêm) · bagNote = ghi chú của chuyển động (vd. outfit nào trong video mẫu có túi).
+export default function MaleOutfits({ slots, value, onChange, max = 3, captionMode = 'code', onCaptionMode, modelId = null, wfId, bag = true, bagNote = null, motion = null, backOutfits = null, state, refresh }) {
+  const has = (id) => !!id && state.assets.some((a) => a.id === id);
+  const bagOptional = bag === 'optional';
   const looks = Array.isArray(value) && value.length ? value : [emptyLook()];
   const [picking, setPicking] = useState(null); // { i, slot } đang chọn ảnh mặt trước cho ô nào
   const assetOf = (id) => (id ? state.assets.find((a) => a.id === id) : null);
@@ -182,20 +196,30 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
   return (
     <div className="stack male-outfits">
       <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <b className="small">👕 Outfit trong video ({looks.length}/{max}) · mỗi món có mặt trước + mặt sau, không ô nào bắt buộc</b>
+        <b className="small">
+          👕 Outfit trong video ({looks.length}/{max}) ·{' '}
+          {Array.isArray(backOutfits) && backOutfits.length === 0
+            ? 'chuyển động không quay lưng nên chỉ cần ảnh mặt trước của từng món, không ô nào bắt buộc'
+            : 'mỗi món có mặt trước + mặt sau, không ô nào bắt buộc'}
+        </b>
         <CaptionModePicker value={captionMode} onChange={onCaptionMode} />
       </div>
-      <small className={bag ? 'muted' : 'warn-text'} style={{ fontSize: 12 }}>
-        {bag
-          ? '🎒 Chuyển động đang chọn CÓ TÚI: outfit luôn có túi (ảnh túi bạn nhập, không nhập thì AI tự phối) rồi mới làm video.'
-          : '🚫 Chuyển động đang chọn KHÔNG TÚI: ô Túi không dùng, ảnh outfit và video không có túi.'}
+      <small className={bag === false ? 'warn-text' : 'muted'} style={{ fontSize: 12 }}>
+        {bagOptional
+          ? '👜 Chuyển động đang chọn có TÚI TUỲ OUTFIT: outfit nào bạn nhập ảnh ở ô Túi thì nhân vật đeo đúng túi đó; outfit không nhập thì KHÔNG có túi (AI không tự thêm).'
+          : bag
+            ? '🎒 Chuyển động đang chọn CÓ TÚI: outfit luôn có túi (ảnh túi bạn nhập, không nhập thì AI tự phối) rồi mới làm video.'
+            : '🚫 Chuyển động đang chọn KHÔNG TÚI: ô Túi không dùng, ảnh outfit và video không có túi.'}
+        {bagNote ? <> {bagNote}</> : null}
       </small>
 
       {looks.map((l, i) => {
         // Món đã nhập (còn ảnh trong thư viện) và món AI sẽ tự phối
-        const used = slots.filter((s) => bag || s.key !== 'bag'); // chuyển động không túi: ô Túi không tính
+        const used = slots.filter((s) => bag !== false || s.key !== 'bag'); // chuyển động không túi: ô Túi không tính
         const given = used.filter((s) => assetOf(l.items?.[s.key]?.front) || assetOf(l.items?.[s.key]?.back));
-        const auto = used.filter((s) => s.key !== 'jacket' && !given.includes(s));
+        // túi tuỳ outfit: AI không tự phối túi (không nhập = không túi)
+        const auto = used.filter((s) => s.key !== 'jacket' && !(bagOptional && s.key === 'bag') && !given.includes(s));
+        const lookBag = bagOfLook(bag, l, has);
         const mainSlot = given.find((s) => s.key === l.main) || given[0] || null;
         const mainAsset = mainSlot && (assetOf(l.items[mainSlot.key].front) || assetOf(l.items[mainSlot.key].back));
         return (
@@ -207,6 +231,13 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                   {given.length ? `· đã nhập: ${given.map((s) => s.label).join(', ')}` : '· chưa nhập món nào'}
                   {auto.length ? ` · AI tự phối: ${auto.map((s) => s.label.toLowerCase()).join(', ')}` : ''}
                 </small>
+                {Array.isArray(backOutfits) && (
+                  <small className={backOutfits.includes(i) ? 'warn-text' : 'muted'} style={{ display: 'block', fontSize: 12 }}>
+                    {backOutfits.includes(i)
+                      ? '↩ Outfit này có cú quay lưng trong chuyển động đang chọn: nên nhập ảnh mặt sau của món chính.'
+                      : '↩ Outfit này không quay lưng trong chuyển động đang chọn: không cần ảnh mặt sau (ô Mặt sau đã ẩn).'}
+                  </small>
+                )}
               </div>
               <span className="row gap-xs small">
                 {i > 0 && <a onClick={() => move(i, -1)} title="Đưa outfit này lên trước (mặc sớm hơn trong video)">↑ Lên</a>}
@@ -219,7 +250,7 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
               {slots.map((slot) => {
                 const it = l.items?.[slot.key] || {};
                 const front = assetOf(it.front);
-                if (!bag && slot.key === 'bag') {
+                if (bag === false && slot.key === 'bag') {
                   return (
                     <div key={slot.key} className="garment-slot stack off" title="Chọn chuyển động có túi ở ô Chuyển động bên dưới để dùng ô này">
                       <b className="small">{slot.label} — không dùng</b>
@@ -247,15 +278,21 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                         {front?.productCode && <span className="code-chip" style={{ marginTop: 0 }} title="Mã sản phẩm của ảnh này">{front.productCode}</span>}
                       </div>
                     </div>
-                    <BackViewControl
-                      frontId={front ? it.front : null}
-                      backId={it.back || null}
-                      onChange={(id) => setItem(i, slot.key, { back: id })}
-                      state={state}
-                      refresh={refresh}
-                      backPrompt={slot.key === 'shoes' || slot.key === 'bag' ? state.defaults?.itemBackViewPrompt : state.defaults?.backViewPrompt}
-                      allowClear
-                    />
+                    {/* Outfit không có cú quay lưng trong chuyển động đang chọn: không cần (và không dùng) ảnh mặt sau -> ẩn ô Mặt sau.
+                        Ảnh mặt sau đã chọn trước đó vẫn được giữ trong dữ liệu (đổi sang chuyển động có quay lưng sẽ dùng lại). */}
+                    {Array.isArray(backOutfits) && !backOutfits.includes(i) ? (
+                      <small className="muted">Mặt sau: không cần cho chuyển động này{it.back ? ' (ảnh đã chọn vẫn giữ)' : ''}.</small>
+                    ) : (
+                      <BackViewControl
+                        frontId={front ? it.front : null}
+                        backId={it.back || null}
+                        onChange={(id) => setItem(i, slot.key, { back: id })}
+                        state={state}
+                        refresh={refresh}
+                        backPrompt={slot.key === 'shoes' || slot.key === 'bag' ? state.defaults?.itemBackViewPrompt : state.defaults?.backViewPrompt}
+                        allowClear
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -285,7 +322,7 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                 auto={auto}
                 modelId={modelId}
                 wfId={wfId}
-                bag={bag}
+                bag={lookBag}
                 motion={motion}
                 patch={(fn) => onChange((cur) => fn(Array.isArray(cur) && cur.length ? cur : [emptyLook()]))}
                 state={state}
@@ -337,8 +374,8 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
         </button>
         {over && <span className="err small">Chuyển động đang chọn nhận tối đa {max} outfit — xoá bớt {looks.length - max} outfit.</span>}
         <small className="muted">
-          Video đổi outfit theo thứ tự trên, chia đều thời gian, đổi đồ đúng ở cú nhảy cắt. Bấm <b>✨ Tạo ảnh outfit</b> trong từng outfit để xem ngay KOL/KOC mặc
-          đủ bộ (0 credit); khi chạy, quy trình dùng đúng ảnh đó (outfit chưa tạo thì tự tạo), tạo thêm ảnh mặt sau rồi dừng chờ bạn duyệt trước khi làm video.
+          Video đổi outfit theo thứ tự trên, đổi đồ đúng ở các cú nhảy cắt của chuyển động. Bấm <b>✨ Tạo ảnh outfit</b> trong từng outfit để xem ngay KOL/KOC mặc
+          đủ bộ (0 credit); khi chạy, quy trình dùng đúng ảnh đó (outfit chưa tạo thì tự tạo), tạo thêm ảnh mặt sau (chỉ outfit có cú quay lưng) rồi dừng chờ bạn duyệt trước khi làm video.
           Ảnh mặt sau của từng món không bắt buộc, có thì ảnh xem trước mặt sau chính xác hơn.
         </small>
       </div>

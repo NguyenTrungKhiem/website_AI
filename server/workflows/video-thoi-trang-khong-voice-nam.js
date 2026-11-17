@@ -17,9 +17,11 @@
 // QUY TẮC CHO MỌI CHUYỂN ĐỘNG (kể cả chuyển động thêm sau này): chuyển động chỉ khai báo kịch bản tay chân; nhân vật trong video
 // LUÔN mặc đúng ảnh outfit đã tạo / đã duyệt (bước video chỉ có 1 đường code chung `sceneStage`: ảnh = KOL/KOC + ảnh outfit mặt
 // trước, mặt sau của từng outfit + bối cảnh). Không chuyển động nào tự phối đồ riêng.
-// TÚI là tuỳ chọn THEO CHUYỂN ĐỘNG (`bag: true | false`, bắt buộc khai báo):
-//   bag: true  -> outfit luôn có túi (túi người dùng nhập, không nhập thì AI tự phối) rồi mới làm video có túi;
-//   bag: false -> ô Túi không dùng, ảnh outfit và video không có túi.
+// TÚI là tuỳ chọn THEO CHUYỂN ĐỘNG (`bag: true | false | 'optional'`, bắt buộc khai báo):
+//   bag: true       -> outfit luôn có túi (túi người dùng nhập, không nhập thì AI tự phối) rồi mới làm video có túi;
+//   bag: false      -> ô Túi không dùng, ảnh outfit và video không có túi;
+//   bag: 'optional' -> TÚI THEO TỪNG OUTFIT: outfit có ảnh túi thì đeo đúng túi đó, outfit không có ảnh túi thì KHÔNG túi (AI
+//                      không tự thêm). Mỗi outfit quy về true / false (bagForLook) nên ảnh outfit tạo sẵn vẫn dùng lại được.
 // Đổi giữa chuyển động có túi / không túi làm chữ ký outfit (lookSig) đổi -> ảnh outfit tạo sẵn bị coi là cũ, phải tạo lại.
 //
 // CHUYỂN ĐỘNG KHAI BÁO ĐỘNG (MALE_MOTIONS) — thêm chuyển động mới = thêm 1 mục, không sửa code:
@@ -41,7 +43,9 @@ import { callGeminiWithFallback } from '../geminiFashion.js';
 import { FASHION_MODELS } from './video-thoi-trang.js';
 import { fill, fmtT, setupFor, ruleFor } from './video-thoi-trang-khong-voice.js';
 
-export const MAX_PER_SCENE = 3; // model + 3 × (look trước, look sau) + bối cảnh + khung hình bắt đầu = 9 ảnh
+// Mặc định: model + 3 × (look trước, look sau) + bối cảnh + khung hình bắt đầu = 9 ảnh. Chuyển động không quay lưng (không cần
+// ảnh mặt sau) được khai báo nhiều hơn qua `maxPerScene` (vd. Nam 2: model + 8 look trước + bối cảnh = 10 ảnh).
+export const MAX_PER_SCENE = 3;
 const MAX_SCENES = 3;
 
 // Các ô món của 1 outfit. fill: AI tự bù món này khi không có ảnh (áo khoác chỉ có khi người dùng nhập).
@@ -79,7 +83,8 @@ One single photo, not a collage; no text, watermarks, props or extra people.`;
 // Phần mở đầu mỗi phân cảnh: khoá mặt / vóc dáng theo {MODEL}, một chỗ đứng duy nhất trong {BG}. Máy quay và nhịp điệu do
 // từng chuyển động tự khai báo ở các dòng không có mốc giây ("Mood: …", "Camera: …").
 // Prompt video viết gọn (Flow gõ từng thẻ @Image, prompt dài dễ lỗi và loãng ý): mỗi ý chỉ nói 1 lần.
-const SETUP_NAM = `{PART} of a silent {DUR} Korean menswear outfit clip: no voice, mouth closed. Caption: small white serif product code at the top-center. Face, hairstyle and head-to-body ratio locked 1:1 to {MODEL}; keep his real body in every frame (height, shoulders, chest, waist, legs), never slimmed, bulked up or reshaped. Background: {BG}, one single spot for the whole clip, same light.`;
+// Khoá nhân vật: nói rõ từng nét mặt và "sau mỗi lần đổi outfit vẫn là đúng người đó" — video đổi đồ hay làm mặt / tóc trôi dần.
+const SETUP_NAM = `{PART} of a silent {DUR} Korean menswear outfit clip: no voice, mouth closed. Caption: small white serif product code at the top-center. He is exactly the man in {MODEL}: face shape, eyes, nose, lips, jawline, skin tone, hairstyle and head-to-body ratio locked 1:1 in every frame and after every outfit change; keep his real body (height, shoulders, chest, waist, legs), never slimmed, bulked up or reshaped. Background: {BG}, one single spot for the whole clip; keep its light unless a Light line below says otherwise.`;
 // Khoá trang phục theo ảnh look (ảnh chụp studio: chỉ lấy trang phục, không lấy nền xám)
 const WARDROBE_LOOK = `Wardrobe: {MODEL} gives face, hair and body only, never clothes. The whole clip he wears the complete look in {OUTFIT} (back {BACK}) exactly as pictured, nothing added, removed or swapped; ignore the grey studio background of these photos.`;
 const WARDROBE_LOOKS = `Wardrobe: {MODEL} gives face, hair and body only, never clothes. He wears {WEAR}. Each is a complete look copied exactly as pictured, nothing added, removed or mixed between looks; ignore the grey studio background of these photos.`;
@@ -90,6 +95,11 @@ const BAG_RULE = {
   true: 'He keeps the bag from the look photos with him throughout, exactly as pictured.',
   false: 'He carries no bag at any time.',
 };
+// Phân cảnh có outfit có túi và outfit không túi (bag: 'optional'): nêu đích danh look nào có túi
+const bagRuleMixed = (refs) => `Only in ${refs} he carries the bag shown in that look photo, exactly as pictured; in every other look he carries no bag.`;
+// Túi của 1 outfit theo kiểu túi của chuyển động. look = outfit đã làm sạch (items theo khoá ô món)
+export const bagForLook = (motionBag, look) =>
+  motionBag === 'optional' ? !!(look?.items?.bag?.front || look?.items?.bag?.back) : motionBag !== false;
 
 // Luật cho Gemini ở bước "Xử lý prompt chuyển động". {N} = số outfit · {BEATS} = danh sách mốc đánh số kèm outfit đang mặc
 const ADAPT_PROMPT = `You are a fashion-video director. I give you {N} photo(s): each shows the same man wearing one complete outfit (Outfit 1 … Outfit {N}, in order). Below is the numbered shot list ("beats") of a silent menswear lookbook video; each beat is tagged with the outfit he wears in it.
@@ -111,63 +121,79 @@ BEATS:
 // thành động tác chung, outfit nào cũng làm được (thứ tự: cụm cụ thể trước, cụm chung sau)
 const NEUTRAL = [
   [/both hands hold his jacket open at chest height, showing the top underneath/i, 'Both hands tug the front of his top straight at chest height'],
+  [/,? ?then he lets go and the jacket falls closed/i, ', then he lets go'],
+  [/the whole back of the jacket/gi, 'the whole back of his top'],
   [/\bbackpack\b/gi, 'bag'],
   [/\bhis cap\b/gi, 'his hair'],
 ];
 export const neutralize = (text) => NEUTRAL.reduce((t, [re, to]) => t.replace(re, to), text);
 
 // ---- Chuyển động ----
-// Chuyển động Nam 1 — viết theo video mẫu "đổi outfit tại chỗ" (14,8s, máy quay cố định ở hành lang, 3 outfit, không túi):
-//   outfit 1 (0–4,1s): mở áo khoác khoe áo trong → xoay 1 vòng (lộ lưng áo) → khoanh tay → bước tới máy quay;
-//   outfit 2 (4,1–9,4s): hất tay từ cằm ra máy quay → 2 tay like lắc vai → chào 2 ngón ở thái dương → chỉ máy quay → vắt chéo tay;
-//   outfit 3 (9,4–14,8s): 2 bàn tay bắt chéo trên ngực → chồng tay lên tim → buông tay → ngón cái chỉ ra sau vai → like, nhắm mắt.
-// Mốc 4,6s và 9,8s là 2 mốc đổi outfit khi có 3 outfit (planScenes chọn mốc gần 5s và 10s nhất) — đổi mốc giây thì giữ điều này.
-const NAM1_BEATS = [
-  [0.0, 1.2, 'Both hands hold his jacket open at chest height, showing the top underneath, then let go.'],
-  [1.2, 2.6, 'One full spin on the spot, back fully to the camera halfway, ending face-on.'],
-  [2.6, 3.8, 'Feet apart, arms folded, chin up, he holds still.'],
-  [3.8, 4.6, 'He drops his arms and steps toward the camera.'],
-  [4.6, 5.8, 'One step closer, knees up in frame: right hand flicks from his chin toward the lens, left hand in his pocket.'],
-  [5.8, 7.0, 'Both thumbs up at chest height, shoulders bouncing side to side twice, small smile.'],
-  [7.0, 8.0, 'Two-finger salute from his right temple, flicked away.'],
-  [8.0, 9.0, 'Right index finger points at the lens, left forearm under his right elbow, small nod.'],
-  [9.0, 9.8, 'He lowers his hands and sweeps both forearms across his chest.'],
-  [9.8, 11.2, 'Both palms crossed flat on his chest, fingers spread, he holds still.'],
-  [11.2, 12.4, 'Hands slide together over his heart as he leans slightly toward the camera.'],
-  [12.4, 13.2, 'Hands drop to his sides, weight on one leg.'],
-  [13.2, 14.2, 'Right thumb jerks back over his shoulder twice, shoulders swaying, small smile.'],
-  [14.2, 15.0, 'Thumbs-up to the lens, then eyes closed with a small nod.'],
+// Chuyển động Nam 2 — viết theo video mẫu "thu đông này tôi muốn làm người u sầu nhất" (10,0s, 1 cảnh liên tục, máy quay cố định ở
+// hành lang trước cửa gỗ, nắng chiều vàng chiếu xiên từ bên trái). Cấu trúc "trước / sau":
+//   outfit 1 (0–4,6s, mở đầu hài): tựa lưng vào cửa, nhắm mắt nghiêng đầu → nằm lăn ra sàn đạp chân như ăn vạ → chống tay đứng
+//     dậy → nhảy múa lóng ngóng, cười;
+//   từ 4,6s: mỗi cú nhảy cắt là 1 outfit mới với 1 dáng đứng "u sầu" (cúi đầu, tay để đầu / cổ áo / môi / túi quần), ánh sáng tối
+//     hơn. Video mẫu đổi đồ đúng ở 4,6 · 5,4 · 6,1 · 6,9 · 7,7 · 8,5 · 9,2s → tổng 8 outfit (kể cả outfit mở đầu).
+//   Túi trong video mẫu: outfit 3 (túi da đen to đeo vai phải), outfit 4 (dây túi đeo chéo, tay phải cầm đầu dây), outfit 7 (túi
+//     đen nhỏ bên hông phải); các outfit khác không túi -> bag: 'optional' (outfit nào nhập ảnh túi mới đeo túi).
+//   Không có cú quay lưng nào -> không outfit nào cần ảnh mặt sau (không tạo ảnh xem trước mặt sau, ảnh gửi Flow = model + N look
+//     trước + bối cảnh).
+// cutRule: đổi outfit CHỈ ở các mốc "Jump cut" từ 4,6s trở đi; outfit 2 luôn bắt đầu ở 4,6s, các outfit sau chia đều phần còn lại
+// (8 outfit -> đúng 7 mốc của video mẫu; ít outfit hơn thì 1 outfit giữ nhiều dáng liên tiếp).
+// Các mốc KHÔNG nhắc tới túi (túi do dòng quy tắc nêu theo từng look) và không tả món đồ cụ thể ("top layer", "pockets") để outfit
+// nào cũng làm được.
+const NAM2_BEATS = [
+  // Video mẫu không có góc nhìn sau lưng nào: các mốc tránh mọi chữ "back" (kể cả tả tư thế) để AI không tự quay lưng khoe mặt sau
+  [0.0, 0.5, 'Facing the camera, he leans against the wall or door, head dropped to one shoulder, eyes closed, arms hanging: a deadpan sad pose.'],
+  [0.5, 2.4, 'Jump cut: he lies on the floor at the lower right, curls up, then rolls to lie face up, kicking his legs in the air and flailing his arms like a playful tantrum.'],
+  [2.4, 3.6, 'He rolls onto his side, pushes up with one hand on the floor and one on the wall, and rises into a crouch.'],
+  [3.6, 4.6, 'He springs up into a goofy loose dance: knees bent, arms flapping, hair bouncing, wide closed-mouth grin.'],
+  [4.6, 5.4, 'Jump cut, moody: head bowed so his hair hides his eyes, right hand on top of his head, left hand in his pocket, still.'],
+  [5.4, 6.1, 'Jump cut, weight on one leg, head tilted, half-closed eyes looking down past the lens, right hand at his collar, left hand in his pocket.'],
+  [6.1, 6.9, 'Jump cut, head bowed low, eyes on the floor, right arm hanging, left hand in his pocket, shoulders slightly forward.'],
+  [6.9, 7.7, 'Jump cut, chin down, a cold stare into the lens, right knuckles at his lips, left hand in his pocket.'],
+  [7.7, 8.5, 'Jump cut, one slow step toward the camera, thumbs hooked in his front pockets, head tilted, eyes on the lens.'],
+  [8.5, 9.2, 'Jump cut, head tilted, eyes down, right hand holding the front edge of his top layer at his waist.'],
+  [9.2, 10.0, 'Jump cut, both hands in his pockets, head bowed, one slow step forward with a slight sway; sharp final frame.'],
 ];
-const NAM1_S1 = [
-  'Mood: cool and playful, light groove to the beat.',
-  'Camera: locked-off vertical shot at chest height, full body head to shoes; he stays centred on one spot, eyes on the lens.',
+const NAM2_S1 = [
+  'Mood: a before/after joke: goofy and chaotic first, then cool and melancholic from the first moody cut, poses slow and still.',
+  'Camera: locked-off vertical phone shot at chest height, straight on, full body head to feet, centred in {BG}; no zoom, no pan, same framing in every shot.',
+  'Light: warm low sunlight from the left, long hard floor shadows; bright in the opening, darker moody low-key side light from 4.6s on.',
 ]
-  .concat(NAM1_BEATS.map(([a, b, t]) => `${a.toFixed(1)}-${b.toFixed(1)}s: ${t}`))
+  .concat(NAM2_BEATS.map(([a, b, t]) => `${a.toFixed(1)}-${b.toFixed(1)}s: ${t}`))
   .join('\n');
 
 export const MALE_MOTIONS = {
-  nam1: {
-    name: 'Chuyển động Nam 1 (KHÔNG TÚI) – đổi outfit tại chỗ, 1 phân cảnh 15s, tối đa 3 outfit: mở áo khoe áo trong → xoay 1 vòng → khoanh tay → bước tới (đổi outfit 2) → hất tay, like 2 tay, chào 2 ngón, chỉ máy quay → vắt chéo tay (đổi outfit 3) → tay bắt chéo trên ngực → tay lên tim → ngón cái chỉ ra sau → like',
-    bag: false,
-    maxOutfits: 3,
+  nam2: {
+    name: 'Chuyển động Nam 2 (TÚI TUỲ OUTFIT) – "trước / sau": 1 phân cảnh 10s, 1–8 outfit (video mẫu có 8): tựa cửa → lăn ra sàn đạp chân → đứng dậy nhảy lóng ngóng → (từ 4,6s mỗi cú cắt 1 outfit mới) tay để đầu cúi mặt → tay ở cổ áo → cúi nhìn sàn → tay chạm môi nhìn thẳng → móc ngón cái túi quần bước tới → cầm vạt áo → 2 tay đút túi bước chậm',
+    bag: 'optional',
+    // Ghi chú hiện trên giao diện (khối Outfit): outfit nào trong video mẫu có túi
+    bagNote: 'Video mẫu: outfit 3 đeo túi da đen to trên vai phải, outfit 4 có dây túi đeo chéo (tay phải cầm đầu dây), outfit 7 có túi đen nhỏ bên hông phải; các outfit khác không túi.',
+    maxOutfits: 8,
+    maxPerScene: 8, // không quay lưng -> không ảnh mặt sau: model + 8 look trước + bối cảnh = 10 ảnh
+    cutRule: { from: 4.6, jumpOnly: true },
     layouts: {
-      '15s': [{ prompt: 'nam1_s1', duration: '15s' }],
+      '10s': [{ prompt: 'nam2_s1', duration: '10s' }],
     },
     prompts: {
-      nam1_s1: { label: 'Chuyển động Nam 1 (không túi) · các mốc động tác 15s (3 outfit: đổi outfit ở mốc 4.6s và 9.8s; câu "Match cut: he now wears …" được thêm tự động)', text: NAM1_S1 },
+      nam2_s1: { label: 'Chuyển động Nam 2 (túi tuỳ outfit) · các mốc động tác 10s (outfit 1 = mở đầu 0–4,6s; từ 4,6s đổi outfit ở các mốc "Jump cut", 8 outfit = đúng 7 mốc 4.6/5.4/6.1/6.9/7.7/8.5/9.2s; câu "Match cut: he now wears …" được thêm tự động)', text: NAM2_S1 },
     },
   },
 };
 
 /**
  * Kiểm tra khai báo 1 chuyển động (chạy khi nạp file cho mọi mục của MALE_MOTIONS): thiếu thì báo lỗi ngay lúc khởi động.
- * Bắt buộc: `bag` (true = chuyển động có túi, false = không túi), 1..MAX_SCENES phân cảnh mỗi layout, prompt của từng phân cảnh
- * có trong `prompts`; chuyển động không túi thì mốc động tác không được nhắc tới túi / ba lô.
+ * Bắt buộc: `bag` (true = chuyển động có túi, false = không túi, 'optional' = túi theo từng outfit), 1..MAX_SCENES phân cảnh mỗi
+ * layout, prompt của từng phân cảnh có trong `prompts`; chuyển động không túi / túi tuỳ outfit thì mốc động tác không được nhắc
+ * tới túi / ba lô (túi tuỳ outfit: dòng quy tắc tự nêu look nào có túi). Tuỳ chọn: `maxPerScene` (số outfit tối đa 1 phân cảnh),
+ * `cutRule` ({ from: giây, jumpOnly }: chỉ đổi outfit ở các mốc từ `from` trở đi, chỉ mốc bắt đầu bằng "Jump cut").
  */
 export function validateMotion(key, m) {
   const bad = (msg) => { throw new Error(`Chuyển động nam "${key}": ${msg}`); };
   if (!m?.name) bad('thiếu name');
-  if (typeof m.bag !== 'boolean') bad('thiếu `bag` (true = có túi, false = không túi)');
+  if (typeof m.bag !== 'boolean' && m.bag !== 'optional') bad("thiếu `bag` (true = có túi, false = không túi, 'optional' = túi theo từng outfit)");
   if (!(m.maxOutfits >= 1)) bad('thiếu maxOutfits');
   const layouts = Object.entries(m.layouts || {});
   if (!layouts.length) bad('thiếu layouts');
@@ -177,17 +203,18 @@ export function validateMotion(key, m) {
       const text = m.prompts?.[sc.prompt]?.text;
       if (!text) bad(`layout "${dur}" dùng prompt "${sc.prompt}" nhưng không có trong prompts`);
       if (!sc.duration) bad(`layout "${dur}" thiếu duration của phân cảnh`);
-      if (!m.bag && /\b(bag|backpack)\b/i.test(text)) bad(`khai báo không túi nhưng prompt "${sc.prompt}" có nhắc tới túi / ba lô`);
+      if (m.bag !== true && /\b(bag|backpack)\b/i.test(text)) bad(`khai báo ${m.bag === false ? 'không túi' : 'túi tuỳ outfit'} nhưng prompt "${sc.prompt}" có nhắc tới túi / ba lô`);
     }
   }
 }
 for (const [k, m] of Object.entries(MALE_MOTIONS)) validateMotion(k, m);
 
-const DEFAULT_MOTION = 'nam1';
+// Chuyển động mặc định; lần chạy cũ lưu chuyển động đã bỏ (vd. 'nam1') thì dùng chuyển động này
+const DEFAULT_MOTION = 'nam2';
 const motionOf = (run) => MALE_MOTIONS[run?.options?.motion] || MALE_MOTIONS[DEFAULT_MOTION];
-// Chuyển động có túi hay không (mặc định có, để lần chạy / chuyển động cũ không khai báo vẫn như trước)
-const bagOfMotion = (key) => (MALE_MOTIONS[key] || MALE_MOTIONS[DEFAULT_MOTION]).bag !== false;
-const bagOf = (run) => motionOf(run).bag !== false;
+// Kiểu túi của chuyển động: true | false | 'optional' (mỗi outfit quy về true / false bằng bagForLook)
+const bagOfMotion = (key) => (MALE_MOTIONS[key] || MALE_MOTIONS[DEFAULT_MOTION]).bag;
+const bagOf = (run) => motionOf(run).bag;
 const durationOf = (run) => {
   const keys = Object.keys(motionOf(run).layouts);
   return keys.includes(run?.options?.duration) ? run.options.duration : keys[0];
@@ -213,7 +240,7 @@ export function parseBeats(text) {
  * Mỗi mốc: { index, scene, a, b (giây cục bộ của phân cảnh), g (giây toàn video), text, outfit (thứ tự outfit đang mặc),
  * cut (true = mốc đổi sang outfit này) }.
  */
-export function planScenes({ layout, prompt, outfitCount }) {
+export function planScenes({ layout, prompt, outfitCount, maxPerScene = MAX_PER_SCENE, cutRule = null }) {
   if (!Array.isArray(layout) || !layout.length || layout.length > MAX_SCENES) throw new Error(`Chuyển động phải có 1–${MAX_SCENES} phân cảnh`);
   const scenes = [];
   const all = [];
@@ -232,14 +259,30 @@ export function planScenes({ layout, prompt, outfitCount }) {
   const total = offset;
   const n = Math.max(1, outfitCount || 1);
   if (n > all.length) throw new Error(`Chuyển động này chỉ có ${all.length} mốc nên không chia được cho ${n} outfit`);
-  // Mốc đổi đồ thứ i: mốc nhảy cắt gần T·i/N nhất, sau mốc đổi trước đó và chừa đủ mốc cho các outfit còn lại
-  let from = 1;
-  for (let i = 1; i < n; i++) {
-    const target = (total * i) / n;
-    let best = from;
-    for (let j = from; j <= all.length - (n - i); j++) if (Math.abs(all[j].g - target) < Math.abs(all[best].g - target)) best = j;
-    all[best].cut = true;
-    from = best + 1;
+  if (cutRule) {
+    // Chỉ đổi outfit ở các mốc ứng viên (từ giây `from`, chỉ mốc "Jump cut" nếu jumpOnly): outfit 2 luôn bắt đầu ở mốc ứng viên đầu
+    // tiên, các outfit sau đổi ở mốc ứng viên gần mốc chia đều phần còn lại nhất
+    const cand = all.map((b, j) => j).filter((j) => j > 0 && all[j].g >= cutRule.from - 1e-6 && (!cutRule.jumpOnly || /^jump cut\b/i.test(all[j].text)));
+    if (n - 1 > cand.length) throw new Error(`Chuyển động này chỉ có ${cand.length + 1} chỗ đổi outfit nên nhận tối đa ${cand.length + 1} outfit (đang chọn ${n})`);
+    const start = n > 1 ? all[cand[0]].g : 0;
+    let from = 0;
+    for (let i = 1; i < n; i++) {
+      const target = i === 1 ? start : start + ((total - start) * (i - 1)) / (n - 1);
+      let best = from;
+      for (let c = from; c <= cand.length - (n - i); c++) if (Math.abs(all[cand[c]].g - target) < Math.abs(all[cand[best]].g - target)) best = c;
+      all[cand[best]].cut = true;
+      from = best + 1;
+    }
+  } else {
+    // Mốc đổi đồ thứ i: mốc nhảy cắt gần T·i/N nhất, sau mốc đổi trước đó và chừa đủ mốc cho các outfit còn lại
+    let from = 1;
+    for (let i = 1; i < n; i++) {
+      const target = (total * i) / n;
+      let best = from;
+      for (let j = from; j <= all.length - (n - i); j++) if (Math.abs(all[j].g - target) < Math.abs(all[best].g - target)) best = j;
+      all[best].cut = true;
+      from = best + 1;
+    }
   }
   let cur = 0;
   all.forEach((b, j) => {
@@ -249,12 +292,20 @@ export function planScenes({ layout, prompt, outfitCount }) {
   });
   for (const s of scenes) {
     s.outfits = [...new Set(s.beats.map((b) => b.outfit))];
-    if (s.outfits.length > MAX_PER_SCENE) throw new Error(`Phân cảnh ${s.index + 1} phải mặc ${s.outfits.length} outfit — tối đa ${MAX_PER_SCENE} outfit mỗi phân cảnh, bỏ bớt outfit hoặc chọn chuyển động nhiều phân cảnh hơn`);
+    if (s.outfits.length > maxPerScene) throw new Error(`Phân cảnh ${s.index + 1} phải mặc ${s.outfits.length} outfit — tối đa ${maxPerScene} outfit mỗi phân cảnh, bỏ bớt outfit hoặc chọn chuyển động nhiều phân cảnh hơn`);
   }
   return { scenes, beats: all, total };
 }
 
+// MẶT SAU CHỈ CHO OUTFIT CÓ QUAY LƯNG: outfit nào có mốc lộ lưng (dò theo câu chữ gốc của mốc) mới cần ảnh xem trước mặt sau và
+// mới gửi ảnh đó lên Flow; outfit chỉ đứng đối diện máy quay thì không tạo ảnh mặt sau (đỡ thời gian, đỡ ảnh nguyên liệu thừa).
+// Vd. Chuyển động Nam 1: chỉ mốc xoay người (outfit 1) lộ lưng -> outfit 2, 3 không cần mặt sau.
+export const BACK_BEAT = /\bback (?:fully |turned |is )?to the camera\b|\bfrom behind\b|\bback view\b|\bturns? (?:around|away)\b|\b(?:full|slow) (?:spin|turn)\b|\bspins?\b/i;
+export const backOutfits = (plan) => new Set(plan.beats.filter((b) => BACK_BEAT.test(b.text)).map((b) => b.outfit));
+
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+// "@ImageN (back @ImageM)" — outfit không cần mặt sau (tags.back = null) thì chỉ ghi ảnh mặt trước
+const lookRef = (t) => (t.back ? `${t.front} (back ${t.back})` : t.front);
 
 /**
  * Prompt 1 phân cảnh. looks[i] = { caption } · tags = { model, bg, start | null, look: { [outfit]: { front, back } } } theo thứ tự
@@ -274,7 +325,14 @@ export function buildScenePrompt({ plan, sceneIndex, texts, looks, tags, caption
   const setup = fill(setupFor((prompt('setup') || SETUP_NAM).trim(), mode), vars);
   // Câu về túi theo chuyển động: điền vào {BAG}; mẫu `rule` người dùng đã sửa không có {BAG} (hoặc để trống) thì nối vào cuối
   const rawRule = ruleFor((prompt('rule') ?? RULE_LOOK).trim(), mode);
-  const bagLine = BAG_RULE[!!bag];
+  // Túi theo từng look (looks[o].hasBag, chuyển động túi tuỳ outfit); thiếu thông tin thì theo `bag` của chuyển động
+  const hasBag = (o) => looks[o]?.hasBag ?? (bag === 'optional' ? false : !!bag);
+  const withBag = ranges.filter((r) => hasBag(r.o));
+  const bagLine = withBag.length === 0
+    ? BAG_RULE.false
+    : withBag.length === ranges.length
+      ? BAG_RULE.true
+      : bagRuleMixed(listEn(withBag.map((r) => tags.look[r.o].front)));
   const hasJump = scene.beats.some((b) => /jump cut/i.test(texts?.[b.index] || b.text));
   const rule = [
     rawRule.includes('{BAG}') ? rawRule.replace('{BAG}', bagLine) : [rawRule, bagLine].filter(Boolean).join(' '),
@@ -292,21 +350,27 @@ export function buildScenePrompt({ plan, sceneIndex, texts, looks, tags, caption
     : mode === 'none'
       ? `Opens exactly on ${tags.start} (last frame of the previous part: same pose, framing, background), then continues. ${tags.start} is a pose reference only: any text in it must not appear.`
       : `Opens exactly on ${tags.start} (last frame of the previous part: same pose, framing, background), then continues. ${tags.start} is a pose reference only: any text in it belongs to the previous part and must not appear; from the very first frame the caption reads ${quote(ranges[0])}.`;
+  const single = tags.look[ranges[0].o];
   const wardrobe = ranges.length === 1
-    ? fill((prompt('wardrobe_look') || WARDROBE_LOOK).trim(), { ...vars, OUTFIT: tags.look[ranges[0].o].front, BACK: tags.look[ranges[0].o].back })
+    // Outfit không cần mặt sau: bỏ cụm "(back {BACK})" khỏi mẫu
+    ? fill((prompt('wardrobe_look') || WARDROBE_LOOK).trim().replace(single.back ? /$^/ : /\s*\(back(?: view)? \{BACK\}\)/, ''), { ...vars, OUTFIT: single.front, BACK: single.back || '' })
     : fill((prompt('wardrobe_looks') || WARDROBE_LOOKS).trim(), {
         ...vars,
-        WEAR: ranges.map((r) => `${tags.look[r.o].front} (back ${tags.look[r.o].back}) at ${fmtT(r.a)}-${fmtT(r.b)}s`).join(', then '),
+        // Nhiều outfit (> 3): không liệt kê từng khoảng giây (các câu "Match cut: he now wears …" ở từng mốc đã nói) để prompt gọn
+        WEAR: ranges.length > 3
+          ? `${lookRef(tags.look[ranges[0].o])} first, then ${listEn(ranges.slice(1).map((r) => lookRef(tags.look[r.o])))} in that order, each from its match cut below`
+          : ranges.map((r) => `${lookRef(tags.look[r.o])} at ${fmtT(r.a)}-${fmtT(r.b)}s`).join(', then '),
       });
   const lines = scene.beats.map((b) => {
     let t = (texts?.[b.index] || b.text).trim();
-    if (b.cut) t = `Match cut: he now wears ${tags.look[b.outfit].front} (back ${tags.look[b.outfit].back}). ${cap(t.replace(/^Jump cut,\s*/i, ''))}`;
+    if (b.cut) t = `Match cut: he now wears ${lookRef(tags.look[b.outfit])}. ${cap(t.replace(/^Jump cut,\s*/i, ''))}`;
     return `${fmtT(b.a)}-${fmtT(b.b)}s: ${t}`;
   });
   const cuts = scene.beats.filter((b) => b.cut).map((b) => `${fmtT(b.a)}s`);
-  // Khoá số outfit: chỉ đổi đồ ở đúng các mốc match cut, không sinh thêm bộ nào khác
+  // Khoá số outfit: chỉ đổi đồ ở đúng các mốc match cut, không sinh thêm bộ nào khác. Nói rõ không đổi đồ giữa chừng: video
+  // thử thật đã đổi sang outfit 2 ngay cuối cú xoay người (sớm ~2 giây) và đổi kiểu biến dần thay vì cắt gọn.
   const cutNote = cuts.length
-    ? ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.join(' and ')}: the only outfit change${cuts.length > 1 ? 's' : ''}, exactly ${ranges.length} looks, no other outfit.`
+    ? ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.length > 3 ? cuts.join(', ') : cuts.join(' and ')}: the only outfit change${cuts.length > 1 ? 's' : ''}, exactly ${ranges.length} looks, no other outfit. Each change is one instant cut, never a gradual morph or a change mid-movement.`
     : ' One outfit for the whole clip: it never changes.';
   const end = ` Sharp final frame at ${fmtT(scene.sec)}s${last ? '' : '; it is the first frame of the next part'}.`;
   return [setup, startLine, caption, wardrobe, ...scene.untimed.map((l) => fill(l, vars)), ...lines, `${rule}${cutNote}${end}`.trim()]
@@ -361,9 +425,18 @@ const mimeOf = (f) => ({ '.png': 'image/png', '.webp': 'image/webp' }[path.extna
  * "Xử lý prompt chuyển động": Gemini xem ảnh look từng outfit và sửa câu chữ về phụ kiện trong các mốc. Trả { texts, accessories }.
  * Ném lỗi khi Gemini trả sai số mốc / nội dung rỗng (bên gọi rơi về bản trung tính).
  */
+// bag = true | false cho cả video, hoặc mảng true / false theo từng outfit (chuyển động túi tuỳ outfit)
 export async function adaptBeats({ beats, lookPaths, rules, apiKey, model, bag = true }) {
   const list = beats.map((b, i) => `${i + 1}. [Outfit ${b.outfit + 1}] ${b.text}`).join('\n');
-  const noBag = bag ? '' : '\n\nIMPORTANT: in this video he carries NO bag. Never mention a bag, backpack or strap in any beat; use his pockets, collar, sleeves or hair instead.';
+  const perLook = Array.isArray(bag) ? bag : null;
+  if (perLook && perLook.every((x) => !x)) bag = false;
+  if (perLook && perLook.every(Boolean)) bag = true;
+  const mixed = Array.isArray(bag);
+  const noBag = bag === false
+    ? '\n\nIMPORTANT: in this video he carries NO bag. Never mention a bag, backpack or strap in any beat; use his pockets, collar, sleeves or hair instead.'
+    : mixed
+      ? `\n\nIMPORTANT: only Outfit ${perLook.map((x, i) => (x ? i + 1 : null)).filter(Boolean).join(', ')} include a bag (see their photos). Never mention a bag, backpack or strap in a beat of any other outfit.`
+      : '';
   const text = put(rules, { N: String(lookPaths.length), BEATS: list }) + noBag;
   const parts = [{ text }];
   lookPaths.forEach((f, i) => {
@@ -380,7 +453,8 @@ export async function adaptBeats({ beats, lookPaths, rules, apiKey, model, bag =
   const texts = Array.isArray(out?.beats) ? out.beats.map((t) => String(t || '').replace(/^\s*\d+\.\s*/, '').replace(/^\[Outfit \d+\]\s*/i, '').replace(/\s+/g, ' ').trim()) : null;
   if (!texts || texts.length !== beats.length) throw new Error(`Gemini trả ${texts ? texts.length : 0} mốc, cần ${beats.length}`);
   if (texts.some((t, i) => !t || t.length > beats[i].text.length + 160 || /@Image|\d\s*-\s*\d+(\.\d+)?s\b/.test(t))) throw new Error('Gemini trả mốc rỗng / quá dài / chứa mốc giây');
-  if (!bag && texts.some((t) => /\b(bag|backpack|strap)\b/i.test(t))) throw new Error('Gemini vẫn nhắc tới túi trong chuyển động không túi');
+  if (bag === false && texts.some((t) => /\b(bag|backpack|strap)\b/i.test(t))) throw new Error('Gemini vẫn nhắc tới túi trong chuyển động không túi');
+  if (mixed && texts.some((t, i) => !perLook[beats[i].outfit] && /\b(bag|backpack)\b/i.test(t))) throw new Error('Gemini nhắc tới túi ở outfit không có túi');
   const accessories = Array.isArray(out?.accessories) ? out.accessories.map((a) => String(a).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, lookPaths.length) : [];
   return { texts, accessories };
 }
@@ -449,8 +523,9 @@ const lookJobSpec = ({ modelPath, items, style, template, videoLabel, bag = true
 export function lookPreviewSpec({ model, look, template, motion }) {
   const m = assetById(model);
   if (!m) throw new Error('Chọn ảnh KOL/KOC trước khi tạo ảnh outfit');
-  const bag = bagOfMotion(motion); // túi theo chuyển động đang chọn trên giao diện
   const clean = cleanLook(look);
+  // túi theo chuyển động đang chọn trên giao diện; túi tuỳ outfit -> outfit này có ảnh túi hay không
+  const bag = bagForLook(bagOfMotion(motion), clean);
   const items = itemsOf(clean, bag);
   return lookJobSpec({
     modelPath: m.path,
@@ -468,9 +543,11 @@ export function lookPreviewSpec({ model, look, template, motion }) {
 //  'text' = chữ của chính outfit đó (looks[i].text); để trống thì dùng chữ của outfit trước · 'none' = không in chữ
 function resolveLooks(ctx) {
   const mode = captionModeOf(ctx.run.options);
-  const bag = bagOf(ctx.run); // chuyển động không túi: ô Túi không dùng (kể cả làm món in mã)
+  const motionBag = bagOf(ctx.run);
   let lastText = '';
   return (ctx.inputs.looks || []).map((l, i) => {
+    // chuyển động không túi: ô Túi không dùng (kể cả làm món in mã); túi tuỳ outfit: outfit có ảnh túi mới có túi
+    const bag = bagForLook(motionBag, l);
     const items = itemsOf(l, bag);
     const main = items.find((it) => it.slot.key === l.main) || items[0] || null;
     const mainId = main ? main.frontId || main.backId : null;
@@ -483,7 +560,7 @@ function resolveLooks(ctx) {
       lastText = caption;
     }
     // preview = ảnh outfit người dùng đã tạo sẵn ở thẻ outfit (prepareInputs đã kiểm tra chữ ký); mất khỏi thư viện thì tạo lại
-    return { index: i, items, style: l.style || '', code, caption, preview: assetById(l.preview) ? l.preview : null };
+    return { index: i, items, style: l.style || '', code, caption, hasBag: bag, preview: assetById(l.preview) ? l.preview : null };
   });
 }
 
@@ -491,6 +568,8 @@ const planOf = (ctx, n) => planScenes({
   layout: motionOf(ctx.run).layouts[durationOf(ctx.run)],
   prompt: (k) => ctx.prompt(k),
   outfitCount: n,
+  maxPerScene: motionOf(ctx.run).maxPerScene || MAX_PER_SCENE,
+  cutRule: motionOf(ctx.run).cutRule || null,
 });
 
 // Lưu ảnh xem trước của từng outfit vào thư viện (loại lookbook, có flowTitle để bước video dùng lại ngay trên Flow);
@@ -522,10 +601,11 @@ const sceneStage = (k) => ({
     if (!bg) throw new Error('Ảnh bối cảnh không còn trong thư viện');
     const fronts = ctx.stages.look?.assets || {};
     const backs = ctx.stages.look_back?.assets || {};
+    const needBack = backOutfits(plan); // chỉ outfit có mốc quay lưng mới gửi ảnh mặt sau
     const pairs = Object.fromEntries(scene.outfits.map((i) => {
       const f = ctx.assetPath(fronts[i]?.id);
-      const b = ctx.assetPath(backs[i]?.id);
-      if (!f || !b) throw new Error(`Ảnh xem trước của outfit ${i + 1} không còn trong thư viện — tạo lại ảnh xem trước`);
+      const b = needBack.has(i) ? ctx.assetPath(backs[i]?.id) : null;
+      if (!f || (needBack.has(i) && !b)) throw new Error(`Ảnh xem trước của outfit ${i + 1} không còn trong thư viện — tạo lại ảnh xem trước`);
       return [i, { f, b }];
     }));
     let start = null;
@@ -533,7 +613,7 @@ const sceneStage = (k) => ({
       start = ctx.stages[`frame${k - 1}`]?.path;
       if (!start || !fs.existsSync(start)) throw new Error(`Chưa có khung hình cuối của phân cảnh ${k - 1}`);
     }
-    const images = [model, ...scene.outfits.flatMap((i) => [pairs[i].f, pairs[i].b]), bg, ...(start ? [start] : [])];
+    const images = [model, ...scene.outfits.flatMap((i) => (pairs[i].b ? [pairs[i].f, pairs[i].b] : [pairs[i].f])), bg, ...(start ? [start] : [])];
     const tag = (f) => `@Image${images.indexOf(f) + 1}`;
     const captionMode = captionModeOf(ctx.run.options);
     const template = buildScenePrompt({
@@ -541,7 +621,7 @@ const sceneStage = (k) => ({
       sceneIndex: k - 1,
       texts: ctx.stages.motion_prompt?.texts,
       looks,
-      tags: { model: '@Image1', bg: tag(bg), start: start ? tag(start) : null, look: Object.fromEntries(scene.outfits.map((i) => [i, { front: tag(pairs[i].f), back: tag(pairs[i].b) }])) },
+      tags: { model: '@Image1', bg: tag(bg), start: start ? tag(start) : null, look: Object.fromEntries(scene.outfits.map((i) => [i, { front: tag(pairs[i].f), back: pairs[i].b ? tag(pairs[i].b) : null }])) },
       captionMode,
       prompt: (key) => ctx.prompt(key),
       bag: bagOf(ctx.run),
@@ -636,9 +716,9 @@ export default {
   prepareInputs(inputs, options = {}) {
     const raw = Array.isArray(inputs?.looks) ? inputs.looks : [];
     const motion = motionOf({ options });
-    const bag = motion.bag !== false;
     const looks = raw.map((l) => {
       const look = cleanLook(l);
+      const bag = bagForLook(motion.bag, look);
       // Ảnh outfit tạo sẵn (nút "Tạo ảnh outfit"): chỉ dùng khi còn trong thư viện và đúng với KOL/KOC + món + phong cách + kiểu
       // túi của chuyển động hiện tại; không khớp thì bỏ, lần chạy tự tạo ảnh mới
       const pre = assetById(l?.preview);
@@ -664,7 +744,25 @@ export default {
       key: 'motion',
       label: 'Chuyển động (kịch bản tay chân)',
       // bag: chuyển động có túi (giao diện bật / tắt ô Túi và báo ảnh outfit cũ khi đổi kiểu túi)
-      options: Object.entries(MALE_MOTIONS).map(([k, m]) => ({ value: k, label: m.name, minOutfits: 1, maxOutfits: m.maxOutfits, durations: Object.keys(m.layouts), bag: m.bag })),
+      // backOutfits[thời lượng][số outfit] = thứ tự các outfit có mốc quay lưng (giao diện ghi chú outfit nào cần ảnh mặt sau);
+      // tính theo prompt mặc định — lần chạy thật tính lại theo prompt đã đóng băng
+      options: Object.entries(MALE_MOTIONS).map(([k, m]) => ({
+        value: k,
+        label: m.name,
+        minOutfits: 1,
+        maxOutfits: m.maxOutfits,
+        durations: Object.keys(m.layouts),
+        bag: m.bag,
+        bagNote: m.bagNote || null,
+        backOutfits: Object.fromEntries(Object.entries(m.layouts).map(([dur, layout]) => [dur, Object.fromEntries(
+          Array.from({ length: m.maxOutfits }, (_, i) => {
+            try {
+              const plan = planScenes({ layout, prompt: (key) => m.prompts[key]?.text || '', outfitCount: i + 1, maxPerScene: m.maxPerScene || MAX_PER_SCENE, cutRule: m.cutRule || null });
+              return [i + 1, [...backOutfits(plan)]];
+            } catch { return [i + 1, null]; }
+          }),
+        )])),
+      })),
       default: DEFAULT_MOTION,
     },
     { key: 'duration', label: 'Thời lượng video', options: ALL_DURATIONS.map((d) => ({ value: d, label: d })), default: ALL_DURATIONS[0] },
@@ -697,7 +795,7 @@ export default {
             style: l.style,
             template: ctx.prompt('look'),
             videoLabel: `Outfit ${i + 1}${l.code ? ` [${l.code}]` : ''} – xem trước mặt trước – ${name}`,
-            bag: bagOf(ctx.run),
+            bag: l.hasBag,
             meta: { lookIndex: i },
           }));
         });
@@ -712,20 +810,24 @@ export default {
         const looks = resolveLooks(ctx);
         const fronts = ctx.stages.look?.assets || {};
         const name = ctx.assetName(ctx.inputs.model);
+        // Chỉ outfit có mốc quay lưng trong chuyển động mới cần ảnh mặt sau (vd. Chuyển động Nam 1: chỉ outfit 1)
+        const needBack = backOutfits(planOf(ctx, looks.length));
+        ctx.state.needBack = [...needBack];
         const jobs = looks.map((l, i) => {
           const front = ctx.assetPath(fronts[i]?.id);
           if (!front) throw new Error(`Ảnh xem trước mặt trước của outfit ${i + 1} không còn trong thư viện`);
+          if (!needBack.has(i)) return null;
           const backs = l.items.filter((it) => it.back);
           return ctx.ensureJob(`look_back:back:${i}`, {
             type: 'image',
             imagePaths: [front, ...backs.map((it) => it.back)],
-            template: buildLookBackPrompt({ template: ctx.prompt('look_back'), backs, bag: bagOf(ctx.run) }),
+            template: buildLookBackPrompt({ template: ctx.prompt('look_back'), backs, bag: l.hasBag }),
             videoLabel: `Outfit ${i + 1}${l.code ? ` [${l.code}]` : ''} – xem trước mặt sau – ${name}`,
             meta: { aspectRatio: '9:16', imageQuality: '2K', lookIndex: i, kind: 'lookbook' },
           });
         });
         registerLooks(ctx, jobs, (i) => `Outfit ${i + 1}${looks[i].code ? ` [${looks[i].code}]` : ''} – ${name} (xem trước mặt sau)`);
-        return ctx.waitAll(jobs);
+        return ctx.waitAll(jobs.filter(Boolean));
       },
     },
     {
@@ -752,7 +854,7 @@ export default {
           if (!apiKey) note = 'Chưa có Gemini API key trong Cài đặt → dùng bản trung tính (động tác nhắc tới món có thể không có trong outfit, vd. mở áo khoác, đổi thành động tác chung).';
           else {
             try {
-              const out = await adaptBeats({ beats: plan.beats, lookPaths: paths, rules: ctx.prompt('adapt'), apiKey, model: db.settings.geminiModel || 'gemini-2.5-flash', bag: bagOf(ctx.run) });
+              const out = await adaptBeats({ beats: plan.beats, lookPaths: paths, rules: ctx.prompt('adapt'), apiKey, model: db.settings.geminiModel || 'gemini-2.5-flash', bag: looks.map((l) => l.hasBag) });
               texts = out.texts;
               const changed = texts.filter((t, i) => t !== plan.beats[i].text).length;
               note = `Gemini đã chỉnh ${changed}/${texts.length} mốc theo phụ kiện trong ảnh xem trước${out.accessories.length ? ` — ${out.accessories.join(' · ')}` : ''}.`;

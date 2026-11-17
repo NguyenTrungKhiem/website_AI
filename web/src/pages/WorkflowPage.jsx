@@ -220,8 +220,10 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
             onChange={(v) => setInputs((st) => ({ ...st, [looksKey]: typeof v === 'function' ? v(st[looksKey]) : v }))}
             modelId={inputs.model || null}
             wfId={wf.id}
-            bag={rule?.bag !== false}
+            bag={rule ? (rule.bag ?? true) : true}
+            bagNote={rule?.bagNote || null}
             motion={rule?.value || null}
+            backOutfits={rule?.backOutfits?.[effectiveOptions.duration]?.[looks.length] ?? null}
             max={maxLooks}
             captionMode={captionMode || 'code'}
             onCaptionMode={(v) => setOptions((st) => ({ ...st, captionMode: v }))}
