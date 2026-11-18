@@ -109,8 +109,9 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
   // Quy trình có khối outfit nhiều món (tab Nam): inputs[key] = [{ items, style, main, text }], luôn có ít nhất 1 outfit
   const looksKey = wf.outfitSets?.key || null;
   const looks = looksKey ? (Array.isArray(inputs[looksKey]) && inputs[looksKey].length ? inputs[looksKey] : [emptyLook()]) : null;
-  const maxLooks = rule?.maxOutfits || 3;
-  if (looks && looks.length > maxLooks) missing.push(`${ruleName} nhận tối đa ${maxLooks} outfit (đang có ${looks.length})`);
+  // Số outfit tối đa có thể khác theo thời lượng (vd. Chuyển động Nam 2: 10s tối đa 4, 15s tối đa 6)
+  const maxLooks = rule?.maxOutfitsByDuration?.[effectiveOptions.duration] || rule?.maxOutfits || 3;
+  if (looks && looks.length > maxLooks) missing.push(`${ruleName}${rule?.maxOutfitsByDuration ? ` bản ${effectiveOptions.duration}` : ''} nhận tối đa ${maxLooks} outfit (đang có ${looks.length})`);
   if (looks && captionMode === 'text' && !cleanCaptionText(looks[0]?.text).trim()) missing.push('Chữ trên video (outfit 1)');
   const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
   const missingClips = perClip.length
@@ -223,7 +224,7 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
             bag={rule ? (rule.bag ?? true) : true}
             bagNote={rule?.bagNote || null}
             motion={rule?.value || null}
-            backOutfits={rule?.backOutfits?.[effectiveOptions.duration]?.[looks.length] ?? null}
+            backOutfits={rule?.backOutfits?.[rule?.dynamic ? 'auto' : effectiveOptions.duration]?.[looks.length] ?? null}
             max={maxLooks}
             captionMode={captionMode || 'code'}
             onCaptionMode={(v) => setOptions((st) => ({ ...st, captionMode: v }))}
@@ -246,7 +247,21 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
         {wf.options.map((o) => {
           // Ô "Thời lượng": chỉ hiện các bản chuyển động đang chọn có; chuyển động 2 phân cảnh (không có bản nào) thì ẩn
           const isDuration = o.key === 'duration' && allowedDurations;
-          if (isDuration && !allowedDurations.length) return null;
+          if (isDuration && !allowedDurations.length) {
+            // Chuyển động thời lượng tự tính (vd. Chuyển động Nam 2): hiện số giây theo số outfit, giống server (dynamicSeconds)
+            const dyn = rule?.dynamic;
+            if (!dyn || !looks) return null;
+            const n = Math.max(1, looks.length);
+            const sec = Math.min(dyn.max, Math.max(3, Math.ceil(dyn.intro + dyn.per * (n - 1) - 1e-6)));
+            const per = n > 1 ? String(Math.round(((sec - dyn.intro) / (n - 1)) * 100) / 100).replace('.', ',') : null;
+            return (
+              <small key={o.key} className="muted" style={{ display: 'block' }}>
+                ⏱ Thời lượng video tự tính theo số outfit: <b>{n} outfit → {sec}s</b>
+                {per ? ` (mở đầu ${String(dyn.intro).replace('.', ',')}s + ${n - 1} outfit × ~${per}s)` : ' (chỉ đoạn mở đầu)'}
+                . Cần mô hình Omni 1.2 Flash (chọn độ dài 3–{dyn.max}s từng giây).
+              </small>
+            );
+          }
           const choices = Array.isArray(o.options) && isDuration ? o.options.filter((opt) => allowedDurations.includes(typeof opt === 'string' ? opt : opt.value)) : o.options;
           return Array.isArray(o.options) ? (
             // Tuỳ chọn dạng chọn 1 trong danh sách (vd. Chuyển động, Mô hình Flow)

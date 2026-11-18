@@ -245,6 +245,46 @@ export async function importFlowVideoToRun(run, { stageId, clipId, key } = {}) {
       }
     }
   }
+  // Quy trình có phân cảnh khai báo trong wf.sceneJobs (vd. tab Nam không voice: video:scene1..3): người dùng tự tạo video trên
+  // Flow (vd. Flow báo "unusual activity") rồi tải về -> gán cho phân cảnh đầu tiên chưa có video xong, kể cả khi lần chạy còn
+  // dừng ở bước duyệt / chưa tới bước video. Bước phân cảnh KHÔNG đánh dấu xong ở đây: lần chạy đi tiếp các bước còn lại, tới bước
+  // phân cảnh thì ensureJob nhận lại job đã có video (ghi prompt / mã như bình thường) rồi ghép.
+  let sceneImport = false;
+  if (!targetKey && !clipId) {
+    const wf = WORKFLOWS[run.workflow];
+    for (const sj of wf?.sceneJobs || []) {
+      const stage = sj.key.split(':')[1];
+      // trạng thái bước có thể chưa được tạo (lần chạy chưa tới đó): dựa vào điều kiện `when` của bước
+      const def = wf.stages.find((s) => s.id === stage);
+      if (!def || run.stages[stage]?.status === 'skipped' || (def.when && !def.when(run))) continue;
+      const j = jobsMap[sj.key] && db.jobs.find((x) => x.id === jobsMap[sj.key]);
+      if (!j || j.status !== 'done') {
+        targetKey = sj.key;
+        targetStage = stage;
+        sceneImport = true;
+        break;
+      }
+    }
+    if (sceneImport) {
+      // Video đã tự tạo trên Flow = người dùng đã duyệt ảnh xem trước: bước đang dừng chờ duyệt coi như xong
+      for (const s of wf.stages) {
+        if (s.id === targetStage) break;
+        const st = run.stages[s.id];
+        if (st && (st.status === 'paused' || (s.id === 'review' && st.status !== 'done'))) Object.assign(st, { status: 'done', approved: true, error: null });
+      }
+      if (!jobsMap[targetKey] || !db.jobs.some((x) => x.id === jobsMap[targetKey] && x.status !== 'failed')) {
+        // Job giữ chỗ KHÔNG xếp hàng (createJob sẽ xếp hàng và tự bấm tạo trên Flow): chỉ nhận video tải từ Flow
+        const job = {
+          id: newId(), type: 'video', batchId: null, runId: run.id, stage: targetStage, parentJobId: null, sourceRange: null,
+          videoPath: null, videoLabel: `${wf.name} · ${targetStage} (tự tạo trên Flow)`, assets: {}, imagePaths: null, template: null,
+          meta: null, prompt: '', rawPrompt: false, status: 'importing', error: null, attempts: [], outputPath: null, thumbPath: null,
+          createdAt: Date.now(),
+        };
+        db.jobs.unshift(job);
+        jobsMap[targetKey] = job.id;
+      }
+    }
+  }
 
   if (!targetKey) {
     throw new Error('Không xác định được bước nào cần video để gán');
@@ -263,9 +303,19 @@ export async function importFlowVideoToRun(run, { stageId, clipId, key } = {}) {
     jobsMap[targetKey] = job.id;
   }
 
-  await applyFlowVideoToJob(job);
+  try {
+    await applyFlowVideoToJob(job);
+  } catch (e) {
+    // job giữ chỗ không tải được video: để trạng thái lỗi (không treo ở "importing"), lần sau bấm tải lại sẽ tạo job giữ chỗ mới
+    if (sceneImport && job.status === 'importing') { job.status = 'failed'; job.error = e.message; save(); }
+    throw e;
+  }
 
-  if (targetStage && run.stages[targetStage]) {
+  if (sceneImport) {
+    // bước phân cảnh chạy lại để nhận job đã có video (xem chú thích ở trên)
+    const st = run.stages[targetStage];
+    if (st && st.status !== 'pending') { st.status = 'pending'; st.error = null; }
+  } else if (targetStage && run.stages[targetStage]) {
     run.stages[targetStage].status = 'done';
     run.stages[targetStage].error = null;
   }

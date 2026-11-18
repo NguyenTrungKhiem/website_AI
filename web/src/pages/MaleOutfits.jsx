@@ -27,16 +27,20 @@ const isBack = (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '');
 // (server/workflows/video-thoi-trang-khong-voice-nam.js: lookSig) — ảnh outfit chỉ được dùng khi chữ ký còn khớp.
 // bag = outfit này có túi (true / false — chuyển động túi tuỳ outfit đã quy về từng outfit, xem bagOfLook); không túi thì ô Túi
 // không tính và chữ ký có đuôi "|nobag".
-const lookSigOf = (modelId, look, slots, has, bag = true) =>
-  [
+// Ô thêm sau (extra: Bộ đồ, Mũ) chỉ nối vào khi có ảnh ("|set=<id>") để outfit không dùng ô mới giữ đúng chữ ký cũ.
+const lookSigOf = (modelId, look, slots, has, bag = true) => {
+  const pic = (s) => {
+    const it = look.items?.[s.key] || {};
+    return (has(it.front) && it.front) || (has(it.back) && it.back) || '';
+  };
+  return [
     has(modelId) ? modelId : '',
     String(look.style || '').replace(/\s+/g, ' ').trim().slice(0, 200),
-    ...slots.map((s) => {
-      if (!bag && s.key === 'bag') return '';
-      const it = look.items?.[s.key] || {};
-      return (has(it.front) && it.front) || (has(it.back) && it.back) || '';
-    }),
-  ].join('|') + (bag ? '' : '|nobag');
+    ...slots.filter((s) => !s.extra).map((s) => (!bag && s.key === 'bag' ? '' : pic(s))),
+  ].join('|') +
+    slots.filter((s) => s.extra && pic(s)).map((s) => `|${s.key}=${pic(s)}`).join('') +
+    (bag ? '' : '|nobag');
+};
 
 // Túi của 1 outfit theo kiểu túi của chuyển động (giống server: bagForLook): 'optional' = outfit có ảnh túi mới có túi
 const bagOfLook = (motionBag, look, has) => {
@@ -44,6 +48,44 @@ const bagOfLook = (motionBag, look, has) => {
   const it = look.items?.bag || {};
   return has(it.front) || has(it.back);
 };
+
+// Ô nhập / sửa mã sản phẩm của món chính (chế độ "Mã sản phẩm"): mã lưu lên ảnh mặt trước của món (asset.productCode, sổ mã chung —
+// giống ô mã của tab Nữ), lần chạy in đúng mã này. Để trống = tự cấp mã khi chạy. Lưu khi rời ô hoặc bấm Enter.
+const normCode = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toUpperCase().replace(/[\s.]+/g, '_').replace(/[^A-Z0-9_-]/g, '');
+function CodeInput({ asset, refresh }) {
+  const [draft, setDraft] = useState(null); // null = đang hiện mã đã lưu
+  const [msg, setMsg] = useState(null);
+  const saved = asset.productCode || '';
+  const save = async () => {
+    const code = normCode(draft ?? saved);
+    if (draft == null || code === saved) { setDraft(null); return; }
+    if (!code) { setDraft(null); return; } // xoá trắng = giữ mã cũ / tự cấp khi chạy
+    try {
+      await api.assignCode(asset.id, code);
+      setDraft(null);
+      setMsg({ ok: true, text: `Đã lưu mã ${code}` });
+      await refresh();
+    } catch (e) {
+      setMsg({ ok: false, text: e.message });
+    }
+  };
+  return (
+    <>
+      <input
+        className="caption-text"
+        style={{ maxWidth: 170, textTransform: 'uppercase' }}
+        placeholder="Gõ mã, VD: AO_01"
+        title="Mã sản phẩm in lên video khi mặc outfit này (dạng LOAI_SO, không dấu). Để trống = tự cấp mã khi chạy."
+        value={draft ?? saved}
+        onChange={(e) => { setDraft(normCode(e.target.value)); setMsg(null); }}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      />
+      {!saved && draft == null && <span className="small muted">chưa có mã → tự cấp khi chạy</span>}
+      {msg && <span className={'small ' + (msg.ok ? 'muted' : 'warn-text')}>{msg.text}</span>}
+    </>
+  );
+}
 
 // Khối "Ảnh outfit" của 1 outfit: tạo ảnh KOL/KOC mặc đủ bộ (món đã nhập giữ đúng, món thiếu AI tự phối theo phong cách).
 // patch(fn) = cập nhật danh sách outfit bằng hàm (an toàn khi nhiều job xong cùng lúc).
@@ -218,9 +260,13 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
         const used = slots.filter((s) => bag !== false || s.key !== 'bag'); // chuyển động không túi: ô Túi không tính
         const given = used.filter((s) => assetOf(l.items?.[s.key]?.front) || assetOf(l.items?.[s.key]?.back));
         // túi tuỳ outfit: AI không tự phối túi (không nhập = không túi)
-        const auto = used.filter((s) => s.key !== 'jacket' && !(bagOptional && s.key === 'bag') && !given.includes(s));
+        // ô fill = false (áo khoác, bộ đồ, mũ) AI không tự phối; ô bị "che" bởi ô đã nhập (Bộ đồ che Áo + Quần) cũng không
+        const covered = new Set(given.flatMap((s) => s.covers || []));
+        const auto = used.filter((s) => (s.fill ?? s.key !== 'jacket') && !covered.has(s.key) && !(bagOptional && s.key === 'bag') && !given.includes(s));
         const lookBag = bagOfLook(bag, l, has);
-        const mainSlot = given.find((s) => s.key === l.main) || given[0] || null;
+        // main 'none' = outfit này không in mã (vd. outfit mở đầu), giống server: NO_CODE
+        const noCode = l.main === 'none';
+        const mainSlot = noCode ? null : given.find((s) => s.key === l.main) || given[0] || null;
         const mainAsset = mainSlot && (assetOf(l.items[mainSlot.key].front) || assetOf(l.items[mainSlot.key].back));
         return (
           <div key={i} className="outfit-card stack">
@@ -267,6 +313,7 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                       <b className="small">{slot.label}</b>
                       {(it.front || it.back) && <a className="small" onClick={() => setItem(i, slot.key, { front: null, back: null })} title="Bỏ cả ảnh mặt trước và mặt sau của món này">Bỏ món</a>}
                     </div>
+                    {slot.covers && <small className="muted" style={{ fontSize: 12 }}>1 ảnh có cả áo và quần; có ảnh ở ô này thì AI không tự phối áo / quần (không cần nhập ô Áo, Quần).</small>}
                     <div className="row" style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span className="small muted">Mặt trước:</span>
                       <div className={'thumb pick' + (front ? '' : ' empty')} onClick={() => setPicking({ i, slot })} title={front ? front.name : 'Bấm để chọn ảnh trong thư viện, tải ảnh từ máy hoặc dán link sản phẩm để bóc tách'}>
@@ -289,7 +336,7 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                         onChange={(id) => setItem(i, slot.key, { back: id })}
                         state={state}
                         refresh={refresh}
-                        backPrompt={slot.key === 'shoes' || slot.key === 'bag' ? state.defaults?.itemBackViewPrompt : state.defaults?.backViewPrompt}
+                        backPrompt={slot.key === 'shoes' || slot.key === 'bag' || slot.key === 'hat' ?state.defaults?.itemBackViewPrompt : state.defaults?.backViewPrompt}
                         allowClear
                       />
                     )}
@@ -336,15 +383,16 @@ export default function MaleOutfits({ slots, value, onChange, max = 3, captionMo
                   <span className="small muted">Mã in trên video khi mặc outfit này:</span>
                   {given.length ? (
                     <>
-                      <select value={mainSlot.key} onChange={(e) => setLook(i, { main: e.target.value })} title="Mã sản phẩm của món nào được in lên video">
+                      <select value={noCode ? 'none' : mainSlot.key} onChange={(e) => setLook(i, { main: e.target.value })} title="Mã sản phẩm của món nào được in lên video (hoặc outfit này không in mã)">
                         {given.map((s) => {
                           const a = assetOf(l.items[s.key].front) || assetOf(l.items[s.key].back);
                           return <option key={s.key} value={s.key}>{s.label}{a?.productCode ? ` · ${a.productCode}` : ''}</option>;
                         })}
+                        <option value="none">🚫 Không in mã cho outfit này</option>
                       </select>
-                      {mainAsset?.productCode
-                        ? <span className="code-chip" style={{ marginTop: 0 }}>{mainAsset.productCode}</span>
-                        : <span className="small muted">chưa có mã → tự cấp khi chạy</span>}
+                      {noCode
+                        ? <span className="small muted">không in mã khi mặc outfit này (các outfit khác vẫn in)</span>
+                        : mainAsset && <CodeInput key={mainAsset.id} asset={mainAsset} refresh={refresh} />}
                     </>
                   ) : <span className="small muted">outfit chưa có món nào nên không in mã</span>}
                 </>
