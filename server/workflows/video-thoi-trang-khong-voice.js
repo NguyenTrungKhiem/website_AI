@@ -10,7 +10,7 @@
 // cho các trang phục còn lại và co giãn mốc giây của khối theo thời lượng được chia. Prompt cố ý ngắn gọn: Flow từ chối
 // prompt quá dài, nên mỗi mốc chỉ ghi đúng động tác tay / chân / đầu, không lặp lại ràng buộc.
 // Thêm chuyển động mới = thêm 1 mục vào MOTIONS (và prompts tương ứng).
-// Đây là tab NỮ của nhóm "không voice" (Chuyển động 1–4). Tab NAM là quy trình riêng: ./video-thoi-trang-khong-voice-nam.js
+// Đây là tab NỮ của nhóm "không voice" (Chuyển động 1–5; Chuyển động 5 = đồ bộ áo + quần / váy). Tab NAM là quy trình riêng: ./video-thoi-trang-khong-voice-nam.js
 // (nhiều outfit, ảnh xem trước full outfit, số phân cảnh động). Chuyển động 5 (nam) cũ chỉ còn giữ cho các LẦN CHẠY CŨ (legacy).
 //
 // Chỗ điền: {MODEL} = @Image1 · {OUTFIT} = tag ảnh mặt trước của bộ đang viết · {BACK} = tag ảnh mặt sau của bộ đó ·
@@ -19,7 +19,7 @@
 // các bộ còn lại (để cầm trên móc), bối cảnh. Part 2 = model, (trước, sau) từng bộ còn lại, bối cảnh, khung hình cuối Part 1.
 import fs from 'node:fs';
 import path from 'node:path';
-import { extractLastFrame, removeCaptionBand } from '../ffmpeg.js';
+import { extractLastFrame, removeCaptionBand, colorMatchVideo } from '../ffmpeg.js';
 import { DIRS, db, save } from '../db.js';
 import { codeOfAsset, assignCode } from '../productCodes.js';
 import { captionModeOf, cleanCaptionText, NO_TEXT_RULE } from '../caption.js';
@@ -28,9 +28,11 @@ import { FASHION_MODELS } from './video-thoi-trang.js';
 const MAX_OUTFITS = 4;
 const PART_SEC = 10;
 
+// Khoá bối cảnh: mọi cú nhảy cắt giữ đúng căn phòng / ánh sáng của {BG}, chỉ đổi dáng và cỡ khung hình (Chuyển động 4 từng tự đổi
+// sang phòng khác ở 1 mốc rồi quay lại).
 // Khoá vóc dáng: model video hay tự "làm gọn" người mẫu (thu nhỏ vòng 1, vòng 3) -> nói thẳng phải giữ số đo và đường cong
 // của {MODEL} ở mọi khung hình, trang phục ôm theo đúng cơ thể đó.
-const SETUP = `{PART} of a silent {DUR} Korean try-on clip: static camera, no voice, no lip-sync, mouth closed. Caption: small white serif product code at the top-center. Face and head-to-body ratio locked 1:1 to {MODEL}. Keep her real body exactly as in {MODEL} in every frame: same bust, waist, hip and thigh size and curves; never slim, flatten or shrink the bust or hips; the outfit is fitted to this body. Background: {BG}. Left/right are the model's own.`;
+const SETUP = `{PART} of a silent {DUR} Korean try-on clip: static camera, no voice, no lip-sync, mouth closed. Caption: small white serif product code at the top-center. Face and head-to-body ratio locked 1:1 to {MODEL}. Keep her real body exactly as in {MODEL} in every frame: same bust, waist, hip and thigh size and curves; never slim, flatten or shrink the bust or hips; each garment keeps its own cut and fit on this body (loose stays loose). Background: {BG}, the same room and light in every shot; jump cuts change only her pose and framing, never the location. Left/right are the model's own.`;
 
 // Khoá trang phục: ảnh model chỉ là tham chiếu khuôn mặt / tóc / vóc dáng. Model video hay để sót đồ cũ của KOL/KOC (cổ áo,
 // tay áo, quần… lộ dưới hoặc ngoài trang phục mới, nhất là ở cú quay lưng và cận cảnh) -> nói thẳng sau match cut không còn
@@ -128,15 +130,17 @@ const M3_15S = `Mood: elegant party-dress look, graceful ladylike moves.
 // ---- Chuyển động 4 (theo video mẫu 30,5K "đầm váy phong cách quyến rũ", 13,5s -> 15s: thêm đoạn kết hai tay bye bye + hôn gió) ----
 // ĐÚNG 1 trang phục (mặt trước + mặt sau), 1 PHÂN CẢNH 15s, KHÔNG có đoạn mở đầu mặc đồ thường: ngay khung hình đầu tiên
 // người mẫu đã mặc trang phục sản phẩm (không match cut) -> dùng dòng Wardrobe riêng `wardrobe0`. Một ví cầm tay nhỏ do AI chọn.
-// lưng ngoái nhìn -> hai tay chạm xương quai xanh -> bước tới -> tựa tường -> bước tới lắc hông -> xoắn tóc nháy mắt ->
+// lưng ngoái nhìn -> hai tay chạm xương quai xanh -> bước tới -> đứng dồn trọng tâm 1 bên hông -> bước tới lắc hông -> xoắn tóc nháy mắt ->
 // nghiêng người tay sau gáy -> 3/4 lưng ngoái nhìn -> lưng, tay luồn tóc -> cận, tay chống eo -> bước tới vén váy ->
 // bước ra xa (lưng) -> bước tới -> lưng ngoái nhìn như mở đầu -> hai tay bye bye + hôn gió. Trái/phải là của người mẫu.
 // Câu chữ cố ý gọn (cả prompt ≈ 3000 ký tự): Flow từ chối prompt quá dài.
+// KHÔNG nhắc đồ vật / chỗ cụ thể của bối cảnh (tường, gương, cửa, ghế…): ảnh bối cảnh không có thì AI tự dựng phòng khác cho
+// đúng mốc đó rồi quay lại phòng cũ (video thật: 2,2–3,0s "leans back against the wall" -> nhảy sang phòng có cột trắng).
 const M4_15S = `Mood: alluring, confident evening-dress look; slow, elegant moves.
 0.0-0.7s: Close three-quarter shot from behind: she already wears {OUTFIT}, showing {BACK}, right hand on her hip, head turned over her left shoulder, eyes closed then opening to the camera, smile.
 0.7-1.4s: Jump cut, close front, chest up: both hands on her collarbones, fingertips at the neckline, chin down, soft smile.
 1.4-2.2s: Jump cut, medium-full: walks toward the camera, small clutch low in her right hand, left hand gathering the skirt at her thigh.
-2.2-3.0s: Jump cut, full body: leans back against the wall, left leg stepped forward, clutch at her left hip, right hand sliding from thigh to waist.
+2.2-3.0s: Jump cut, full body: stands with her weight on one hip, left leg stepped forward, clutch at her left hip, right hand sliding from thigh to waist.
 3.0-4.7s: Jump cut: walks slowly toward the camera with a hip sway to a medium shot, clutch low in her right hand, smiling.
 4.7-5.5s: Jump cut, close front: right hand twirls a lock of hair by her cheek, a wink, bright smile.
 5.5-6.2s: Jump cut, full body side-on: one leg forward, one hand behind her neck, clutch low in the other, gaze down.
@@ -149,8 +153,120 @@ const M4_15S = `Mood: alluring, confident evening-dress look; slow, elegant move
 12.5-13.4s: Jump cut, close three-quarter back as in the opening: right hand on her hip, looks back over her left shoulder at the camera.
 13.4-15.0s: Jump cut, medium front, clutch under her left arm: waves bye-bye with both hands, then blows a kiss with her right hand; sharp final frame.`;
 
+// ---- Chuyển động 5 – ĐỒ BỘ (theo video mẫu 571K "Thảo Nhi Shop", 16,9s -> 15s) ----
+// Kiểu "mặc đồ bộ trước máy quay": ĐÚNG 2 ảnh trang phục của CÙNG 1 BỘ — ảnh 1 = ÁO ({OUTFIT}/{BACK}), ảnh 2 = QUẦN hoặc VÁY
+// ({OUTFIT2}/{BACK2}); 2 phân cảnh 7s + 8s (xem setParts bên dưới), 1 mã sản phẩm (của ảnh áo) cho cả video. Túi và giày do AI tự chọn cho hợp bộ đồ.
+// Video mẫu: mặc sẵn áo + quần ngắn → thắt dây eo áo → cầm quần lên, xỏ chân mặc vào → nghiêng người chỉnh cạp → co gối buộc nơ
+//   gấu quần → đứng toàn thân cười → nghiêng người, cầm túi 2 tay → chống hông khoe 3/4 lưng → cận ngực–hông, túi ở khuỷu tay →
+//   quay lưng bước ra xa ngoái nhìn → quay lại bước tới → cận, 2 tay chống hông, túi treo cổ tay, cười.
+// CHUYỂN ĐỘNG CHUNG cho mọi bộ: KHÔNG dùng động tác gắn với thiết kế riêng của bộ mẫu (thắt dây rút eo áo, buộc nơ gấu quần) ->
+//   thay bằng dáng quyến rũ chung (vuốt tóc, tay lướt dọc thân áo, lắc vai / hông chậm, liếc qua vai, tay trượt từ đùi lên eo).
+//   Món dưới là QUẦN hay VÁY thì tư thế sau khi mặc khác nhau -> 2 bản prompt, chọn theo options.bottomType.
+// MẶC VÀO BẰNG ĐỘNG TÁC THẬT, LIỀN MẠCH (không cắt cảnh): 2 tay cầm cạp quần / váy mở ra trước mặt, cúi nhẹ → nhấc chân phải xỏ vào
+//   ống / lòng váy, rồi chân trái → 2 tay kéo lên dọc chân, chồng lên quần short, tới eo. Bản trước dùng "bước 1 chân vào" rồi MATCH
+//   CUT sang đã mặc xong -> video thật ra cảnh BIẾN HÌNH (quần tự hiện lên người) thay vì xỏ từng chân -> giờ tả từng pha theo thứ
+//   tự, nói rõ "1 cú quay liên tục, không cắt" và dòng quy tắc cấm biến hình (motion.dressing).
+// AN TOÀN NỘI DUNG (Flow dễ từ chối cảnh "thay đồ"): video mẫu mặc quần bảo hộ màu da trông như không mặc gì -> ở đây mở đầu mặc
+//   ÁO + QUẦN SHORT GYM NỮ ÔM DÁNG ({SHORTS} = màu người dùng nhập, mặc định đỏ; tả là "fitted … biker shorts", đồ thể thao kín,
+//   dài giữa đùi) và prompt nói rõ "luôn mặc đủ đồ ở mọi khung hình", quần / váy của bộ được mặc CHỒNG LÊN quần short (chỉ thêm đồ,
+//   không cởi gì). Tránh các chữ: undress, strip, bare, tight, sexy, underwear, lingerie, changing clothes.
+// GIÀY / TÚI: lúc đang mặc quần / váy nhân vật CHÂN TRẦN, không túi (video thử từng mang guốc rồi mới xỏ quần) -> mốc mở đầu và
+//   cú xỏ chân ghi "barefoot", mặc xong (M5SET_CUT) mới "now in simple shoes" và cầm túi; dòng Wardrobe nhắc lại.
+// Lần thử 2: có co từng gối nhưng quần vẫn được cầm ngang HÔNG, buông che trước chân -> giờ "cúi người, cạp sát ỐNG CHÂN, quần gom
+//   trên sàn", nhắc "vẫn cúi / cạp vẫn thấp" ở 2 mốc xỏ chân, quy tắc "cạp ở thấp tới khi xỏ xong 2 chân"; giày nhắc ngay đầu mốc 7,2s
+//   (lần thử 2 giày tới 9,5s mới có).
+// Lần thử 3: xỏ từng chân đã đúng nhưng ~0,5s đầu mốc 1,8s quần hiện sẵn ở hông rồi mới kéo xuống ống chân (AI cần trạng thái mở
+//   đầu) -> mốc 1,8s mở bằng "quần gấp trên sàn, cúi nhặt lên theo cạp". Áo / quần bị đổi form (áo suông tay loe -> áo ôm ngắn, cạp
+//   chun -> cạp phẳng) -> dòng Wardrobe khoá chất liệu, độ bóng, form, độ dài, kiểu tay, cạp, cúc; phần mở đầu chung bỏ câu "fitted
+//   to this body" (bị hiểu là may ôm theo người) thay bằng "giữ đúng form của trang phục".
+// Lần thử 4: hết lỗi quần ở sẵn hông, áo đúng form lúc đầu, nhưng (1) câu "quần gấp trên sàn, cúi nhặt lên" làm AI vẽ 2 CHIẾC QUẦN
+//   (1 chiếc vẫn nằm trên sàn), (2) sau khi mặc xong quần thành ôm cạp cao, áo gọn lại — mô hình phải vừa diễn cảnh mặc đồ dài vừa
+//   giữ đúng 2 món đồ trong 15s, prompt sát giới hạn 3.360 ký tự.
+// => TÁCH 2 PHÂN CẢNH (tổng 15s): Part 1 = 7s chỉ có đoạn mặc (prompt ngắn, tả kỹ), Part 2 = 8s chỉ có đoạn khoe dáng, mở bằng KHUNG
+//   HÌNH CUỐI của Part 1 và nhận lại ảnh áo + quần để khoá form lại từ đầu (setParts; luồng 2 phân cảnh có sẵn: part1 → last_frame
+//   → part2 → ghép).
+//   Đoạn mở đầu rút còn 0,6s (người dùng: "0–0,5s đứng khoe xong là bắt đầu mặc"). Quần ĐÃ CẦM SẴN TRONG TAY từ khung hình đầu
+//   (không cắt cảnh, không để trên sàn) -> chỉ có 1 chiếc quần, AI không phải tự dựng trạng thái mở đầu cho cú mặc.
+//   Khớp 2 phân cảnh: Part 1 kết bằng dáng đứng thẳng nhìn máy quay, chân trần (đúng trạng thái Part 2 mở ra); Part 2 mở "đúng
+//   khung hình cuối Part 1: cùng khuôn mặt, tóc, ánh sáng, độ sáng, cân bằng trắng, tông màu, giữ nguyên tới hết" và cú nhảy cắt
+//   đầu tiên của Part 2 (0,8s, lúc mang giày + cầm túi) che chỗ nối; khuôn mặt khoá lại theo ảnh model ở cả 2 phần.
+// Lần thử 2 phân cảnh đầu: ánh sáng / màu ở chỗ nối khớp (chênh < 0,5%), nhưng Part 2 KHÔNG mở đúng dáng khung hình cuối (nhảy dáng),
+//   áo Part 1 bó hơn ảnh gốc (AI bám theo áo thun ôm trong ảnh model), giày tới ~4,5s Part 2 mới có -> Part 2 mở như 1 cú cắt cảnh
+//   mới (khung hình cuối chỉ là mẫu khuôn mặt / ánh sáng / màu), đã mang giày + cầm túi từ khung hình đầu; Wardrobe Part 1 thêm "form
+//   áo chỉ lấy từ ảnh áo, không theo áo bó trong ảnh model"; mốc 0,6s nhắc "không cầm ngang hông trước khi xỏ xong 2 chân".
+// M5SET_CUT = giây (trong Part 1) quần / váy đã kéo lên tới eo (từ đó quần short không còn lộ).
+const M5SET_CUT = 5.4;
+export const M5SET_PART_DURATIONS = ['7s', '8s'];
+// Part 1 (7s): đoạn mặc, 1 cảnh liền. Váy không có ống: xỏ chân vào lòng váy. Theo yêu cầu người dùng: CHÂN TRÁI nhấc cao (gối
+//   ngang hông) xỏ vào ống trái → bàn chân trượt xuống, ló ra ở gấu, đặt phẳng xuống sàn → CHÂN PHẢI tương tự → mới kéo lên eo; mỗi pha 1
+//   mốc riêng, cạp giữ ở ngang gối tới khi xỏ xong 2 chân (lần thử trước: cầm ngang hông ~1s, 2 cú nhấc chân không rõ).
+// Lần thử cảnh 1 với "hạ cạp xuống ngang gối": AI VẪN cầm quần ngang HÔNG, ống quần buông che trước chân (lần thứ 3 bỏ qua câu hạ
+//   thấp -> thói quen cứng của mô hình) -> giờ THUẬN theo: cầm cạp mở rộng trước hông, ống quần rỗng buông tới sàn trước chân, rồi
+//   nhấc GỐI CAO QUA CẠP và thả bàn chân xuống trong ống quần (chân trái rồi chân phải), mới kéo lên eo.
+// Lần thử "gối cao qua cạp": chân thứ nhất xỏ rõ, nhưng chân thứ 2 không xỏ (AI nhấc lại chính chân đã ở trong). Người dùng chỉ rõ:
+//   cầm quần ngang hông thì dù nhấc chân cao cũng không mặc được -> phải CÚI NGƯỜI, HẠ CẠP XUỐNG DƯỚI GỐI rồi mới xỏ từng chân, xỏ
+//   xong cả 2 chân mới kéo lên hông, buông cạp, rồi 2 tay kéo vạt áo xuống ra ngoài (tránh áo bị nhét / phồng trong quần). Mỗi động
+//   tác 1 mốc; trong 2 mốc xỏ chân nhắc lại "vẫn cúi, 2 tay vẫn dưới gối"; chân gọi theo vị trí trên khung hình, chân thứ 2 ghi rõ
+//   "chân KIA, vẫn ở ngoài". Áo kết thúc thả ngoài quần (Wardrobe 2 phân cảnh).
+const m5setPart1 = (k) => {
+  const pants = k === 'pants';
+  // Chân gọi theo VỊ TRÍ TRÊN KHUNG HÌNH (video thử: AI hiểu "left" là bên trái khung hình, xỏ nhầm chân / nhấc 1 chân 2 lần)
+  const into = pants ? 'the trouser leg on that side, pushing it down until the foot comes out at the hem' : 'the skirt, inside the waistband';
+  return [
+    'Mood: graceful and unhurried; she is fully dressed in every frame.',
+    `0.0-0.6s: Full body front, feet visible: she wears {OUTFIT} with the {SHORTS} gym shorts, barefoot, the folded {OUTFIT2} in one hand at her side; a quick smile.`,
+    `0.6-1.2s: Same shot, continuous: she shakes {OUTFIT2} open and holds its waistband open with both hands in front of her hips, ${pants ? 'the trouser legs' : 'the skirt'} hanging down.`,
+    `1.2-2.0s: Same shot, continuous: she bends deeply forward, knees bent, and lowers the open waistband all the way down to mid-shin, hands just above her ankles, ${pants ? 'the trouser legs' : 'the hem'} gathered on the floor in front of her feet, head down watching.`,
+    `2.0-3.2s: Same shot, continuous, still bent with the waistband at mid-shin: she draws the knee on the left side of the frame up high toward her chest, lifts that foot above the waistband, then steps it into ${into} and sets it on the floor.`,
+    `3.2-4.4s: Same shot, continuous, waistband still at mid-shin: she draws the OTHER knee, on the right side of the frame, up high toward her chest, lifts that foot (still outside) above the waistband, then steps it into ${into} and sets it down; both legs are now in.`,
+    `4.4-5.4s: Same shot, continuous: only now she straightens up, both hands pulling {OUTFIT2} up her legs over the shorts to her waist${pants ? '' : ', the hem falling into place'}; the shorts are fully covered.`,
+    `5.4-6.2s: Same shot: she lets go of the waistband, then both hands take the hem of {OUTFIT} at her sides and pull it down and out so it hangs loose over the waistband, untucked.`,
+    `6.2-7.0s: Same shot: she stands upright facing the camera, arms relaxed, soft smile.`,
+  ].join('\n');
+};
+// Part 2 (8s): khoe dáng, mở bằng khung hình cuối Part 1
+const m5setPart2 = (k) => [
+  'Mood: graceful and alluring; slow elegant poses.',
+  k === 'pants'
+    ? '0.0-1.8s: Full body front, simple shoes that suit the set on her feet, a small handbag in one hand: other hand on her hip, a light sway, bright smile.'
+    : '0.0-1.8s: Full body front, simple shoes that suit the set on her feet, a small handbag in one hand: a light swish of the hem, bright smile.',
+  '1.8-3.6s: Jump cut, full body: she turns slowly to show {BACK} and {BACK2}, hand on hip, looking back over her shoulder.',
+  '3.6-5.0s: Jump cut: she turns back to front, a soft hip sway, chin tilted.',
+  '5.0-6.5s: Jump cut, close-up chin to hips: bag on her forearm, showing the top.',
+  '6.5-8.0s: Jump cut, medium close: hands on hips, bag on her wrist, big smile.',
+].join('\n');
+const M5SET_P1_PANTS = m5setPart1('pants');
+const M5SET_P1_SKIRT = m5setPart1('skirt');
+const M5SET_P2_PANTS = m5setPart2('pants');
+const M5SET_P2_SKIRT = m5setPart2('skirt');
+
+// Màu quần short gym lúc mở đầu (options.shortsColor, người dùng gõ tiếng Việt hoặc tiếng Anh): đổi tên màu tiếng Việt thường gặp
+// sang tiếng Anh, còn lại giữ nguyên chữ đã làm sạch (chỉ chữ cái / khoảng trắng, tối đa 30 ký tự); để trống = đỏ.
+const VI_COLORS = [
+  ['xanh la', 'green'], ['xanh duong', 'blue'], ['xanh navy', 'navy blue'], ['xanh den', 'navy blue'], ['xanh reu', 'olive green'],
+  ['xanh ngoc', 'teal'], ['xanh', 'blue'], ['do do', 'burgundy'], ['do', 'red'], ['den', 'black'], ['trang', 'white'], ['hong', 'pink'],
+  ['xam', 'grey'], ['ghi', 'grey'], ['be', 'beige'], ['kem', 'cream'], ['nau', 'brown'], ['tim', 'purple'], ['vang', 'yellow'], ['cam', 'orange'],
+];
+export function shortsColorOf(v) {
+  const raw = String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toLowerCase().replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30);
+  if (!raw) return 'red';
+  let out = raw;
+  for (const [vi, en] of VI_COLORS) {
+    const re = new RegExp(`\\b${vi}\\b`);
+    if (re.test(out)) { out = out.replace(re, en); break; }
+  }
+  return out.replace(/\b(mau|quan|short|shorts|gym)\b/g, ' ').replace(/\s+/g, ' ').trim() || 'red';
+}
+
+// Dòng Wardrobe cho chuyển động ĐỒ BỘ (Chuyển động 5), Part 1: {OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần hoặc váy của cùng bộ,
+// {SHORTS} = màu quần short gym, {CUT} = giây đã kéo quần / váy lên eo. Nói rõ quần short là đồ thể thao kín đáo, chỉ có 1 chiếc quần
+// (cầm sẵn từ khung hình đầu) và khoá chất liệu / form / chi tiết của cả 2 món.
+const WARDROBE_SET = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. {OUTFIT} (back {BACK}) is the top and {OUTFIT2} (back {BACK2}) is the bottom of one matching set, each copied exactly in every frame: same fabric and sheen, colour, fit and silhouette, length, sleeve shape, waistband, buttons and trims; never restyled or made tighter; the top's shape comes only from {OUTFIT}, never from the fitted shirt in {MODEL}, and it ends worn loose outside the bottom, never tucked in. She wears the top with plain {SHORTS} fitted women's gym shorts (opaque athletic biker shorts, mid-thigh), barefoot, no bag. There is only one {OUTFIT2}: she holds it from the first frame and pulls it on over the shorts; from {CUT}s it covers them. No clothes from {MODEL} ever show.`;
+// Part 2: mặc đủ bộ, form chép từ ẢNH SẢN PHẨM (không theo khung hình cuối {START}, phòng khi Part 1 lệch form); giày + túi từ khung hình đầu
+const WARDROBE_SET2 = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. She wears {OUTFIT} (back {BACK}) with {OUTFIT2} (back {BACK2}), both copied exactly from these photos, not from {START}: same fabric and sheen, colour, fit and silhouette, length, sleeve shape, waistband, buttons and trims; never restyled or made tighter; the top hangs loose outside the bottom, never tucked in; no gym shorts show. From the first frame she wears simple shoes that suit the set and holds a small handbag.`;
+
 // Dòng Wardrobe cho chuyển động KHÔNG có đoạn mặc đồ thường (Chuyển động 4): mặc sản phẩm ngay từ khung hình đầu tiên
-const WARDROBE_WORN = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. From the very first frame to the end she wears {OUTFIT} exactly (back {BACK}); no part of the clothes in {MODEL} shows under, over or beside it, back views and close-ups included.`;
+const WARDROBE_WORN =`Wardrobe: use {MODEL} for face, hair and body only, never its clothes. From the very first frame to the end she wears {OUTFIT} exactly (back {BACK}); no part of the clothes in {MODEL} shows under, over or beside it, back views and close-ups included.`;
 
 // ---- Chuyển động 5 – NAM (theo video mẫu e4553e40: lookbook đường phố 10s, nhiều cảnh nhảy cắt ở các góc khác nhau) ----
 // ĐÚNG 1 trang phục (mặt trước + mặt sau), 1 PHÂN CẢNH, mặc sẵn từ khung hình đầu (không match cut). Nhân vật NAM nên dùng
@@ -234,6 +350,26 @@ export const MOTIONS = {
     minOutfits: 1,
     maxOutfits: 1,
   },
+  // Khoá 'motion5set' (không dùng 'motion5': đó là Chuyển động 5 nam cũ, chỉ còn cho lần chạy cũ)
+  motion5set: {
+    name: 'Chuyển động 5 – ĐỒ BỘ: ĐÚNG 2 ảnh của cùng 1 bộ (ảnh 1 = ÁO, ảnh 2 = QUẦN hoặc VÁY), 2 phân cảnh 7s + 8s = 15s, túi + giày AI tự chọn: (P1) mặc áo + quần short gym nữ, cầm sẵn quần / váy → cúi cầm cạp thấp ngang ống chân → xỏ chân phải → xỏ chân trái → kéo lên eo → (P2) mang giày cầm túi, tay chống hông → xoay sau khoe mặt sau → xoay lại → cận → 2 tay chống hông',
+    prompts: {
+      m5set_p1_pants: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 1 (7s) bản QUẦN: mặc quần ({OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần, {SHORTS} = màu quần short gym)', text: M5SET_P1_PANTS },
+      m5set_p1_skirt: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 1 (7s) bản VÁY: mặc váy', text: M5SET_P1_SKIRT },
+      m5set_p2_pants: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 2 (8s) bản QUẦN: khoe dáng, mở bằng khung hình cuối phân cảnh 1', text: M5SET_P2_PANTS },
+      m5set_p2_skirt: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 2 (8s) bản VÁY: khoe dáng', text: M5SET_P2_SKIRT },
+    },
+    // set: 2 ảnh là 2 MÓN của cùng 1 bộ mặc cùng lúc (không phải 2 bộ mặc lần lượt): 1 chữ / mã cho cả video (của ảnh áo)
+    set: true,
+    // setParts: 2 phân cảnh riêng của đồ bộ (buildSetParts) — durations[i] = thời lượng Flow của phân cảnh i+1; p1 / p2 = khoá prompt
+    // theo options.bottomType; cut = giây đã mặc xong trong Part 1
+    setParts: { durations: M5SET_PART_DURATIONS, p1: { pants: 'm5set_p1_pants', skirt: 'm5set_p1_skirt' }, p2: { pants: 'm5set_p2_pants', skirt: 'm5set_p2_skirt' }, cut: M5SET_CUT },
+    outfitLabels: ['Áo', 'Quần / váy'],
+    // Ô "Thời lượng" chỉ hiện "15s" (tổng 2 phân cảnh)
+    durations: { '15s': {} },
+    minOutfits: 2,
+    maxOutfits: 2,
+  },
   motion5: {
     name: 'Chuyển động 5 – NAM, ĐÚNG 1 trang phục, 1 phân cảnh 10s hoặc 15s (lookbook đường phố, mặc sẵn từ giây đầu, mũ + ba lô): bước tới chỉnh mũ → kéo mũ cúi đầu → ngồi gờ giơ chữ V → ngồi lan can → tựa cột → ngồi xổm → đứng giữa đường → ngồi gờ cúi đầu cười',
     prompts: {
@@ -268,7 +404,7 @@ const outfitCountError = (motion, n) => {
 };
 
 export const fmtT = (t) => (Math.round(t * 10) / 10).toFixed(1);
-export const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
+export const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR|SHORTS)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
 
 // Chữ trên video (../caption.js): 'code' = mã sản phẩm (mặc định) · 'text' = chữ tuỳ ý · 'none' = không chữ.
 // Prompt mẫu viết cho chế độ mã -> đổi đúng câu về chữ trong phần mở đầu / dòng quy tắc, không đụng mốc động tác.
@@ -286,7 +422,7 @@ const captionLine = (o, mode) => (mode === 'none' ? null : `Caption: "${o.captio
  * tương ứng (cùng chuyển động, khác nhịp). outfits = [{ caption, p1: { front, back } }] — 1 bộ (Chuyển động 2) hoặc nhiều bộ
  * mặc lần lượt trong cùng 1 video (Chuyển động 3: bộ thứ i bắt đầu ở mốc match cut d.cuts[i], caption đổi theo đúng mốc đó).
  */
-export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [outfit] : [], tags, duration, captionMode = 'code' }) {
+export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [outfit] : [], tags, duration, captionMode = 'code', variant = null, shorts = null }) {
   const d = motion.durations[duration] || Object.values(motion.durations)[0];
   const total = parseFloat(duration);
   const cuts = d.cuts || [d.cutAt];
@@ -298,28 +434,88 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
     MODEL: '@Image1', BG: tags.p1.bg, OUTFITS: listTags(outfits.map((o) => o.p1.front)),
     OUTFIT: first.p1.front, BACK: first.p1.back, OUTFIT2: second?.p1.front, BACK2: second?.p1.back,
     CODE: first.caption || '', PART: 'One continuous take', DUR: duration, CUT: fmtT(cuts[0] ?? 0),
+    SHORTS: shortsColorOf(shorts), // màu quần short gym (đồ bộ)
   };
+  // Bản prompt theo biến thể (đồ bộ: quần / váy)
+  const beatsKey = (variant && d.variants?.[variant]) || d.prompt;
   const worn = cuts.length === 0; // mặc sản phẩm ngay từ khung hình đầu, không có match cut đổi đồ
-  const multi = outfits.length > 1;
+  // Đồ bộ (motion.set): 2 ảnh là áo + quần / váy mặc cùng lúc -> 1 chữ cho cả video, dòng Wardrobe riêng (không phải 2 bộ lần lượt)
+  const isSet = !!motion.set;
+  const multi = outfits.length > 1 && !isSet;
   const endOf = (i) => (i + 1 < outfits.length ? cuts[i + 1] : total);
   // Nhiều bộ: caption đổi đúng ở mỗi match cut (bộ 1 hiện từ 0.0s, kể cả đoạn mở đầu); dòng Wardrobe ghi bộ nào mặc lúc nào
   const caption = captionMode === 'none' ? null : multi
     ? 'Caption: ' + outfits.map((o, i) => `${fmtT(i === 0 ? 0 : cuts[i])}-${fmtT(endOf(i))}s "${o.caption}"`).join('; ') + ' (switches exactly on the match cut).'
     : captionLine(first, captionMode);
-  const wardrobe = multi
+  const wardrobe = isSet
+    ? fill((prompt('wardrobe_set') || WARDROBE_SET).trim(), vars)
+    : multi
     ? fill((prompt('wardrobe2') || WARDROBE_PART2).trim(), { ...vars, WEAR: outfits.map((o, i) => `${o.p1.front} (back ${o.p1.back}) at ${fmtT(cuts[i])}-${fmtT(endOf(i))}s`).join(', then ') })
     : worn
       ? fill((motion.male ? prompt('wardrobe_male') || WARDROBE_MALE : prompt('wardrobe0') || WARDROBE_WORN).trim(), vars)
       : fill((prompt('wardrobe') || WARDROBE).trim(), vars);
-  const cutNote = worn ? '' : ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.map((c) => `${fmtT(c)}s`).join(' and ')}.`;
+  const cutNote = worn
+    ? ''
+    : motion.dressing
+      ? ` The ${variant === 'skirt' ? 'skirt' : 'trousers'} go on only by her real hand and leg moves, one foot at a time; the waistband stays low until both feet are in: no morph or sudden appearance.`
+      : ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.map((c) => `${fmtT(c)}s`).join(' and ')}.`;
   return [
     fill(setup, vars),
     caption,
     wardrobe,
-    fill(prompt(d.prompt) || motion.prompts[d.prompt]?.text || '', vars),
+    fill(prompt(beatsKey) || motion.prompts[beatsKey]?.text || '', vars),
     `${rule}${cutNote} Sharp final frame at ${fmtT(total)}s.`.trim(),
   ].filter(Boolean).join('\n');
 }
+/**
+ * Prompt 2 phân cảnh của chuyển động ĐỒ BỘ (motion.setParts, Chuyển động 5). outfits = [áo, quần / váy] với tag ảnh theo từng phân
+ * cảnh (p1, p2 — xem prepare) · tags = { p1: { bg }, p2: { bg, start } } · variant = 'pants' | 'skirt' · shorts = màu quần short gym.
+ * Part 1: mặc quần / váy (1 cảnh liền), kết bằng dáng đứng thẳng nhìn máy quay. Part 2: mở ĐÚNG khung hình cuối Part 1, giữ nguyên
+ * khuôn mặt / ánh sáng / màu, nhận lại ảnh 2 món để khoá form, rồi khoe dáng. Cả video 1 chữ / mã (của ảnh áo).
+ */
+export function buildSetParts({ motion, prompt, outfits, tags, captionMode = 'code', variant = 'pants', shorts = null }) {
+  const sp = motion.setParts;
+  const kind = sp.p1[variant] ? variant : 'pants';
+  const [top, bottom] = outfits;
+  const [d1, d2] = sp.durations;
+  const caption = captionMode === 'none' ? null : top.caption;
+  const setup = setupFor((prompt('setup') || SETUP).trim(), captionMode);
+  const rule = ruleFor((prompt('rule') ?? COMMON_RULE).trim(), captionMode);
+  const piece = kind === 'skirt' ? 'skirt goes' : 'trousers go';
+  const v1 = {
+    MODEL: '@Image1', BG: tags.p1.bg, PART: 'Part 1 of 2', DUR: d1, CUT: fmtT(sp.cut), SHORTS: shortsColorOf(shorts),
+    OUTFIT: top.p1.front, BACK: top.p1.back, OUTFIT2: bottom.p1.front, BACK2: bottom.p1.back,
+  };
+  const start = tags.p2.start;
+  const v2 = {
+    MODEL: '@Image1', BG: tags.p2.bg, PART: 'Part 2 of 2', DUR: d2, START: start, SHORTS: v1.SHORTS,
+    OUTFIT: top.p2.front, BACK: top.p2.back, OUTFIT2: bottom.p2.front, BACK2: bottom.p2.back,
+  };
+  const capLine = caption ? `Caption: "${caption}" for the whole clip.` : null;
+  const part1 = [
+    // Part 1 gọi chân theo vị trí trên khung hình và không có cú cắt cảnh: bỏ câu "Left/right are the model's own"
+    fill(setup, v1).replace(/\s*Left\/right are the model's own\./, '').replace(/; jump cuts change only her pose and framing, never the location\./, '.'),
+    capLine,
+    fill((prompt('wardrobe_set') || WARDROBE_SET).trim(), v1),
+    fill(prompt(sp.p1[kind]) || motion.prompts[sp.p1[kind]]?.text || '', v1),
+    // Part 1 chưa có túi: bỏ câu túi của dòng quy tắc chung
+    `${rule.replace(/\s*One small bag[^.]*\./i, '').replace(/Jump cuts are instant cuts;\s*the/i, 'The')} The ${piece} on only by her real hand and leg moves: both feet step in, one then the other, while her hands hold the waistband down at mid-shin and each knee is drawn up high; she pulls it up only after both feet are in: no morph or sudden appearance. Sharp final frame at ${fmtT(parseFloat(d1))}s; it is the first frame of Part 2.`,
+  ].filter(Boolean).join('\n');
+  // Khớp 2 phân cảnh: mở đúng khung hình cuối Part 1, giữ khuôn mặt / tóc / ánh sáng / độ sáng / cân bằng trắng / tông màu tới hết
+  // Không bắt mở đúng dáng của khung hình cuối (video thử: AI vẫn mở dáng khác -> nhảy dáng ở chỗ nối) -> Part 2 mở như 1 cú cắt
+  // cảnh mới, khung hình cuối chỉ là mẫu khuôn mặt / tóc / ánh sáng / màu.
+  const open = `${start} is the last frame of Part 1: a reference for her face, hair, light, exposure, white balance and colour grade only, matched exactly from the first frame to the end; this part opens as a new shot after a cut, any text in ${start} must not appear${caption ? `, and the caption reads "${caption}" from the first frame` : ''}.`;
+  const part2 = [
+    fill(setup, v2),
+    open,
+    capLine,
+    fill((prompt('wardrobe_set2') || WARDROBE_SET2).trim(), v2),
+    fill(prompt(sp.p2[kind]) || motion.prompts[sp.p2[kind]]?.text || '', v2),
+    `${rule} Sharp final frame at ${fmtT(parseFloat(d2))}s.`,
+  ].filter(Boolean).join('\n');
+  return { part1, part2, durations: sp.durations };
+}
+
 const listTags = (tags) => (tags.length <= 1 ? tags[0] || '' : tags.slice(0, -1).join(', ') + ' and ' + tags.at(-1));
 
 // Đổi mốc giây của 1 khối "a-bs: …" (thời gian cục bộ, gốc = mốc cuối lớn nhất) sang [offset, offset+slot] rồi điền chỗ trống
@@ -416,6 +612,9 @@ export default {
   // Giao diện cho chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ (options.captionMode, options.captionTexts)
   captionModes: true,
   backInput: 'outfitBacks', // inputs.outfitBacks = { [ảnh mặt trước]: ảnh mặt sau } (giao diện chọn / tạo mặt sau cho từng bộ)
+  // Lần chạy chỉ dừng chờ duyệt ở chuyển động đồ bộ 2 phân cảnh (Chuyển động 5): duyệt phân cảnh 1 rồi mới tạo phân cảnh 2
+  reviewNote: 'Phân cảnh 1 (đoạn mặc quần / váy) đã xong — xem video ở thẻ "Phân cảnh 1" bên dưới. Chưa đúng thì bấm Thử lại trên thẻ đó (tạo lại phân cảnh 1) hoặc chọn bản khác. Ưng rồi bấm nút bên dưới để tạo phân cảnh 2 (bắt đầu tốn credit phân cảnh 2) và ghép — phân cảnh 2 tự được cân sáng / màu theo phân cảnh 1.',
+  resumeLabel: '▶ Cảnh 1 đã ưng: tạo phân cảnh 2 & ghép',
   // Thẻ video của từng phân cảnh hiện ngay trong lần chạy (Thử lại -> thêm lần tạo 1, 2, 3… trên cùng thẻ, chọn bản tốt nhất)
   sceneJobs: [
     { key: 'video:part1', label: 'Phân cảnh 1 (hoặc cả video nếu 1 phân cảnh)', note: 'Đổi bản → cắt lại khung hình cuối, tạo lại Phân cảnh 2 và ghép lại.' },
@@ -433,6 +632,8 @@ export default {
     wardrobe: { label: 'Khoá trang phục – Part 1 / video 1 phân cảnh: sau match cut ({CUT}s) không còn đồ cũ của model ({OUTFIT}/{BACK})', text: WARDROBE },
     wardrobe2: { label: 'Khoá trang phục – Part 2 ({WEAR} = trang phục theo từng khoảng thời gian)', text: WARDROBE_PART2 },
     wardrobe0: { label: 'Khoá trang phục – chuyển động mặc sẵn từ khung hình đầu (Chuyển động 4: {OUTFIT}/{BACK})', text: WARDROBE_WORN },
+    wardrobe_set: { label: 'Khoá trang phục – ĐỒ BỘ phân cảnh 1 (Chuyển động 5: {OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần / váy, {SHORTS} = màu quần short gym, {CUT} = giây đã mặc xong)', text: WARDROBE_SET },
+    wardrobe_set2: { label: 'Khoá trang phục – ĐỒ BỘ phân cảnh 2 (Chuyển động 5: mặc đủ bộ như khung hình cuối phân cảnh 1 {START}, giày + túi từ cú nhảy cắt đầu)', text: WARDROBE_SET2 },
     ...Object.fromEntries(Object.values(MOTIONS).filter((m) => !m.legacy).flatMap((m) => Object.entries(m.prompts))),
     rule: { label: 'Dòng quy tắc ngắn cuối mỗi phân cảnh (để trống nếu không cần)', text: COMMON_RULE },
   },
@@ -442,10 +643,24 @@ export default {
     {
       key: 'motion',
       label: 'Chuyển động (kịch bản tay chân)',
-      options: Object.entries(MOTIONS).filter(([, m]) => !m.legacy).map(([k, m]) => ({ value: k, label: m.name, minOutfits: m.minOutfits || 1, maxOutfits: m.maxOutfits || MAX_OUTFITS, durations: Object.keys(m.durations || {}) })),
+      // outfitLabels: tên từng ảnh trang phục khi chuyển động cần đúng món (đồ bộ: ảnh 1 = áo, ảnh 2 = quần / váy); set = đồ bộ
+      options: Object.entries(MOTIONS).filter(([, m]) => !m.legacy).map(([k, m]) => ({ value: k, label: m.name, minOutfits: m.minOutfits || 1, maxOutfits: m.maxOutfits || MAX_OUTFITS, durations: Object.keys(m.durations || {}), set: !!m.set, outfitLabels: m.outfitLabels || null })),
       default: DEFAULT_MOTION,
     },
-    { key: 'duration', label: 'Thời lượng (Chuyển động 2: 15s đúng nhịp video mẫu, 10s rút gọn · Chuyển động 3, 4: chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d })), default: SINGLE_DURATIONS[0] },
+    { key: 'duration', label: 'Thời lượng (Chuyển động 2: 15s đúng nhịp video mẫu, 10s rút gọn · Chuyển động 3, 4, 5: chỉ 15s)', options: SINGLE_DURATIONS.map((d) => ({ value: d, label: d })), default: SINGLE_DURATIONS[0] },
+    // Chỉ dùng cho Chuyển động 5 – đồ bộ (showFor: giao diện chỉ hiện khi tuỳ chọn `motion` là 1 trong các giá trị đó)
+    {
+      key: 'bottomType',
+      label: 'Chuyển động 5 – món dưới của bộ (ảnh 2) là',
+      options: [
+        { value: 'pants', label: 'Quần (cầm cạp, bước chân vào rồi mặc)' },
+        { value: 'skirt', label: 'Váy (ướm lên eo rồi mặc)' },
+      ],
+      default: 'pants',
+      showFor: { motion: ['motion5set'] },
+      inline: true, // giao diện đã có nút "Món dưới là: Quần / Váy" ngay trong khối Đồ bộ (web/src/pages/SetPieces.jsx)
+    },
+    { key: 'shortsColor', type: 'text', label: 'Chuyển động 5 – màu quần short gym nữ lúc mở đầu', default: 'đỏ', placeholder: 'đỏ, đen, hồng, xám, navy…', maxLength: 30, showFor: { motion: ['motion5set'] } },
     { key: 'flowModel', label: 'Mô hình Flow', options: FASHION_MODELS.map((m) => ({ value: m, label: m })), default: FASHION_MODELS[0] },
     { key: 'removeWatermark', label: 'Tự động xoá logo Gemini khi ghép', default: true },
     { key: 'autoPublish', label: 'Tự động chuyển sang Đăng video khi hoàn thành', default: true },
@@ -460,19 +675,25 @@ export default {
         const motion = motionOf(ctx.run);
         // Chuyển động 1 phân cảnh: cả video trong 1 lần tạo, thời lượng 15s / 10s chọn bản prompt tương ứng
         const single = !!motion.single;
-        const duration = single ? singleDuration(ctx.run) : '10s';
+        // Đồ bộ 2 phân cảnh (Chuyển động 5): Part 1 = đoạn mặc, thời lượng theo setParts.durations[0]
+        const setParts = motion.setParts || null;
+        const duration = single ? singleDuration(ctx.run) : setParts ? setParts.durations[0] : '10s';
         const template = single
-          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, duration, captionMode })
-          : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode }).part1;
-        ctx.state.codes = outfits.map(tagOf);
+          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, duration, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor })
+          : setParts
+            ? buildSetParts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor }).part1
+            : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode }).part1;
+        // Đồ bộ: 2 ảnh là 1 bộ, tên video / mã chỉ lấy theo ảnh áo
+        const named = motion.set ? outfits.slice(0, 1) : outfits;
+        ctx.state.codes = named.map(tagOf);
         ctx.state.captionMode = captionMode;
         ctx.state.part1Prompt = template;
         const job = ctx.ensureJob('video:part1', {
           type: 'video',
           imagePaths: images.p1,
           template,
-          videoLabel: `[${outfits.map(tagOf).join('+')}] Không voice · ${single ? `1 phân cảnh ${duration}` : 'Part 1'} – ${ctx.assetName(ctx.inputs.outfits[0])}`,
-          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: duration, flowResolution: '720p', codes: outfits.map((o) => o.code).filter(Boolean), captionMode },
+          videoLabel: `[${named.map(tagOf).join('+')}] Không voice · ${single ? `1 phân cảnh ${duration}` : 'Part 1'}${motion.set ? ' · đồ bộ' : ''} – ${ctx.assetName(ctx.inputs.outfits[0])}`,
+          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: duration, flowResolution: '720p', codes: named.map((o) => o.code).filter(Boolean), captionMode },
         });
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
@@ -512,16 +733,35 @@ export default {
       async run(ctx) {
         const frame = ctx.stages.last_frame?.path;
         if (!frame || !fs.existsSync(frame)) throw new Error('Chưa có khung hình cuối của Part 1');
+        const motion = motionOf(ctx.run);
+        // Đồ bộ 2 phân cảnh: DỪNG chờ duyệt phân cảnh 1 (đoạn mặc đồ hay sai, phải đúng rồi mới tốn credit cho phân cảnh 2). Duyệt theo
+        // ĐÚNG video phân cảnh 1 đang chọn: Thử lại / chọn bản khác của phân cảnh 1 thì phải duyệt lại.
+        if (motion.setParts) {
+          const cur = ctx.job('video:part1')?.outputPath || null;
+          if (ctx.state.approved && ctx.state.approvedFor !== cur) {
+            if (ctx.state.pausedFor === cur) ctx.state.approvedFor = cur; // vừa bấm Tiếp tục cho đúng bản này
+            ctx.state.approved = false;
+          }
+          if (ctx.state.approvedFor !== cur) {
+            ctx.state.pausedFor = cur;
+            return 'paused';
+          }
+        }
         const { outfits, tags, images, captionMode } = prepare(ctx, frame);
-        const built = buildPrompts({ motion: motionOf(ctx.run), prompt: (k) => ctx.prompt(k), outfits, tags, captionMode });
+        // Đồ bộ 2 phân cảnh: Part 2 = đoạn khoe dáng (buildSetParts), thời lượng setParts.durations[1]
+        const setParts = motion.setParts || null;
+        const built = setParts
+          ? buildSetParts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor })
+          : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode });
         ctx.state.part2Prompt = built.part2;
-        ctx.state.ranges = built.ranges;
+        ctx.state.ranges = built.ranges || null;
+        const named = motion.set ? outfits.slice(0, 1) : outfits.slice(1).length ? outfits.slice(1) : outfits;
         const job = ctx.ensureJob('video:part2', {
           type: 'video',
           imagePaths: images.p2,
           template: built.part2,
-          videoLabel: `[${(outfits.slice(1).length ? outfits.slice(1) : outfits).map(tagOf).join('+')}] Không voice · Part 2 – ${ctx.assetName(ctx.inputs.outfits[0])}`,
-          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: '10s', flowResolution: '720p', startFrame: frame },
+          videoLabel: `[${named.map(tagOf).join('+')}] Không voice · Part 2${motion.set ? ' · đồ bộ' : ''} – ${ctx.assetName(ctx.inputs.outfits[0])}`,
+          meta: { aspectRatio: '9:16', flowVideoModel: ctx.run.options.flowModel || FASHION_MODELS[0], flowDuration: setParts ? setParts.durations[1] : '10s', flowResolution: '720p', startFrame: frame },
         });
         if (job.status === 'failed') throw ctx.jobError(job);
         if (job.status !== 'done') return 'waiting';
@@ -537,11 +777,30 @@ export default {
         const j2 = single ? null : ctx.job('video:part2');
         if (!j1?.outputPath || (!single && !j2?.outputPath)) throw new Error(single ? 'Thiếu video đầu ra' : 'Thiếu video Part 1 hoặc Part 2');
         const codes = ctx.stages.part1?.codes || [];
+        // Đồ bộ 2 phân cảnh: CÂN MÀU phân cảnh 2 theo phân cảnh 1 (so nền 2 mép khung hình ở chỗ nối) trước khi ghép. Làm 1 lần cho mỗi
+        // cặp video (ghi lại from / ref); lỗi thì ghép bản gốc. Video đã chỉnh chỉ dùng khi ghép, video của job giữ nguyên.
+        let fileOverrides = null;
+        if (!single && motionOf(ctx.run).setParts) {
+          const cm = ctx.state.colorMatch;
+          if (!cm || cm.from !== j2.outputPath || cm.ref !== j1.outputPath || (cm.applied && !fs.existsSync(cm.path))) {
+            const out = path.join(DIRS.tmp, `colormatch-${j2.id}-${Date.now()}.mp4`);
+            try {
+              const r = await colorMatchVideo(j1.outputPath, j2.outputPath, out);
+              ctx.state.colorMatch = { from: j2.outputPath, ref: j1.outputPath, path: r.applied ? out : null, applied: r.applied, ky: r.ky, du: r.du, dv: r.dv, reason: r.reason || null };
+            } catch (e) {
+              console.error('Cân màu phân cảnh 2 lỗi, ghép bản gốc:', e.message);
+              ctx.state.colorMatch = { from: j2.outputPath, ref: j1.outputPath, path: null, applied: false, reason: String(e.message).slice(0, 200) };
+            }
+            save();
+          }
+          if (ctx.state.colorMatch.applied) fileOverrides = { [j2.id]: ctx.state.colorMatch.path };
+        }
         return ctx.ensureMerge({
           jobIds: single ? [j1.id] : [j1.id, j2.id],
           name: `[${codes.join('+')}] Video thời trang không voice – ${ctx.assetName(ctx.inputs.outfits[0])}`,
           removeWatermark: ctx.run.options.removeWatermark ?? true,
           keepOriginalAudio: false,
+          fileOverrides,
         });
       },
     },
@@ -626,13 +885,15 @@ function prepare(ctx, startFrame = null) {
   const captionMode = captionModeOf(ctx.run.options);
   const texts = ctx.run.options.captionTexts || {};
   let lastText = '';
+  const motion = motionOf(ctx.run);
   const outfits = ids.map((id, i) => {
     const front = ctx.assetPath(id);
     if (!front) throw new Error(`Ảnh trang phục thứ ${i + 1} không còn trong thư viện`);
     const backId = backOf(id, ctx.inputs.outfitBacks?.[id]);
     const back = ctx.assetPath(backId);
     if (!back) throw new Error(`Trang phục ${i + 1} (${ctx.assetName(id)}) chưa có ảnh mặt sau — chọn hoặc bấm "Tạo mặt sau" trong trang quy trình rồi chạy lại`);
-    const code = codeOfAsset(id) || (captionMode === 'code' ? assignCode(id).productCode : null);
+    // Đồ bộ (motion.set): cả bộ dùng 1 mã (của ảnh áo) -> không cấp mã mới cho ảnh quần / váy
+    const code = codeOfAsset(id) || (captionMode === 'code' && !(motion.set && i > 0) ? assignCode(id).productCode : null);
     let caption = null;
     if (captionMode === 'code') caption = code;
     if (captionMode === 'text') {
@@ -642,16 +903,16 @@ function prepare(ctx, startFrame = null) {
     }
     return { id, backId, front, back, code, caption };
   });
-  const motion = motionOf(ctx.run);
   const countError = outfitCountError(motion, outfits.length);
   if (countError) throw new Error(countError);
   // Part 1: model, trước 1, sau 1, mặt trước các bộ còn lại (cầm trên móc), bối cảnh.
   // Chuyển động 1 phân cảnh (cả video trong 1 lần tạo): model, (trước, sau) của TỪNG bộ, bối cảnh — bộ nào cũng cần mặt sau.
-  const p1 = motion.single
+  // Đồ bộ (motion.set): 2 món mặc cùng lúc -> cả 2 phân cảnh đều nhận (trước, sau) của áo và của quần / váy
+  const p1 = motion.single || motion.set
     ? [model, ...outfits.flatMap((o) => [o.front, o.back]), bg]
     : [model, outfits[0].front, outfits[0].back, ...outfits.slice(1).map((o) => o.front), bg];
-  // Part 2: model, (trước, sau) từng bộ còn lại (hoặc bộ 1 nếu chỉ có 1 bộ), bối cảnh, khung hình cuối Part 1
-  const rest = outfits.length > 1 ? outfits.slice(1) : outfits;
+  // Part 2: model, (trước, sau) từng bộ còn lại (hoặc bộ 1 nếu chỉ có 1 bộ; đồ bộ: cả 2 món), bối cảnh, khung hình cuối Part 1
+  const rest = motion.set ? outfits : outfits.length > 1 ? outfits.slice(1) : outfits;
   const p2 = [model, ...rest.flatMap((o) => [o.front, o.back]), bg, ...(startFrame ? [startFrame] : [])];
   const tag = (list, file) => `@Image${list.indexOf(file) + 1}`;
   const tagged = outfits.map((o) => ({

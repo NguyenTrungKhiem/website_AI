@@ -290,6 +290,57 @@ export async function removeCaptionBand(src, dest, { x = 0.1, y = 0.04, w = 0.8,
   return run(ffmpegPath, ['-y', '-i', src, '-vf', `delogo=x=${X}:y=${Y}:w=${BW}:h=${BH}:show=0`, '-c:v', 'png', '-pix_fmt', 'rgb24', dest]);
 }
 
+// Chạy ffmpeg và trả về stderr (bộ lọc signalstats in số đo ra stderr)
+function runStderr(args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(ffmpegPath, args, { windowsHide: true });
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve(err) : reject(new Error(err.split('\n').slice(-6).join('\n') || `exit ${code}`))));
+  });
+}
+
+/**
+ * Độ sáng / màu trung bình (YUV 0–255) của PHẦN NỀN trong 1 đoạn video: 2 dải dọc sát mép trái và phải (mỗi dải 18% chiều rộng,
+ * thường là tường / cửa của bối cảnh) để người mẫu đổi dáng / cỡ khung hình không làm lệch số đo. start / dur tính bằng giây.
+ */
+export async function backgroundStats(src, { start = 0, dur = 0.4 } = {}) {
+  const vals = { YAVG: [], UAVG: [], VAVG: [] };
+  for (const x of ['0', 'iw*0.82']) {
+    const err = await runStderr(['-hide_banner', '-ss', String(Math.max(0, start)), '-t', String(dur), '-i', src, '-vf', `crop=iw*0.18:ih:${x}:0,signalstats,metadata=mode=print`, '-f', 'null', '-']);
+    for (const m of err.matchAll(/lavfi\.signalstats\.(YAVG|UAVG|VAVG)=([\d.]+)/g)) vals[m[1]].push(Number(m[2]));
+  }
+  const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
+  return { y: avg(vals.YAVG), u: avg(vals.UAVG), v: avg(vals.VAVG) };
+}
+
+/**
+ * CÂN MÀU phân cảnh sau theo phân cảnh trước (ghép 2 phân cảnh tạo riêng: Flow hay ra phân cảnh 2 sáng / tối hoặc ám màu khác).
+ * So nền của 0,4s CUỐI video tham chiếu với 0,4s ĐẦU video cần chỉnh, rồi nhân độ sáng (Y) và dịch 2 kênh màu (U, V) của cả video
+ * cần chỉnh cho khớp (giới hạn ±20% sáng, ±10 màu để không làm hỏng video khi số đo bất thường). Lệch rất nhỏ thì không chỉnh.
+ * Trả { applied, ky, du, dv, ref, cur }; applied = true thì video đã chỉnh được ghi ra dest.
+ */
+export async function colorMatchVideo(refVideo, src, dest) {
+  const refInfo = await probe(refVideo);
+  const ref = await backgroundStats(refVideo, { start: (refInfo.duration || 1) - 0.45, dur: 0.4 });
+  const cur = await backgroundStats(src, { start: 0.05, dur: 0.4 });
+  if (![ref.y, ref.u, ref.v, cur.y, cur.u, cur.v].every(Number.isFinite) || cur.y <= 0) return { applied: false, ref, cur, reason: 'không đo được' };
+  const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+  const ky = clamp(ref.y / cur.y, 0.8, 1.25);
+  const du = clamp(ref.u - cur.u, -10, 10);
+  const dv = clamp(ref.v - cur.v, -10, 10);
+  if (Math.abs(ky - 1) < 0.015 && Math.abs(du) < 1.5 && Math.abs(dv) < 1.5) return { applied: false, ky, du, dv, ref, cur, reason: 'đã khớp' };
+  const off = (d) => (d >= 0 ? `+${d.toFixed(2)}` : `-${Math.abs(d).toFixed(2)}`);
+  await run(ffmpegPath, [
+    '-y', '-i', src,
+    '-vf', `lutyuv=y=val*${ky.toFixed(4)}:u=val${off(du)}:v=val${off(dv)}`,
+    '-c:v', 'libx264', '-crf', '15', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'copy',
+    dest,
+  ]);
+  return { applied: true, ky, du, dv, ref, cur };
+}
+
 // Trích xuất khung hình cuối cùng của video ở định dạng PNG chuẩn màu rgb24 nguyên bản (giữ nguyên dải màu gốc, không bị nén mất màu như JPG)
 export async function extractLastFrame(src, dest) {
   const info = await probe(src);

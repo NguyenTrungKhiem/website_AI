@@ -19,6 +19,7 @@ import { assignCode, codeOfAsset, normalizeCode, isValidCode, listCodes, exportT
 import { captionModeOf, cleanCaptionText } from './caption.js';
 import { writeExercisePrompt, GYM_BASE_PROMPT, GYM_REWRITE_PROMPT } from './workflows/video-tap-gym.js';
 import { lookPreviewSpec } from './workflows/video-thoi-trang-khong-voice-nam.js';
+import { createSplitJobs, onSplitJobSettled } from './setSplit.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
 
@@ -606,6 +607,15 @@ app.post('/api/assets/crop', wrap(async (req, res) => {
   save();
   res.json({ ...newAsset, url: mediaUrl(dest) });
 }));
+
+// Tab Nữ – Chuyển động 5 (đồ bộ): AI tách 1 ảnh đồ bộ (có cả áo và quần / váy) thành ảnh ÁO và ảnh QUẦN hoặc VÁY riêng, cả mặt
+// trước lẫn mặt sau (job ảnh Flow, 0 credit). body = { setId: ảnh đồ bộ mặt trước, backId?: ảnh đồ bộ mặt sau, bottomType:
+// 'pants' | 'skirt' }. Ảnh kết quả mang asset.split.group = group trả về; giao diện theo dõi để tự điền ô Áo / Quần / Váy.
+app.post('/api/workflows/video-thoi-trang-khong-voice/split-set', wrap(async (req, res) => {
+  const out = createSplitJobs({ setId: req.body?.setId, backId: req.body?.backId || null, bottomType: req.body?.bottomType });
+  res.json({ group: out.group, bottomType: out.bottomType, jobs: out.jobs.map(viewJob) });
+}));
+settledHooks.push(onSplitJobSettled);
 
 settledHooks.push((job) => {
   if (job.type !== 'image' || job.status !== 'done' || (!job.meta?.cleanOf && !job.meta?.backOf) || !job.outputPath) return;

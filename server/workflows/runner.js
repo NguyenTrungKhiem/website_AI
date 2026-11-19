@@ -538,7 +538,8 @@ function makeCtx(run, wf) {
     },
 
     // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) nếu có, tuỳ chọn xoá logo
-    ensureMerge({ jobIds, name, removeWatermark, watermarkMode, keepOriginalAudio }) {
+    // fileOverrides = { [jobId]: file } ghép bằng file khác thay cho video của job (vd. phân cảnh 2 đã cân màu theo phân cảnh 1)
+    ensureMerge({ jobIds, name, removeWatermark, watermarkMode, keepOriginalAudio, fileOverrides }) {
       const st = this.state;
       let merge = st.mergeId && db.merges.find((m) => m.id === st.mergeId);
       if (!merge) {
@@ -554,6 +555,7 @@ function makeCtx(run, wf) {
           removeWatermark: shouldRemoveWatermark,
           watermarkMode: watermarkMode || 'delogo',
           keepOriginalAudio: shouldKeepAudio,
+          fileOverrides: fileOverrides || {},
         });
         st.mergeId = merge.id;
         save();

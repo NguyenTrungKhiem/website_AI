@@ -117,6 +117,8 @@ export const api = {
   backFromFlow: (id) => req('POST', `/api/assets/${id}/back-from-flow`),
   // Tab Nam: tạo ảnh KOL/KOC mặc đủ outfit ngay ở thẻ outfit (job ảnh Flow, 0 credit). body = { model, look: { items, style } }
   lookPreview: (wfId, body) => req('POST', `/api/workflows/${wfId}/look-preview`, body),
+  // Tab Nữ – Chuyển động 5 (đồ bộ): AI tách 1 ảnh đồ bộ thành ảnh áo + ảnh quần / váy (mặt trước + mặt sau) -> { group, jobs }
+  splitSet: (wfId, body) => req('POST', `/api/workflows/${wfId}/split-set`, body),
   // Tab Nam: lấy ảnh mới nhất đã tạo xong trên Flow về làm ảnh outfit (cùng body với lookPreview) -> trả ảnh đã lưu vào thư viện
   lookFromFlow: (wfId, body) => req('POST', `/api/workflows/${wfId}/look-from-flow`, body),
   // AI làm sạch ảnh mặt sau :id (frontId = ảnh mặt trước của món đó, nếu có) -> job ảnh Flow, kết quả là ảnh mặt sau mới

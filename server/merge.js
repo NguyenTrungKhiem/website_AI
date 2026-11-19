@@ -16,7 +16,9 @@ export function rangeOf(job) {
 }
 
 // Kiểm tra trước khi ghép, trả về danh sách đoạn + cấu hình âm thanh cho ffmpeg
-export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio = true }) {
+// fileOverrides = { [jobId]: file } dùng file khác thay cho video của job khi ghép (vd. bản đã cân màu); sourcePaths vẫn là video gốc
+// của job để biết khi nào job đổi video mà phải ghép lại
+export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio = true, fileOverrides = {} }) {
   const jobs = jobIds.map((id) => db.jobs.find((j) => j.id === id));
   if (!jobs.length) throw new Error('Chọn ít nhất 1 video');
   if (jobs.some((j) => !j?.outputPath || !fs.existsSync(j.outputPath))) throw new Error('Có video chưa xong hoặc đã bị xoá');
@@ -34,13 +36,15 @@ export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudi
       );
     }
     return {
-      segments: jobs.map((j, i) => ({ file: j.outputPath, duration: +(ranges[i].end - ranges[i].start).toFixed(3) })),
+      segments: jobs.map((j, i) => ({ file: fileOverrides[j.id] || j.outputPath, duration: +(ranges[i].end - ranges[i].start).toFixed(3) })),
+      sourcePaths: jobs.map((j) => j.outputPath),
       audio: { file: audio.path, ranges: ranges.map((r) => [r.start, r.end]) },
       keepOriginalAudio: false,
     };
   }
   return {
-    segments: jobs.map((j) => ({ file: j.outputPath })),
+    segments: jobs.map((j) => ({ file: fileOverrides[j.id] || j.outputPath })),
+    sourcePaths: jobs.map((j) => j.outputPath),
     audio: audio ? { file: audio.path, offset: Number(offset) || 0 } : null,
     keepOriginalAudio: audio ? false : (keepOriginalAudio !== false),
   };
@@ -58,8 +62,9 @@ export function createMerge({
   watermarkText,
   watermarkImageId,
   keepOriginalAudio = true,
+  fileOverrides = {},
 }) {
-  const plan = planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio });
+  const plan = planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio, fileOverrides });
   const id = newId();
   const effectiveMode = watermarkMode || (removeWatermark === false ? 'off' : (db.settings.watermarkMode || 'delogo'));
   const effectiveText = watermarkText !== undefined ? watermarkText : (db.settings.watermarkText || '');
@@ -78,7 +83,8 @@ export function createMerge({
     watermarkImageId: effectiveImgId,
     watermarkRemoved: effectiveMode !== 'off',
     keepOriginalAudio: audioId ? false : (keepOriginalAudio !== false),
-    inputPaths: plan.segments.map((s) => s.file), // để biết video nguồn có đổi sau khi ghép không
+    inputPaths: plan.sourcePaths, // video gốc của các job: để biết video nguồn có đổi sau khi ghép không
+    fileOverrides: Object.keys(fileOverrides).length ? fileOverrides : undefined, // file thay thế đã dùng khi ghép (vd. bản cân màu)
     status: 'running',
     error: null,
     outputPath: null,

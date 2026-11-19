@@ -958,6 +958,9 @@ async function detectFlowPageError(page) {
           // lỗi của lần tạo này. Lỗi của đúng ô đang chờ do waitForResult xét riêng (isFailed).
           if (el.closest('flow-tile-container, flow-error-tile')) continue;
           const text = (el.innerText || el.textContent || '').trim();
+          // Menu tài khoản Google (bấm vào ảnh đại diện) cũng là 1 dialog trong cdk-overlay: có chữ "Terms of Service", "License"… dễ
+          // khớp nhầm từ khoá lỗi -> bỏ qua (video thử Chuyển động 5 từng bị báo lỗi giả vì menu này đang mở).
+          if (/switch account|sign out|manage subscription|google flow credits/i.test(text)) continue;
           if (
             text &&
             /couldn.t generate|failed|something went wrong|try again|violat|policy|error|limit|quota|exceeded|refund|not supported|unable to/i.test(text)

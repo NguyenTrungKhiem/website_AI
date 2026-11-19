@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { AssetPicker, BackViewControl, CaptionModePicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, MAX_CAPTION_TEXT, PromptVersionPicker, cleanCaptionText, fmt, useAction } from '../components.jsx';
 import FashionSalesView from './FashionSalesView.jsx';
 import MaleOutfits, { emptyLook } from './MaleOutfits.jsx';
+import SetPieces, { BOTTOM_LABELS } from './SetPieces.jsx';
 
 // siblings = các quy trình cùng nhóm tab (wf.tab.group, vd. không voice Nữ / Nam): hiện thanh tab trên đầu trang
 export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) {
@@ -185,8 +186,12 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
           {wf.inputs.map((inp) => {
             // Ô trang phục: số ảnh tối đa và chữ "chọn 1–4" theo chuyển động đang chọn (vd. Chuyển động 3: đúng 2)
             const limited = rule && inp.key === wf.codedInput;
+            // Chuyển động đồ bộ: ô trang phục thay bằng khối riêng (ô Áo, ô Quần / Váy, tách ảnh đồ bộ) ở ngay dưới
+            if (limited && rule.set) return null;
             const max = limited ? Math.min(inp.max || rule.maxOutfits, rule.maxOutfits) : inp.max;
-            const label = limited ? inp.label.replace(/chọn \d+[–-]\d+/, `chọn ${ruleNeed}`) : inp.label;
+            // Chuyển động cần đúng món theo thứ tự (đồ bộ): ghi rõ ảnh 1 = áo, ảnh 2 = quần / váy
+            const label = (limited ? inp.label.replace(/chọn \d+[–-]\d+/, `chọn ${ruleNeed}`) : inp.label)
+              + (limited && rule.outfitLabels ? ` — ${rule.outfitLabels.map((l, i) => `ảnh ${i + 1} = ${l.toUpperCase()}`).join(', ')}` : '');
             return (
               <AssetPicker
                 key={inp.key}
@@ -203,6 +208,18 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
             );
           })}
         </div>
+        {rule?.set && wf.codedInput && (
+          <SetPieces
+            wfId={wf.id}
+            codedKey={wf.codedInput}
+            inputs={inputs}
+            setInputs={setInputs}
+            bottomType={effectiveOptions.bottomType}
+            onBottomType={(v) => setOptions((s) => ({ ...s, bottomType: v }))}
+            state={state}
+            refresh={refresh}
+          />
+        )}
         {wf.codedInput && (inputs[wf.codedInput]?.length || 0) > 0 && (
           <OutfitCodes
             ids={inputs[wf.codedInput]}
@@ -210,6 +227,11 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
             onBacks={wf.backInput ? (v) => setInputs((s) => ({ ...s, [wf.backInput]: v })) : null}
             caption={captionMode ? { mode: captionMode, texts: options.captionTexts || {} } : null}
             onCaption={(patch) => setOptions((s) => ({ ...s, ...patch }))}
+            // đồ bộ: tên từng dòng theo ô đang có ảnh (Áo / Quần hoặc Váy)
+            labels={rule?.set
+              ? [inputs.setTop && 'Áo', inputs.setBottom && (BOTTOM_LABELS[effectiveOptions.bottomType] || 'Quần')].filter(Boolean)
+              : rule?.outfitLabels || null}
+            isSet={!!rule?.set}
             state={state}
             refresh={refresh}
           />
@@ -260,6 +282,24 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
                 {per ? ` (mở đầu ${String(dyn.intro).replace('.', ',')}s + ${n - 1} outfit × ~${per}s)` : ' (chỉ đoạn mở đầu)'}
                 . Cần mô hình Omni 1.2 Flash (chọn độ dài 3–{dyn.max}s từng giây).
               </small>
+            );
+          }
+          // showFor: tuỳ chọn chỉ dùng cho một số lựa chọn của tuỳ chọn khác (vd. món dưới / màu quần gym chỉ cho Chuyển động 5 – đồ bộ)
+          if (o.showFor && !Object.entries(o.showFor).every(([k, vals]) => vals.includes(effectiveOptions[k]))) return null;
+          if (o.inline) return null; // tuỳ chọn đã có nút chọn ngay ở khối khác (vd. "Món dưới là" trong khối Đồ bộ)
+          // Tuỳ chọn dạng ô nhập chữ ngắn (type: 'text')
+          if (o.type === 'text') {
+            return (
+              <label key={o.key} className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span style={{ flex: '0 0 auto' }}>{o.label}</span>
+                <input
+                  style={{ flex: '0 1 220px', minWidth: 0 }}
+                  maxLength={o.maxLength || 60}
+                  placeholder={o.placeholder || ''}
+                  value={options[o.key] ?? o.default ?? ''}
+                  onChange={(e) => setOptions((s) => ({ ...s, [o.key]: e.target.value }))}
+                />
+              </label>
             );
           }
           const choices = Array.isArray(o.options) && isDuration ? o.options.filter((opt) => allowedDurations.includes(typeof opt === 'string' ? opt : opt.value)) : o.options;
@@ -370,7 +410,9 @@ function ExercisePromptBox({ wf, value, onChange }) {
 // tự lấy ảnh mặt sau đã tạo từ ảnh mặt trước, hoặc chọn / tải từ máy / AI tạo / AI làm sạch / lấy từ Flow (BackViewControl).
 // caption (quy trình có captionModes): { mode: 'code' | 'text' | 'none', texts: { [ảnh mặt trước]: chữ } } — chọn in mã sản
 // phẩm, chữ tuỳ ý hay không chữ; onCaption(patch) ghi vào options (captionMode, captionTexts).
-function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }) {
+// labels = tên từng ảnh khi chuyển động cần đúng món (đồ bộ: ['Áo', 'Quần / váy']); isSet = 2 ảnh là 1 bộ mặc cùng lúc ->
+// chỉ ảnh đầu (áo) có mã / chữ, in cho cả video
+function OutfitCodes({ ids, backs, onBacks, caption, onCaption, labels = null, isSet = false, state, refresh }) {
   const mode = caption?.mode || 'code';
   const setText = (id, v) => onCaption({ captionTexts: { ...(caption?.texts || {}), [id]: cleanCaptionText(v) } });
   const { busy, error, run } = useAction();
@@ -405,8 +447,9 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
             <div key={id} className="row outfit-code" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <img src={a.url} alt="" className="mini-thumb" title={a.name} />
               <div className="stack" style={{ gap: 2 }}>
-                <small className="muted">Bộ {i + 1} · {a.name.slice(0, 28)}</small>
-                {mode === 'code' && (
+                <small className="muted">{labels?.[i] ? <b>{labels[i]}</b> : `Bộ ${i + 1}`} · {a.name.slice(0, 28)}</small>
+                {isSet && i > 0 && mode !== 'none' && <span className="small muted">cùng bộ với ảnh 1: dùng chung {mode === 'code' ? 'mã' : 'chữ'} của áo</span>}
+                {mode === 'code' && !(isSet && i > 0) && (
                   <div className="row" style={{ gap: 4 }}>
                     <input
                       className="mono"
@@ -421,7 +464,7 @@ function OutfitCodes({ ids, backs, onBacks, caption, onCaption, state, refresh }
                     {!a.productCode && <button className="small-btn" disabled={busy} onClick={() => assign(id)} title="Server cấp mã tiếp theo theo loại sản phẩm">Cấp mã</button>}
                   </div>
                 )}
-                {mode === 'text' && (
+                {mode === 'text' && !(isSet && i > 0) && (
                   <input
                     className="caption-text"
                     maxLength={MAX_CAPTION_TEXT}
