@@ -158,6 +158,35 @@ Trả về định dạng JSON thuần theo mẫu:
 }
 
 /**
+ * Mô tả chữ ngắn (tiếng Anh) cho 2 món của 1 bộ đồ (áo + quần / váy) từ ảnh sản phẩm mặt trước — chèn vào prompt video để mô hình
+ * video giữ đúng mẫu (form, cạp, độ dài…) ngay cả khi vải đang bị kéo / nhăn / mới mặc 1 nửa (bám chữ tốt hơn bám ảnh lúc đó).
+ * bottomType = 'pants' | 'skirt'. Trả { top, bottom }, mỗi câu ≤ 160 ký tự, không tên thương hiệu, không @, không dấu nháy kép.
+ */
+export async function describeSetGarments({ topPath, bottomPath, bottomType = 'pants', apiKey, model = 'gemini-2.5-flash' }) {
+  if (!apiKey) throw new Error('Chưa cấu hình Gemini API Key');
+  if (!topPath || !fs.existsSync(topPath)) throw new Error('Không tìm thấy ảnh áo');
+  if (!bottomPath || !fs.existsSync(bottomPath)) throw new Error('Không tìm thấy ảnh quần / váy');
+  const kind = bottomType === 'skirt' ? 'skirt' : 'trousers';
+  const promptText = `Image 1 is a top and image 2 is the matching ${kind} of one two-piece set (product photos).
+For a video generator that must reproduce them exactly, describe each piece in ONE plain English phrase of at most 18 words:
+colour, fabric and sheen, fit / silhouette (loose, boxy, fitted, wide-leg, straight, flared…), length, waistband type (elastic gathered, flat, drawstring…) or neckline and sleeves, and one standout detail.
+No brand names, no quotes, no image numbers. Example: "pale pink satin wide-leg trousers, gathered elastic waist, full length, soft loose drape".
+Return pure JSON: {"top": "...", "bottom": "..."}`;
+  const out = await callGeminiWithFallback({
+    apiKey,
+    primaryModel: model || 'gemini-2.5-flash',
+    contents: [{ role: 'user', parts: [fileToPart(topPath), fileToPart(bottomPath), { text: promptText }] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+    timeoutMs: 20000,
+  });
+  const clean = (s) => String(s || '').replace(/["@\n\r]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/[.;,]+$/, '').slice(0, 160);
+  const top = clean(out?.top);
+  const bottom = clean(out?.bottom);
+  if (!top || !bottom) throw new Error('Gemini không trả mô tả áo / quần');
+  return { top, bottom };
+}
+
+/**
  * Chuẩn hoá và sửa lỗi các thẻ mention @Image cho Google Flow
  * Đảm bảo: đúng 1 dấu @, luôn có khoảng cách trước/sau, khôi phục các thẻ bị mất.
  */

@@ -24,6 +24,7 @@ import { DIRS, db, save } from '../db.js';
 import { codeOfAsset, assignCode } from '../productCodes.js';
 import { captionModeOf, cleanCaptionText, NO_TEXT_RULE } from '../caption.js';
 import { FASHION_MODELS } from './video-thoi-trang.js';
+import { describeSetGarments } from '../geminiFashion.js';
 
 const MAX_OUTFITS = 4;
 const PART_SEC = 10;
@@ -155,7 +156,7 @@ const M4_15S = `Mood: alluring, confident evening-dress look; slow, elegant move
 
 // ---- Chuyển động 5 – ĐỒ BỘ (theo video mẫu 571K "Thảo Nhi Shop", 16,9s -> 15s) ----
 // Kiểu "mặc đồ bộ trước máy quay": ĐÚNG 2 ảnh trang phục của CÙNG 1 BỘ — ảnh 1 = ÁO ({OUTFIT}/{BACK}), ảnh 2 = QUẦN hoặc VÁY
-// ({OUTFIT2}/{BACK2}); 2 phân cảnh 7s + 8s (xem setParts bên dưới), 1 mã sản phẩm (của ảnh áo) cho cả video. Túi và giày do AI tự chọn cho hợp bộ đồ.
+// ({OUTFIT2}/{BACK2}); 1 phân cảnh 15s (bản hiện tại ở cuối khối này; các ghi chú bên dưới là lịch sử các lần thử), 1 mã sản phẩm (của ảnh áo) cho cả video. Túi và giày do AI tự chọn cho hợp bộ đồ.
 // Video mẫu: mặc sẵn áo + quần ngắn → thắt dây eo áo → cầm quần lên, xỏ chân mặc vào → nghiêng người chỉnh cạp → co gối buộc nơ
 //   gấu quần → đứng toàn thân cười → nghiêng người, cầm túi 2 tay → chống hông khoe 3/4 lưng → cận ngực–hông, túi ở khuỷu tay →
 //   quay lưng bước ra xa ngoái nhìn → quay lại bước tới → cận, 2 tay chống hông, túi treo cổ tay, cười.
@@ -194,51 +195,49 @@ const M4_15S = `Mood: alluring, confident evening-dress look; slow, elegant move
 //   áo Part 1 bó hơn ảnh gốc (AI bám theo áo thun ôm trong ảnh model), giày tới ~4,5s Part 2 mới có -> Part 2 mở như 1 cú cắt cảnh
 //   mới (khung hình cuối chỉ là mẫu khuôn mặt / ánh sáng / màu), đã mang giày + cầm túi từ khung hình đầu; Wardrobe Part 1 thêm "form
 //   áo chỉ lấy từ ảnh áo, không theo áo bó trong ảnh model"; mốc 0,6s nhắc "không cầm ngang hông trước khi xỏ xong 2 chân".
-// M5SET_CUT = giây (trong Part 1) quần / váy đã kéo lên tới eo (từ đó quần short không còn lộ).
-const M5SET_CUT = 5.4;
-export const M5SET_PART_DURATIONS = ['7s', '8s'];
-// Part 1 (7s): đoạn mặc, 1 cảnh liền. Váy không có ống: xỏ chân vào lòng váy. Theo yêu cầu người dùng: CHÂN TRÁI nhấc cao (gối
-//   ngang hông) xỏ vào ống trái → bàn chân trượt xuống, ló ra ở gấu, đặt phẳng xuống sàn → CHÂN PHẢI tương tự → mới kéo lên eo; mỗi pha 1
-//   mốc riêng, cạp giữ ở ngang gối tới khi xỏ xong 2 chân (lần thử trước: cầm ngang hông ~1s, 2 cú nhấc chân không rõ).
-// Lần thử cảnh 1 với "hạ cạp xuống ngang gối": AI VẪN cầm quần ngang HÔNG, ống quần buông che trước chân (lần thứ 3 bỏ qua câu hạ
-//   thấp -> thói quen cứng của mô hình) -> giờ THUẬN theo: cầm cạp mở rộng trước hông, ống quần rỗng buông tới sàn trước chân, rồi
-//   nhấc GỐI CAO QUA CẠP và thả bàn chân xuống trong ống quần (chân trái rồi chân phải), mới kéo lên eo.
-// Lần thử "gối cao qua cạp": chân thứ nhất xỏ rõ, nhưng chân thứ 2 không xỏ (AI nhấc lại chính chân đã ở trong). Người dùng chỉ rõ:
-//   cầm quần ngang hông thì dù nhấc chân cao cũng không mặc được -> phải CÚI NGƯỜI, HẠ CẠP XUỐNG DƯỚI GỐI rồi mới xỏ từng chân, xỏ
-//   xong cả 2 chân mới kéo lên hông, buông cạp, rồi 2 tay kéo vạt áo xuống ra ngoài (tránh áo bị nhét / phồng trong quần). Mỗi động
-//   tác 1 mốc; trong 2 mốc xỏ chân nhắc lại "vẫn cúi, 2 tay vẫn dưới gối"; chân gọi theo vị trí trên khung hình, chân thứ 2 ghi rõ
-//   "chân KIA, vẫn ở ngoài". Áo kết thúc thả ngoài quần (Wardrobe 2 phân cảnh).
-const m5setPart1 = (k) => {
+// ---- Bản trước: 1 PHÂN CẢNH 15s, XỎ 1 CHÂN rồi cắt cảnh (đã thay bằng bản "biến hình" bên dưới) ----
+// Cảnh xỏ CẢ 2 chân không làm ổn định được (AI cầm quần ngang hông, nhấc lại cùng 1 chân, chân thứ 2 không xỏ…) -> giờ chỉ diễn 1
+// chân: hạ thấp trọng tâm, hạ cạp xuống GẦN SÁT SÀN → nhấc 1 chân (bên trái khung hình) lên cao rồi cho vào 1 ống quần → đứng lên
+// kéo quần lên eo khi CHÂN KIA VẪN Ở NGOÀI (ống quần còn lại buông rỗng bên cạnh) → NHẢY CẮT sang đã mặc đủ bộ (cả 2 chân, mang giày),
+// 2 tay kéo vạt áo xuống ra ngoài quần (tránh áo bị nhét / phồng) → tạo dáng. Không tách 2 phân cảnh nữa (người dùng: "chỉ làm 1
+// cảnh 15s"); cú nhảy cắt ở M5SET_CUT che việc chân thứ 2 chưa xỏ. Chân gọi theo VỊ TRÍ TRÊN KHUNG HÌNH (AI hiểu "left" là bên trái
+// khung hình). Hạ cạp = ĐỨNG GẬP NGƯỜI VỀ TRƯỚC ở hông (gối chỉ hơi chùng), tay với xuống, cạp ở mắt cá sát sàn; xỏ chân = đứng 1 chân
+// giữ thăng bằng, co gối chân kia lên về phía ngực rồi thả bàn chân vào ống quần — đúng cách người thật mặc quần. KHÔNG viết "ngồi xổm
+// sâu" (deep squat): người dùng chỉ ra ngồi xổm thì không thể nhấc chân xỏ quần, động tác sai.
+// ---- Bản hiện tại: 1 PHÂN CẢNH 15s, MẶC QUẦN KIỂU "BIẾN HÌNH" (ý tưởng của người dùng) ----
+// Các bản xỏ chân thật (2 chân, rồi 1 chân) AI đều làm sai tư thế -> bỏ hẳn cảnh xỏ chân. Thay bằng trò "thay đồ biến hình":
+//   cầm quần / váy duỗi thẳng khoe trước người → ỊN quần áp vào phía trước 2 gối → trượt lên ỊN vào đùi, 2 tay đặt phẳng giữ cạp ở
+//   đùi → MATCH CUT (M5SET_CUT): quần đã mặc vào 2 chân, cạp vẫn ở đùi, 2 TAY VẪN Ở ĐÚNG CHỖ VỪA ỊN, cùng dáng / cùng khung hình →
+//   kéo cạp lên eo → buông, 2 tay kéo vạt áo xuống ra ngoài (tránh "đóng thùng") → nhảy cắt: giày + túi, tạo dáng.
+// Thêm (người dùng): sau cú cắt khớp, VỪA KÉO QUẦN LÊN VỪA XOAY NGƯỜI RA SAU (khoe mặt sau quần), kéo hết lên eo thì XOAY LẠI phía trước
+//   mới kéo vạt áo ra. AN TOÀN NỘI DUNG khi quay lưng lúc đang kéo quần: nói rõ quần ĐÃ PHỦ 2 CHÂN (chỉ còn đưa cạp từ giữa đùi lên eo),
+//   kéo lên DƯỚI VẠT ÁO DÀI, "she stays fully covered"; không dùng từ nói về mông / hông / phần dưới cơ thể.
+// Cú cắt khớp là 1 cú cắt cảnh có chủ đích (không phải biến hình dần): dòng quy tắc nói rõ "cùng tư thế, tay cùng chỗ, chỉ khác là
+// quần đã mặc", ngoài cú đó không có biến hình. Giày + túi chỉ xuất hiện ở cú nhảy cắt sau khi kéo áo ra.
+// M5SET_CUT = giây cú cắt khớp "biến hình" (từ đó đã mặc quần / váy, quần short không còn lộ).
+const M5SET_CUT = 2.6;
+const m5setOne = (k) => {
   const pants = k === 'pants';
-  // Chân gọi theo VỊ TRÍ TRÊN KHUNG HÌNH (video thử: AI hiểu "left" là bên trái khung hình, xỏ nhầm chân / nhấc 1 chân 2 lần)
-  const into = pants ? 'the trouser leg on that side, pushing it down until the foot comes out at the hem' : 'the skirt, inside the waistband';
+  const it = pants ? 'trousers' : 'skirt';
   return [
-    'Mood: graceful and unhurried; she is fully dressed in every frame.',
-    `0.0-0.6s: Full body front, feet visible: she wears {OUTFIT} with the {SHORTS} gym shorts, barefoot, the folded {OUTFIT2} in one hand at her side; a quick smile.`,
-    `0.6-1.2s: Same shot, continuous: she shakes {OUTFIT2} open and holds its waistband open with both hands in front of her hips, ${pants ? 'the trouser legs' : 'the skirt'} hanging down.`,
-    `1.2-2.0s: Same shot, continuous: she bends deeply forward, knees bent, and lowers the open waistband all the way down to mid-shin, hands just above her ankles, ${pants ? 'the trouser legs' : 'the hem'} gathered on the floor in front of her feet, head down watching.`,
-    `2.0-3.2s: Same shot, continuous, still bent with the waistband at mid-shin: she draws the knee on the left side of the frame up high toward her chest, lifts that foot above the waistband, then steps it into ${into} and sets it on the floor.`,
-    `3.2-4.4s: Same shot, continuous, waistband still at mid-shin: she draws the OTHER knee, on the right side of the frame, up high toward her chest, lifts that foot (still outside) above the waistband, then steps it into ${into} and sets it down; both legs are now in.`,
-    `4.4-5.4s: Same shot, continuous: only now she straightens up, both hands pulling {OUTFIT2} up her legs over the shorts to her waist${pants ? '' : ', the hem falling into place'}; the shorts are fully covered.`,
-    `5.4-6.2s: Same shot: she lets go of the waistband, then both hands take the hem of {OUTFIT} at her sides and pull it down and out so it hangs loose over the waistband, untucked.`,
-    `6.2-7.0s: Same shot: she stands upright facing the camera, arms relaxed, soft smile.`,
+    'Mood: playful quick-change, then posing; fully dressed in every frame.',
+    '0.0-0.6s: Full body front, feet visible: she wears {OUTFIT} with the {SHORTS} gym shorts, barefoot, the folded {OUTFIT2} in one hand; a quick smile.',
+    `0.6-1.2s: Same shot: she holds {OUTFIT2} up by its waistband with both hands, stretched out flat at chest height, showing the ${it}.`,
+    `1.2-2.0s: Same shot: knees softly bent, she lowers ${pants ? 'them' : 'it'} straight down until the waistband touches the front of her knees, the hem pooling by her feet, the {SHORTS} shorts fully visible above.`,
+    `2.0-2.6s: She slides the waistband up only to mid-thigh and stops, both palms flat on it, the shorts still showing above; before 2.6s it is never held at her waist.`,
+    `2.6-4.0s: Match cut, same pose and framing, hands exactly where they were: she is now wearing the ${it}, waistband still at mid-thigh; gripping the waistband, she pulls it up from mid-thigh to her waist while slowly turning to face away, the lift visible as she turns, showing {BACK2} under her long top; she stays fully covered.`,
+    '4.0-5.2s: Same shot: she turns back to face the camera, then both hands pull the hem of {OUTFIT} down and out over the waistband, untucked.',
+    pants
+      ? '5.2-6.6s: Jump cut, full body front, simple shoes on, a small handbag in one hand, other hand on her hip, bright smile.'
+      : '5.2-6.6s: Jump cut, full body front, simple shoes on, a small handbag in one hand, a light swish of the hem, bright smile.',
+    '6.6-8.4s: Jump cut: slow turn showing {BACK} and {BACK2}, looking back over her shoulder.',
+    '8.4-10.0s: Jump cut: she turns back to front, chin tilted.',
+    '10.0-12.2s: Jump cut, close-up chin to hips.',
+    '12.2-15.0s: Jump cut, medium close: hands on hips, big smile.',
   ].join('\n');
 };
-// Part 2 (8s): khoe dáng, mở bằng khung hình cuối Part 1
-const m5setPart2 = (k) => [
-  'Mood: graceful and alluring; slow elegant poses.',
-  k === 'pants'
-    ? '0.0-1.8s: Full body front, simple shoes that suit the set on her feet, a small handbag in one hand: other hand on her hip, a light sway, bright smile.'
-    : '0.0-1.8s: Full body front, simple shoes that suit the set on her feet, a small handbag in one hand: a light swish of the hem, bright smile.',
-  '1.8-3.6s: Jump cut, full body: she turns slowly to show {BACK} and {BACK2}, hand on hip, looking back over her shoulder.',
-  '3.6-5.0s: Jump cut: she turns back to front, a soft hip sway, chin tilted.',
-  '5.0-6.5s: Jump cut, close-up chin to hips: bag on her forearm, showing the top.',
-  '6.5-8.0s: Jump cut, medium close: hands on hips, bag on her wrist, big smile.',
-].join('\n');
-const M5SET_P1_PANTS = m5setPart1('pants');
-const M5SET_P1_SKIRT = m5setPart1('skirt');
-const M5SET_P2_PANTS = m5setPart2('pants');
-const M5SET_P2_SKIRT = m5setPart2('skirt');
+const M5SET_PANTS_15S = m5setOne('pants');
+const M5SET_SKIRT_15S = m5setOne('skirt');
 
 // Màu quần short gym lúc mở đầu (options.shortsColor, người dùng gõ tiếng Việt hoặc tiếng Anh): đổi tên màu tiếng Việt thường gặp
 // sang tiếng Anh, còn lại giữ nguyên chữ đã làm sạch (chỉ chữ cái / khoảng trắng, tối đa 30 ký tự); để trống = đỏ.
@@ -258,6 +257,11 @@ export function shortsColorOf(v) {
   return out.replace(/\b(mau|quan|short|shorts|gym)\b/g, ' ').replace(/\s+/g, ' ').trim() || 'red';
 }
 
+// Dòng Wardrobe cho chuyển động ĐỒ BỘ (Chuyển động 5), bản 1 CẢNH 15s: trước {CUT}s mặc áo + quần short gym, chân trần, không túi, cầm
+// chiếc quần / váy duy nhất; từ cú nhảy cắt {CUT}s đã mặc đủ bộ, áo thả ngoài, có giày, rồi túi. {TOP_DESC} / {BOTTOM_DESC} = mô tả chữ
+// của áo / quần do Gemini viết từ ảnh sản phẩm (describeSetGarments); không có thì là câu chung "chép đúng ảnh".
+const WARDROBE_SET1 = `Wardrobe: use {MODEL} for face, hair and body only, never its clothes. {OUTFIT} (back {BACK}) is the top: {TOP_DESC}. {OUTFIT2} (back {BACK2}) is the bottom: {BOTTOM_DESC}. Both are one matching set copied exactly in every frame, never restyled or tighter, even while held, pressed to her legs or pulled up; the top's shape comes only from {OUTFIT}, never from the fitted shirt in {MODEL}. Until {CUT}s she wears the top with plain {SHORTS} fitted women's gym shorts (opaque athletic biker shorts, mid-thigh), barefoot, no bag, holding the only {OUTFIT2}. From {CUT}s she wears the bottom over them; once it reaches her waist the shorts never show again; once she pulls the top out it stays untucked over the bottom; shoes and a small handbag come later. No clothes from {MODEL} ever show.`;
+// (Bản 2 phân cảnh — buildSetParts / motion.setParts, không còn chuyển động nào dùng — vẫn giữ để dùng lại khi cần)
 // Dòng Wardrobe cho chuyển động ĐỒ BỘ (Chuyển động 5), Part 1: {OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần hoặc váy của cùng bộ,
 // {SHORTS} = màu quần short gym, {CUT} = giây đã kéo quần / váy lên eo. Nói rõ quần short là đồ thể thao kín đáo, chỉ có 1 chiếc quần
 // (cầm sẵn từ khung hình đầu) và khoá chất liệu / form / chi tiết của cả 2 món.
@@ -352,21 +356,19 @@ export const MOTIONS = {
   },
   // Khoá 'motion5set' (không dùng 'motion5': đó là Chuyển động 5 nam cũ, chỉ còn cho lần chạy cũ)
   motion5set: {
-    name: 'Chuyển động 5 – ĐỒ BỘ: ĐÚNG 2 ảnh của cùng 1 bộ (ảnh 1 = ÁO, ảnh 2 = QUẦN hoặc VÁY), 2 phân cảnh 7s + 8s = 15s, túi + giày AI tự chọn: (P1) mặc áo + quần short gym nữ, cầm sẵn quần / váy → cúi cầm cạp thấp ngang ống chân → xỏ chân phải → xỏ chân trái → kéo lên eo → (P2) mang giày cầm túi, tay chống hông → xoay sau khoe mặt sau → xoay lại → cận → 2 tay chống hông',
+    name: 'Chuyển động 5 – ĐỒ BỘ: ĐÚNG 2 ảnh của cùng 1 bộ (ảnh 1 = ÁO, ảnh 2 = QUẦN hoặc VÁY), 1 phân cảnh 15s, túi + giày AI tự chọn: mặc áo + quần short gym nữ, cầm quần / váy duỗi ra khoe → ịn vào gối rồi lên đùi → cắt khớp "biến hình": đã mặc, tay vẫn ở đùi → kéo lên eo → kéo vạt áo ra ngoài → cầm túi tạo dáng → xoay sau → xoay lại → cận → bước tới → 2 tay chống hông',
     prompts: {
-      m5set_p1_pants: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 1 (7s) bản QUẦN: mặc quần ({OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần, {SHORTS} = màu quần short gym)', text: M5SET_P1_PANTS },
-      m5set_p1_skirt: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 1 (7s) bản VÁY: mặc váy', text: M5SET_P1_SKIRT },
-      m5set_p2_pants: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 2 (8s) bản QUẦN: khoe dáng, mở bằng khung hình cuối phân cảnh 1', text: M5SET_P2_PANTS },
-      m5set_p2_skirt: { label: 'Chuyển động 5 (đồ bộ) · Phân cảnh 2 (8s) bản VÁY: khoe dáng', text: M5SET_P2_SKIRT },
+      m5set_pants_15s: { label: 'Chuyển động 5 (đồ bộ) · bản QUẦN 15s ({OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần, {SHORTS} = màu quần short gym; 0,6–2,6s duỗi quần khoe, ịn vào gối rồi đùi; 2,6s cắt khớp "biến hình": đã mặc, tay vẫn ở đùi, kéo lên eo)', text: M5SET_PANTS_15S },
+      m5set_skirt_15s: { label: 'Chuyển động 5 (đồ bộ) · bản VÁY 15s (như bản quần: duỗi váy khoe, ịn vào gối rồi đùi, cắt khớp "biến hình", kéo lên eo)', text: M5SET_SKIRT_15S },
     },
+    single: true,
     // set: 2 ảnh là 2 MÓN của cùng 1 bộ mặc cùng lúc (không phải 2 bộ mặc lần lượt): 1 chữ / mã cho cả video (của ảnh áo)
     set: true,
-    // setParts: 2 phân cảnh riêng của đồ bộ (buildSetParts) — durations[i] = thời lượng Flow của phân cảnh i+1; p1 / p2 = khoá prompt
-    // theo options.bottomType; cut = giây đã mặc xong trong Part 1
-    setParts: { durations: M5SET_PART_DURATIONS, p1: { pants: 'm5set_p1_pants', skirt: 'm5set_p1_skirt' }, p2: { pants: 'm5set_p2_pants', skirt: 'm5set_p2_skirt' }, cut: M5SET_CUT },
     outfitLabels: ['Áo', 'Quần / váy'],
-    // Ô "Thời lượng" chỉ hiện "15s" (tổng 2 phân cảnh)
-    durations: { '15s': {} },
+    // variants: bản prompt theo options.bottomType (món dưới là quần hay váy); cuts = [giây nhảy cắt sang đã mặc đủ bộ]
+    durations: { '15s': { prompt: 'm5set_pants_15s', variants: { pants: 'm5set_pants_15s', skirt: 'm5set_skirt_15s' }, cutAt: M5SET_CUT, cuts: [M5SET_CUT] } },
+    // dressing: đổi đồ bằng động tác mặc thật + 1 cú nhảy cắt -> dòng quy tắc cấm biến hình thay cho câu "Clean match cut"
+    dressing: true,
     minOutfits: 2,
     maxOutfits: 2,
   },
@@ -404,7 +406,7 @@ const outfitCountError = (motion, n) => {
 };
 
 export const fmtT = (t) => (Math.round(t * 10) / 10).toFixed(1);
-export const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR|SHORTS)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
+export const fill = (text, vars) => text.replace(/\{(MODEL|OUTFITS|OUTFIT2|OUTFIT|BACK2|BACK|CODE|BG|START|PART|DUR|CUT|WEAR|SHORTS|TOP_DESC|BOTTOM_DESC)\}/g, (m, k) => (vars[k] != null ? vars[k] : m));
 
 // Chữ trên video (../caption.js): 'code' = mã sản phẩm (mặc định) · 'text' = chữ tuỳ ý · 'none' = không chữ.
 // Prompt mẫu viết cho chế độ mã -> đổi đúng câu về chữ trong phần mở đầu / dòng quy tắc, không đụng mốc động tác.
@@ -422,7 +424,7 @@ const captionLine = (o, mode) => (mode === 'none' ? null : `Caption: "${o.captio
  * tương ứng (cùng chuyển động, khác nhịp). outfits = [{ caption, p1: { front, back } }] — 1 bộ (Chuyển động 2) hoặc nhiều bộ
  * mặc lần lượt trong cùng 1 video (Chuyển động 3: bộ thứ i bắt đầu ở mốc match cut d.cuts[i], caption đổi theo đúng mốc đó).
  */
-export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [outfit] : [], tags, duration, captionMode = 'code', variant = null, shorts = null }) {
+export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [outfit] : [], tags, duration, captionMode = 'code', variant = null, shorts = null, descs = null }) {
   const d = motion.durations[duration] || Object.values(motion.durations)[0];
   const total = parseFloat(duration);
   const cuts = d.cuts || [d.cutAt];
@@ -435,6 +437,9 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
     OUTFIT: first.p1.front, BACK: first.p1.back, OUTFIT2: second?.p1.front, BACK2: second?.p1.back,
     CODE: first.caption || '', PART: 'One continuous take', DUR: duration, CUT: fmtT(cuts[0] ?? 0),
     SHORTS: shortsColorOf(shorts), // màu quần short gym (đồ bộ)
+    // mô tả chữ áo / quần (đồ bộ, Gemini); không có thì câu chung
+    TOP_DESC: descs?.top || 'its fabric, colour, fit, length, sleeves and trims exactly as pictured',
+    BOTTOM_DESC: descs?.bottom || 'its fabric, colour, fit, width, length and waistband exactly as pictured',
   };
   // Bản prompt theo biến thể (đồ bộ: quần / váy)
   const beatsKey = (variant && d.variants?.[variant]) || d.prompt;
@@ -448,7 +453,7 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
     ? 'Caption: ' + outfits.map((o, i) => `${fmtT(i === 0 ? 0 : cuts[i])}-${fmtT(endOf(i))}s "${o.caption}"`).join('; ') + ' (switches exactly on the match cut).'
     : captionLine(first, captionMode);
   const wardrobe = isSet
-    ? fill((prompt('wardrobe_set') || WARDROBE_SET).trim(), vars)
+    ? fill((prompt('wardrobe_set1') || WARDROBE_SET1).trim(), vars)
     : multi
     ? fill((prompt('wardrobe2') || WARDROBE_PART2).trim(), { ...vars, WEAR: outfits.map((o, i) => `${o.p1.front} (back ${o.p1.back}) at ${fmtT(cuts[i])}-${fmtT(endOf(i))}s`).join(', then ') })
     : worn
@@ -457,14 +462,16 @@ export function buildSinglePrompt({ motion, prompt, outfit, outfits = outfit ? [
   const cutNote = worn
     ? ''
     : motion.dressing
-      ? ` The ${variant === 'skirt' ? 'skirt' : 'trousers'} go on only by her real hand and leg moves, one foot at a time; the waistband stays low until both feet are in: no morph or sudden appearance.`
+      ? ` At ${vars.CUT}s one quick-change match cut: same pose and framing, hands in the same spot on her thighs, only now the ${variant === 'skirt' ? 'skirt is' : 'trousers are'} on; no other morph.`
       : ` Clean match cut${cuts.length > 1 ? 's' : ''} at ${cuts.map((c) => `${fmtT(c)}s`).join(' and ')}.`;
   return [
-    fill(setup, vars),
+    // Đồ bộ gọi chân theo vị trí trên khung hình: bỏ câu "Left/right are the model's own"
+    isSet ? fill(setup, vars).replace(/\s*Left\/right are the model's own\./, '') : fill(setup, vars),
     caption,
     wardrobe,
     fill(prompt(beatsKey) || motion.prompts[beatsKey]?.text || '', vars),
-    `${rule}${cutNote} Sharp final frame at ${fmtT(total)}s.`.trim(),
+    // Đồ bộ: túi đã nêu trong dòng Wardrobe (chỉ có sau cú cắt) -> bỏ câu túi chung "one small bag per outfit" cho gọn prompt
+    `${isSet ? rule.replace(/\s*One small bag[^.]*\./i, '') : rule}${cutNote} Sharp final frame at ${fmtT(total)}s.`.trim(),
   ].filter(Boolean).join('\n');
 }
 /**
@@ -632,8 +639,7 @@ export default {
     wardrobe: { label: 'Khoá trang phục – Part 1 / video 1 phân cảnh: sau match cut ({CUT}s) không còn đồ cũ của model ({OUTFIT}/{BACK})', text: WARDROBE },
     wardrobe2: { label: 'Khoá trang phục – Part 2 ({WEAR} = trang phục theo từng khoảng thời gian)', text: WARDROBE_PART2 },
     wardrobe0: { label: 'Khoá trang phục – chuyển động mặc sẵn từ khung hình đầu (Chuyển động 4: {OUTFIT}/{BACK})', text: WARDROBE_WORN },
-    wardrobe_set: { label: 'Khoá trang phục – ĐỒ BỘ phân cảnh 1 (Chuyển động 5: {OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần / váy, {SHORTS} = màu quần short gym, {CUT} = giây đã mặc xong)', text: WARDROBE_SET },
-    wardrobe_set2: { label: 'Khoá trang phục – ĐỒ BỘ phân cảnh 2 (Chuyển động 5: mặc đủ bộ như khung hình cuối phân cảnh 1 {START}, giày + túi từ cú nhảy cắt đầu)', text: WARDROBE_SET2 },
+    wardrobe_set1: { label: 'Khoá trang phục – ĐỒ BỘ (Chuyển động 5: {OUTFIT}/{BACK} = áo, {OUTFIT2}/{BACK2} = quần / váy, {SHORTS} = màu quần short gym, {CUT} = giây nhảy cắt sang đã mặc đủ bộ)', text: WARDROBE_SET1 },
     ...Object.fromEntries(Object.values(MOTIONS).filter((m) => !m.legacy).flatMap((m) => Object.entries(m.prompts))),
     rule: { label: 'Dòng quy tắc ngắn cuối mỗi phân cảnh (để trống nếu không cần)', text: COMMON_RULE },
   },
@@ -678,8 +684,29 @@ export default {
         // Đồ bộ 2 phân cảnh (Chuyển động 5): Part 1 = đoạn mặc, thời lượng theo setParts.durations[0]
         const setParts = motion.setParts || null;
         const duration = single ? singleDuration(ctx.run) : setParts ? setParts.durations[0] : '10s';
+        // Đồ bộ: Gemini mô tả chữ áo + quần / váy từ ảnh sản phẩm (giữ đúng mẫu khi vải đang kéo / mặc nửa). Làm 1 lần cho mỗi cặp ảnh
+        // (lỗi / không có key cũng ghi lại, không gọi lại mỗi lượt); job video đã tạo thì prompt không đổi nữa.
+        let descs = null;
+        if (single && motion.set && outfits.length >= 2) {
+          const key = [outfits[0].id, outfits[1].id, ctx.run.options.bottomType || 'pants'].join('|');
+          if (ctx.state.garmentDescs?.key !== key && !ctx.job('video:part1')) {
+            const apiKey = db.settings.geminiApiKey || process.env.GEMINI_API_KEY || '';
+            if (!apiKey) ctx.state.garmentDescs = { key, error: 'Chưa có Gemini API key trong Cài đặt' };
+            else {
+              try {
+                const d = await describeSetGarments({ topPath: outfits[0].front, bottomPath: outfits[1].front, bottomType: ctx.run.options.bottomType, apiKey, model: db.settings.geminiModel || 'gemini-2.5-flash' });
+                ctx.state.garmentDescs = { key, ...d };
+              } catch (e) {
+                ctx.state.garmentDescs = { key, error: String(e.message).slice(0, 160) };
+              }
+            }
+            const g = ctx.state.garmentDescs;
+            ctx.state.note = g.error ? `Không lấy được mô tả áo / quần (${g.error}) → prompt dùng câu chung "chép đúng ảnh".` : `Mô tả Gemini — áo: ${g.top} · quần / váy: ${g.bottom}`;
+          }
+          if (ctx.state.garmentDescs?.key === key && ctx.state.garmentDescs.top) descs = ctx.state.garmentDescs;
+        }
         const template = single
-          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, duration, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor })
+          ? buildSinglePrompt({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, duration, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor, descs })
           : setParts
             ? buildSetParts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode, variant: ctx.run.options.bottomType, shorts: ctx.run.options.shortsColor }).part1
             : buildPrompts({ motion, prompt: (k) => ctx.prompt(k), outfits, tags, captionMode }).part1;
