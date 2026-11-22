@@ -1025,8 +1025,7 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
           name: x.name,
           price: x.price,
           description: x.description,
-          mainImage: x.mainImage,
-          category: x.category,
+          commission: x.commission,
           badge: {
             x: x.badge.x,
             y: x.badge.y,
@@ -1038,6 +1037,13 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
         },
       ]),
     );
+  // Lấy (lại) hoa hồng Shopee cho 1 dòng qua tab affiliate.shopee.vn trong Chrome của Flow (cần đã đăng nhập ở đó)
+  const fetchCommission = (row) =>
+    run(async () => {
+      const res = await api.fetchAssetCommission(row.assetId, true);
+      if (!res.ok) throw new Error(res.message || 'Không lấy được hoa hồng');
+      update(row.key, { commission: res.commission, commissionRateText: res.commissionRateText });
+    });
   const save = () =>
     run(async () => {
       const res = await api.saveRunProducts(r.id, { products: payload(true) });
@@ -1088,8 +1094,8 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
           <div>
             <h2>🏷️ Mã & sản phẩm — {rows ? rows.length : r.productItemCount || 0} ảnh trang phục</h2>
             <small className="muted">
-              Mỗi ảnh trang phục là một sản phẩm: tên, giá, link Shopee lấy sẵn từ lúc bóc link; mã dạng <code>VAY_01</code> dùng chung sổ mã với video thời trang
-              và in lên ảnh model đã render (khung đen mờ, chữ trắng, phía trên đầu nhân vật). Excel đúng cột để Admin DiamondShop nhập; hoa hồng Shopee để trống.
+              Mỗi ảnh trang phục là một sản phẩm: giá, mô tả, hoa hồng Shopee lấy sẵn từ lúc bóc link; mã dạng <code>VAY_01</code> dùng chung sổ mã với video thời trang
+              và in lên ảnh model đã render (khung đen mờ, chữ trắng, phía trên đầu nhân vật). Excel 5 cột: Mã · Giá · Mô tả · Ảnh (ảnh model đã render, bản có mã) · Hoa hồng Shopee.
               {frame && ` Ảnh ${frame.width}×${frame.height}${frame.probed ? '' : ' (ước lượng, chưa có ảnh render)'}.`}
             </small>
           </div>
@@ -1115,10 +1121,11 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
                     <div className="row gap-xs" style={{ marginTop: 4, alignItems: 'flex-start' }}>
                       {row.thumbUrl ? <img className="mini-thumb" src={row.thumbUrl} alt="" title={row.assetName || 'Ảnh trang phục'} style={{ width: 64, height: 86 }} /> : <div className="small muted">Không có ảnh trang phục</div>}
                       {row.codedUrl || row.outputUrl ? (
-                        <img className="mini-thumb" src={row.codedUrl || row.outputUrl} alt="" title={row.codedUrl ? 'Ảnh kết quả đã in mã' : 'Ảnh kết quả (chưa in mã)'} style={{ width: 64, height: 86 }} />
+                        <img className="mini-thumb" src={row.codedUrl || row.outputUrl} alt="" title={row.codedUrl ? 'Ảnh kết quả đã in mã — đây là ảnh xuất vào Excel' : 'Ảnh kết quả (chưa in mã) — đây là ảnh xuất vào Excel'} style={{ width: 64, height: 86 }} />
                       ) : <div className="small muted" style={{ width: 64 }}>Chưa render</div>}
                     </div>
-                    {!row.hasMeta && <div className="warn-text" title="Ảnh này không được tải từ link sản phẩm nên không có tên/giá/link sẵn">⚠ Ảnh chưa có dữ liệu sản phẩm</div>}
+                    <div className="small muted" style={{ marginTop: 2 }}>{row.renderName ? `Ảnh Excel: ${row.renderCoded ? 'bản có mã' : 'ảnh render'}` : 'Ảnh Excel: chưa có (chưa render)'}</div>
+                    {!row.hasMeta && <div className="warn-text" title="Ảnh này không được tải từ link sản phẩm nên không có tên/giá/hoa hồng sẵn">⚠ Ảnh chưa có dữ liệu sản phẩm</div>}
                   </td>
                   <td>
                     <div className="field-grid">
@@ -1142,17 +1149,20 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
                         <span>Mô tả (≤ 600 ký tự) · {(row.description || '').length}/600</span>
                         <textarea rows={3} maxLength={600} value={row.description || ''} onChange={(e) => update(row.key, { description: e.target.value })} />
                       </label>
-                      <label>
-                        <span>Danh mục</span>
-                        <input value={row.category || ''} placeholder="(tuỳ chọn)" onChange={(e) => update(row.key, { category: e.target.value })} />
-                      </label>
-                      <label>
-                        <span>Ảnh chính (Ảnh 1 trong Excel) · {row.images.length} ảnh</span>
-                        {row.images.length ? (
-                          <div className="img-pick">
-                            {row.images.map((u) => <img key={u} src={u} alt="" className={u === row.mainImage ? 'on' : ''} title={u} onClick={() => update(row.key, { mainImage: u })} />)}
-                          </div>
-                        ) : <span className="warn-text">Không có URL ảnh gốc (ảnh tải từ máy)</span>}
+                      <label className="full">
+                        <span>
+                          Hoa hồng Shopee (đ){row.commissionRateBps ? ` · tỷ lệ ${(row.commissionRateBps / 100).toLocaleString('vi-VN')}%` : ''}
+                          {row.commissionRateText ? ` (${row.commissionRateText})` : ''}
+                        </span>
+                        <div className="code-row">
+                          <input type="number" min="0" step="100" value={row.commission ?? ''} placeholder="chưa có — nhập tay hoặc lấy từ Shopee" onChange={(e) => update(row.key, { commission: e.target.value === '' ? null : Number(e.target.value) })} />
+                          {row.itemId && row.platform === 'shopee' && (
+                            <button className="small-btn" disabled={busy} onClick={() => fetchCommission(row)} title="Gọi affiliate.shopee.vn (tab đã đăng nhập trong Chrome của Flow) để lấy hoa hồng ước tính của sản phẩm này">
+                              🔄 Lấy hoa hồng
+                            </button>
+                          )}
+                        </div>
+                        {!(row.commission > 0) && <span className="warn-text">Chưa có hoa hồng — cột "Hoa hồng Shopee (đ)" trong Excel sẽ trống.</span>}
                       </label>
                       <div className="full link-ro">
                         Link Shopee:{' '}

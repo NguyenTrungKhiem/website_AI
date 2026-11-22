@@ -21,7 +21,9 @@ import { writeExercisePrompt, GYM_BASE_PROMPT, GYM_REWRITE_PROMPT } from './work
 import { lookPreviewSpec } from './workflows/video-thoi-trang-khong-voice-nam.js';
 import { createSplitJobs, onSplitJobSettled } from './setSplit.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
-import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf } from './productExport.js';
+import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf, productMetaOf } from './productExport.js';
+import { fetchShopeeOffer, testAffiliateCookie, affiliateStatus, closeAffiliateBrowser } from './shopeeAffiliate.js';
+import { describeRates } from './shopeeOffer.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -43,14 +45,13 @@ process.on('unhandledRejection', (reason) => {
 process.on('exit', (code) => {
   logServer('[PROCESS EXIT] Code:', code);
 });
-process.on('SIGINT', () => {
-  logServer('[SIGNAL] SIGINT');
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  logServer('[SIGNAL] SIGTERM');
-  process.exit(0);
-});
+// Tắt server → đóng Chrome riêng gọi Shopee (nếu đang mở) rồi thoát
+const shutdown = (sig) => {
+  logServer(`[SIGNAL] ${sig}`);
+  Promise.race([closeAffiliateBrowser(), new Promise((r) => setTimeout(r, 1500))]).finally(() => process.exit(0));
+};
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 const app = express();
 app.use(express.json({ limit: '20mb' })); // PUT /api/runs/:id/products gửi kèm PNG khung mã (data URL) của từng ảnh
@@ -717,6 +718,82 @@ app.post('/api/shopee/import', wrap(async (req, res) => {
   if (!images.length) throw new Error('Chưa chọn ảnh');
   res.json(await productScraper.importImages(kind, images, { product }));
 }));
+// Thử cookie affiliate.shopee.vn (Cài đặt → Hoa hồng Shopee → Thử): body { cookie } = chuỗi đang gõ (chưa lưu), trống = cookie đã lưu
+app.post('/api/shopee/affiliate/test', wrap(async (req, res) => {
+  const cookie = typeof req.body?.cookie === 'string' && req.body.cookie.trim() ? req.body.cookie : db.settings.shopeeAffiliateCookie;
+  // itemId (tuỳ chọn) = sản phẩm để thử thay cho item mẫu; link Shopee cũng được (tách itemId)
+  const itemId = String(req.body?.itemId || '').match(/\d{6,20}/)?.[0] || undefined;
+  res.json({ ...(await testAffiliateCookie(cookie, { itemId })), status: affiliateStatus() });
+}));
+
+// Cầu nối HTTP cục bộ dùng chung 1 phiên Chrome thu nhỏ affiliate.shopee.vn cho cả web-video và các src khác trên máy (chỉ cho localhost/127.0.0.1 CORS)
+const localCors = (req, res, next) => {
+  const origin = String(req.headers.origin || '');
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+};
+
+app.options('/api/shopee/affiliate/status', localCors);
+app.get('/api/shopee/affiliate/status', localCors, (req, res) => {
+  res.json(affiliateStatus());
+});
+
+async function handleShopeeOffer(req, res) {
+  const input = req.method === 'GET' ? req.query || {} : req.body || {};
+  const rawItemId = String(input.item_id ?? input.itemId ?? '').trim();
+  const rawUrl = String(input.url ?? '').trim();
+  const force = input.force === true || input.force === '1' || input.force === 'true';
+  const includeRaw = input.raw === true || input.raw === '1' || input.raw === 'true';
+
+  let itemId = /^\d{1,20}$/.test(rawItemId) ? rawItemId : '';
+  if (!itemId && rawUrl) {
+    itemId = productScraper.parseProductIds(rawUrl, 'shopee')?.itemId || '';
+    if (!itemId) {
+      try {
+        const { finalUrl } = await productScraper.resolveRedirects(rawUrl);
+        itemId = productScraper.parseProductIds(finalUrl, 'shopee')?.itemId || '';
+      } catch {}
+    }
+  }
+  if (!itemId) {
+    return res.status(400).json({ ok: false, reason: 'error', message: 'Thiếu item_id hoặc không tách được item_id từ url.' });
+  }
+
+  const r = await fetchShopeeOffer(itemId, { force });
+  if (!r.ok) {
+    return res.json({ ok: false, reason: r.reason, message: r.message, status: affiliateStatus() });
+  }
+  res.json({
+    ok: true,
+    cached: !!r.cached,
+    offer: r.offer,
+    commissionRateText: describeRates(r.offer),
+    ...(includeRaw ? { raw: r.raw } : {}),
+  });
+}
+
+app.options('/api/shopee/offer', localCors);
+app.get('/api/shopee/offer', localCors, wrap(handleShopeeOffer));
+app.post('/api/shopee/offer', localCors, wrap(handleShopeeOffer));
+// Lấy (lại) hoa hồng Shopee cho 1 ảnh đã có itemId (metadata kế thừa theo chuỗi ảnh gốc) qua tab affiliate.shopee.vn của
+// Chrome Flow; ghi vào asset.product.commission. Trả { ok, commission, commissionRateText, message }
+app.post('/api/assets/:id/commission', wrap(async (req, res) => {
+  const a = db.assets.find((x) => x.id === req.params.id);
+  if (!a) throw new Error('Không tìm thấy ảnh');
+  const meta = productMetaOf(a);
+  if (!meta?.itemId || (meta.platform && meta.platform !== 'shopee')) throw new Error('Ảnh này không có itemId Shopee (không bóc từ link Shopee) — nhập hoa hồng tay.');
+  const c = await productScraper.fetchCommission('shopee', meta.itemId, { offer: (id) => fetchShopeeOffer(id, { force: !!req.body?.force }) });
+  if (c.commission == null) return res.json({ ok: false, message: c.commissionNote, commissionRateText: c.commissionRateText });
+  a.product = { ...meta, commission: c.commission, commissionRateBps: c.commissionRateBps };
+  save();
+  res.json({ ok: true, commission: c.commission, commissionRateBps: c.commissionRateBps, commissionRateText: c.commissionRateText });
+}));
 // Gợi ý mã sản phẩm từ tên theo sổ mã chung (VAY_01…); taken = các mã đang đặt trên giao diện để không gợi ý trùng
 app.get('/api/products/suggest-code', wrap(async (req, res) => {
   const taken = new Set(String(req.query.taken || '').split(',').map((s) => normalizeCode(s)).filter(Boolean));
@@ -1002,7 +1079,8 @@ app.post('/api/runs/:id/products.xlsx', wrap(async (req, res) => {
   const run = findProductRun(req.params.id);
   const override = req.body?.products && typeof req.body.products === 'object' ? req.body.products : null;
   const rows = buildProductRows(run, { override });
-  const wb = await buildWorkbook(rows);
+  // baseUrl theo request để link "Ảnh" trong Excel mở được ảnh render trên máy này
+  const wb = await buildWorkbook(rows, { baseUrl: `${req.protocol}://${req.get('host')}` });
   res.attachment(exportFilename(run));
   res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   await wb.xlsx.write(res);

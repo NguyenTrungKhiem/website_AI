@@ -22,7 +22,7 @@ const CHROME_PATHS = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
 ].filter(Boolean);
 
-const chromePath = () => CHROME_PATHS.find((p) => fs.existsSync(p));
+export const chromePath = () => CHROME_PATHS.find((p) => fs.existsSync(p));
 
 async function isRunning() {
   try {

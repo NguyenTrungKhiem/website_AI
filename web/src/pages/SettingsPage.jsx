@@ -29,6 +29,61 @@ function Field({ s, set, path, label, type = 'text', hint, options }) {
   );
 }
 
+// Cookie affiliate.shopee.vn để server gọi thẳng API hoa hồng (không cần mở tab Chrome). Nút Thử gọi 1 sản phẩm thật bằng cookie
+// đang gõ (chưa cần Lưu) và báo tên + hoa hồng đọc được, hoặc lý do lỗi (hết hạn / Shopee chặn).
+function ShopeeAffiliatePanel({ s, set }) {
+  const [result, setResult] = useState(null);
+  const [testing, setTesting] = useState(false);
+  const value = s.shopeeAffiliateCookie || '';
+  const test = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      setResult(await api.testShopeeAffiliate(value));
+    } catch (e) {
+      setResult({ ok: false, message: e.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+  return (
+    <div className="stack">
+      <label>
+        Cookie affiliate.shopee.vn
+        <textarea
+          className="mono"
+          rows={3}
+          value={value}
+          placeholder="SPC_EC=…; SPC_U=…; SPC_F=…; … (giá trị header Cookie của affiliate.shopee.vn)"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => set((prev) => ({ ...prev, shopeeAffiliateCookie: e.target.value }))}
+        />
+        <small className="muted">
+          Cách lấy: mở <b>affiliate.shopee.vn</b> trong Chrome đã đăng nhập → F12 → tab <b>Network</b> → tải lại trang → bấm 1 request tới affiliate.shopee.vn
+          (vd. <code>config/website</code>) → <b>Request Headers</b> → chép toàn bộ giá trị dòng <b>Cookie</b> dán vào đây. API hoa hồng cần chữ ký chống bot do
+          chính trang Shopee ký cho từng request (không nhập tay được, gọi thẳng từ server bị từ chối, Chrome ẩn hoàn toàn bị Shopee chặn — đều đã thử), nên web
+          tự chạy <b>một Chrome riêng, thu nhỏ dưới thanh taskbar</b> (hồ sơ <code>data/shopee-chrome</code>, không đụng Chrome của Flow), nạp cookie này
+          để đăng nhập và gọi API trong đó. Không tab nào hiện ra, bạn không phải đăng nhập gì; cửa sổ đó cứ để thu nhỏ, lỡ đóng thì web tự mở lại. Cookie là
+          phiên đăng nhập của bạn (toàn quyền tài khoản affiliate): chỉ lưu trong <code>data/db.json</code> máy này, chỉ gửi tới shopee.vn. Hết hạn thì dán lại.
+        </small>
+      </label>
+      <div className="row">
+        <button type="button" disabled={testing || !value.trim()} onClick={test} title="Nạp cookie đang gõ vào Chrome riêng (thu nhỏ) và gọi thử hoa hồng 1 sản phẩm mẫu (chưa cần Lưu; lần đầu mở Chrome mất vài giây)">
+          {testing ? '⏳ Đang gọi Shopee qua Chrome riêng…' : '🔄 Thử cookie'}
+        </button>
+        {result && <span className={result.ok ? 'ok small' : 'err small'}>{result.ok ? '✓ ' : '✗ '}{result.message}</span>}
+      </div>
+      {result && !result.ok && result.reason === 'blocked' && (
+        <small className="warn-text">Shopee đang tạm từ chối request (chống bot) — web tự nghỉ 10 phút rồi gọi lại; đừng bấm Thử liên tục.</small>
+      )}
+      {result && !result.ok && result.reason === 'notFound' && (
+        <small className="muted">Cookie đã chạy được (Shopee trả lời), chỉ là sản phẩm mẫu không có ưu đãi Affiliate — cứ Lưu cài đặt và bóc link sản phẩm của bạn.</small>
+      )}
+    </div>
+  );
+}
+
 function FlowPanel() {
   const [st, setSt] = useState(null);
   const { busy, error, run } = useAction();
@@ -283,6 +338,16 @@ export default function SettingsPage({ state, refresh }) {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="card stack">
+        <h2>Hoa hồng Shopee (affiliate.shopee.vn)</h2>
+        <p className="muted small">
+          Khi bóc link Shopee, web đọc <b>hoa hồng ước tính</b> (và cả giá, tên, ảnh — nên không cần mở trang sản phẩm nữa) từ API "Chi tiết hoa hồng" của
+          affiliate.shopee.vn, gọi trong một Chrome riêng thu nhỏ mà web tự đăng nhập bằng cookie dán ở đây. Hoa hồng đi theo ảnh vào bảng Mã &amp; sản phẩm và
+          cột "Hoa hồng Shopee (đ)" của Excel. Để trống thì không có hoa hồng tự động (nhập tay).
+        </p>
+        <ShopeeAffiliatePanel {...f} />
       </div>
 
       <div className="card stack">

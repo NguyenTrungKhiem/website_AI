@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+// Không mở Chrome riêng gọi Shopee Affiliate khi chạy test (cookie thật trong data/db.json)
+process.env.SHOPEE_AFFILIATE_TAB ??= '0';
 import {
   detectPlatform,
   parseProductIds,

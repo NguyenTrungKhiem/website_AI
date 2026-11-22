@@ -652,6 +652,9 @@ export const productMeta = (found) =>
         description: found.description,
         features: found.features,
         price: found.price,
+        // hoa hồng Shopee (đọc từ affiliate.shopee.vn hoặc nhập tay) + tổng tỷ lệ bps → cột "Hoa hồng Shopee (đ)" trong Excel
+        commission: found.commission,
+        commissionRateBps: found.commissionRateBps,
         url: found.url,
         platform: found.platform,
         shopId: found.shopId ?? found.rawId?.shopId ?? null,
@@ -741,8 +744,31 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
                     setFound({ ...found, price: n, priceFormatted: n ? `${n.toLocaleString('vi-VN')}đ` : '', priceSource: n ? 'manual' : null });
                   }}
                 />
-                <span>đ{found.priceSource === 'browser' ? ' · Chrome' : found.priceSource === 'html' ? ' · trang SP' : ''}</span>
+                <span>đ{found.priceSource === 'browser' ? ' · Chrome' : found.priceSource === 'html' ? ' · trang SP' : found.priceSource === 'affiliate' ? ' · Affiliate' : ''}</span>
               </label>
+              {/* Hoa hồng Shopee: đọc từ affiliate.shopee.vn (tab đã đăng nhập trong Chrome của Flow), sửa được / nhập tay.
+                  Đi theo ảnh (asset.product.commission) → bảng Mã & sản phẩm + cột "Hoa hồng Shopee (đ)" trong Excel. */}
+              {found.platform === 'shopee' && (
+                <label
+                  className="product-price-edit product-commission-edit"
+                  style={{ marginLeft: 0 }}
+                  title={found.commissionSource === 'shopee' ? `Hoa hồng Shopee ước tính${found.commissionRateText ? ` (${found.commissionRateText})` : ''}` : found.commissionSource === 'manual' ? 'Hoa hồng nhập tay' : found.commissionNote || 'Chưa có hoa hồng — nhập tay'}
+                >
+                  <span>Hoa hồng</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    value={found.commission ?? ''}
+                    placeholder="nhập hoa hồng"
+                    onChange={(e) => {
+                      const n = e.target.value === '' ? null : Math.max(0, Math.round(Number(e.target.value)));
+                      setFound({ ...found, commission: n, commissionSource: n ? 'manual' : null });
+                    }}
+                  />
+                  <span>đ{found.commissionSource === 'shopee' ? ` · Shopee${found.commissionRateText ? ` ${found.commissionRateText}` : ''}` : ''}</span>
+                </label>
+              )}
               <button
                 type="button"
                 className="btn-link small"
@@ -755,6 +781,7 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
             </div>
 
             {!(found.price > 0) && found.priceNote && <small className="warn-text">⚠ Chưa có giá: {found.priceNote}</small>}
+            {found.platform === 'shopee' && !(found.commission > 0) && found.commissionNote && <small className="warn-text">⚠ Chưa có hoa hồng: {found.commissionNote}</small>}
 
             <div className="product-title-block">
               <div className="product-title">

@@ -29,6 +29,10 @@ const DEFAULT_SETTINGS = {
   flowProjectUrl: '', // dự án Flow dùng chung, tự tạo lần đầu
   flowAutoAgree: false, // người dùng tự bật: tự bấm "I agree" ở hộp thoại "Rights to use" mỗi lần tải lên
   aspectRatio: '9:16',
+  // Cookie phiên đăng nhập affiliate.shopee.vn (dán từ DevTools) để server gọi thẳng API hoa hồng offer/product, không cần
+  // mở tab Chrome (shopeeAffiliate.js). Chỉ lưu trên máy này (data/db.json). Trống = dùng tab affiliate.shopee.vn trong Chrome Flow.
+  shopeeAffiliateCookie: '',
+  shopeeAffiliateCookieLoadedHash: '', // hash chuỗi cookie đã nạp vào Chrome Flow (để khởi động lại server không nạp đè phiên đang tốt)
   geminiApiKey: '', // Google AI Studio key để làm sạch tên, trích xuất tính năng và chuẩn hóa giá sản phẩm TMĐT
   geminiModel: 'gemini-3.8-flash',
   productCleanPrompt: '', // prompt tạo lại ảnh sản phẩm sạch; trống = mặc định (server/prompts.js)

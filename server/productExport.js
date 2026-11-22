@@ -11,8 +11,11 @@
 //   (assignCode), ghi ngược metadata để ảnh tự mang đủ tên / giá / link.
 // - codedImagesOf(run) / ensureCodedImages(run): in khung mã lên từng ảnh kết quả thành file riêng (ảnh gốc giữ nguyên) và biết
 //   khi nào phải in lại (anh-model.js stage 'badge' + sync).
-// - buildWorkbook(rows): workbook exceljs đúng hợp đồng cột với DiamondShop (PRODUCT_COLUMNS — không tự đổi tên / thứ tự cột;
-//   đổi phải sửa cả web-site-aff/src/lib/productImport.ts).
+// - buildWorkbook(rows): workbook exceljs 5 cột (PRODUCT_COLUMNS): Mã sản phẩm · Giá (đ) · Mô tả · Ảnh (ĐÚNG 1 ảnh = ảnh model
+//   đã render, bản có mã nếu đã in, nhúng vào ô + tên file) · Hoa hồng Shopee (đ) (asset.product.commission, lấy khi bóc link
+//   qua affiliate.shopee.vn hoặc nhập tay). Từ 22/11/2026 KHÔNG còn Tên / Link Shopee / Ảnh 1–6 (CDN Shopee) / Danh mục / Ghi chú:
+//   DiamondShop (web-site-aff/src/lib/productImport.ts) hiện vẫn đòi "Tên sản phẩm" + "Link Shopee" và chỉ nhận ảnh CDN Shopee
+//   → phải cập nhật bộ nhập bên đó trước khi nhập file này.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -23,24 +26,16 @@ import { imageThumb, probe, overlayBadge } from './ffmpeg.js';
 import { plainDescription } from './productScraper.js';
 import { normalizeCode, isValidCode, prefixFor, nextCode, codeOfAsset, assignCode } from './productCodes.js';
 
-// ---------- Hợp đồng file Excel (DiamondShop đọc đúng các cột này, đúng thứ tự) ----------
+// ---------- File Excel: 5 cột, đúng thứ tự ----------
 export const SHEET_NAME = 'San pham';
-export const IMAGE_COLUMNS = 6;
-export const PRODUCT_COLUMNS = [
-  'Mã sản phẩm',
-  'Tên sản phẩm',
-  'Giá (đ)',
-  'Mô tả',
-  ...Array.from({ length: IMAGE_COLUMNS }, (_, i) => `Ảnh ${i + 1}`),
-  'Link Shopee',
-  'Danh mục',
-  'Hoa hồng Shopee (đ)',
-  'Ghi chú',
-  'Xem trước',
-];
-const COLUMN_WIDTHS = [14, 44, 12, 56, ...Array(IMAGE_COLUMNS).fill(34), 48, 16, 20, 34, 13];
-const PREVIEW_COL = PRODUCT_COLUMNS.indexOf('Xem trước'); // 0-based
-const ROW_HEIGHT_PT = 80; // ~107px: đủ chỗ cho thumbnail 72x96px
+export const PRODUCT_COLUMNS = ['Mã sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh', 'Hoa hồng Shopee (đ)'];
+const COLUMN_WIDTHS = [14, 14, 60, 30, 20];
+const IMAGE_COL = PRODUCT_COLUMNS.indexOf('Ảnh'); // 0-based
+// Ảnh render dọc 9:16 nhúng trong ô "Ảnh": 108×192px; dòng cao 150pt (= 200px) để chứa
+const IMAGE_EXT = { width: 108, height: 192 };
+const ROW_HEIGHT_PT = 150;
+// URL ảnh ghi trong ô khi không biết host (test); server truyền baseUrl theo request
+export const DEFAULT_BASE_URL = 'http://localhost:3001';
 
 // Vị trí mặc định của khung mã: tâm khung ở giữa theo chiều ngang, 12% chiều cao tính từ trên (phía trên đầu nhân vật)
 export const DEFAULT_BADGE = { x: 0.5, y: 0.12, scale: 1 };
@@ -166,14 +161,6 @@ export function productItemsOf(run) {
   return items;
 }
 
-// File ảnh local để nhúng thumbnail vào Excel (không tải lại từ mạng): asset có source = ảnh chính, hoặc ảnh trang phục
-function localImageFor(mainImage, assets) {
-  const bySource = mainImage && db.assets.find((a) => a.source === mainImage && exists(a.path));
-  if (bySource) return bySource.path;
-  const first = assets.find((a) => exists(a?.path));
-  return first ? first.path : null;
-}
-
 /**
  * Dòng sản phẩm cho từng mục của lần chạy. `override` = { [key]: {...} } dữ liệu đang sửa trên giao diện (chưa lưu)
  * để xuất Excel thử mà không cần lưu / in lại. key = id ảnh trang phục.
@@ -194,9 +181,8 @@ export function buildProductRows(run, { override = null } = {}) {
     const s = { ...savedRaw, ...(override?.[item.key] || {}) };
 
     const name = str(s.name, 200) || meta?.title || cleanAssetName(asset?.name) || `Sản phẩm ${item.index}`;
-    const urls = uniq([s.mainImage, asset && sourceUrlOf(asset), ...(meta?.images || [])].filter(isHttps));
-    const mainImage = isHttps(s.mainImage) && urls.includes(s.mainImage) ? s.mainImage : urls[0] || null;
-    const images = [mainImage, ...urls.filter((u) => u !== mainImage)].filter(Boolean).slice(0, IMAGE_COLUMNS);
+    // Ảnh gốc Shopee (CDN) chỉ để hiện trên giao diện / tham khảo — Excel không còn xuất
+    const images = uniq([asset && sourceUrlOf(asset), ...(meta?.images || [])].filter(isHttps)).slice(0, 6);
 
     // Mã: đã lưu cho lần chạy này -> mã của ảnh trang phục trong sổ mã (kế thừa theo chuỗi ảnh gốc) -> mã ghi trong metadata
     // -> gợi ý theo tên (không trùng các dòng khác)
@@ -219,8 +205,10 @@ export function buildProductRows(run, { override = null } = {}) {
     const out = item.outputJob;
     const cd = coded[item.key];
     const codedPath = cd?.current?.path || null;
-    // Thumbnail "Xem trước" trong Excel: ảnh kết quả đã in mã -> ảnh kết quả -> ảnh trang phục (file local, không tải lại)
-    const thumbPath = exists(codedPath) ? codedPath : exists(out?.outputPath) ? out.outputPath : localImageFor(mainImage, [asset]);
+    // Ảnh xuất Excel (cột "Ảnh", đúng 1 ảnh đã render): bản đã in mã -> ảnh kết quả; chưa render -> không có (không lấy ảnh Shopee gốc)
+    const renderPath = exists(codedPath) ? codedPath : exists(out?.outputPath) ? out.outputPath : null;
+    // Hoa hồng: người dùng sửa trong bảng (null = chưa sửa) -> metadata lúc bóc link (asset.product.commission, kế thừa theo chuỗi ảnh gốc)
+    const commission = s.commission === undefined || s.commission === null ? meta?.commission ?? null : int(s.commission);
 
     return {
       key: item.key,
@@ -232,21 +220,25 @@ export function buildProductRows(run, { override = null } = {}) {
       name,
       price: int(s.price) ?? meta?.price ?? null,
       description: plainDescription(s.description ?? meta?.description ?? ''),
+      commission,
+      commissionRateBps: meta?.commissionRateBps ?? null,
       images,
-      mainImage,
       shopeeUrl: link || meta?.url || null,
       linkOk: !!link,
       platform: meta?.platform || null,
       shopId: meta?.shopId || null,
       itemId: meta?.itemId || null,
-      category: str(s.category, 100),
       note: `${wfName} – ${modelName} – Bộ ${item.index}`,
       badge,
       hasMeta: !!meta,
+      // Ảnh model đã render cho bộ này (bản có mã nếu đã in) = ảnh duy nhất đi vào Excel
+      renderPath,
+      renderName: renderPath ? path.basename(renderPath) : null,
+      renderUrl: renderPath ? mediaUrl(renderPath) : null,
+      renderCoded: !!(renderPath && renderPath === codedPath),
       assetId: asset?.id || null,
       assetName: asset?.name || null,
       thumbUrl: asset ? mediaUrl(asset.path) : null, // ảnh trang phục
-      thumbPath,
       // Ảnh model đã render cho bộ này và bản đã in mã (nếu có)
       outputUrl: out ? mediaUrl(out.thumbPath) || mediaUrl(out.outputPath) : null,
       codedUrl: exists(codedPath) ? mediaUrl(codedPath) : null,
@@ -328,8 +320,8 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 const MAX_PNG_BYTES = 4 * 1024 * 1024;
 
 /**
- * Lưu mã / tên / giá / mô tả / ảnh chính / khung mã cho từng mục. products = { [key]: { code, name, price, description,
- * mainImage, category, badge: { x, y, scale, png?, frameWidth? } } } (key = id ảnh trang phục).
+ * Lưu mã / tên / giá / mô tả / hoa hồng / khung mã cho từng mục. products = { [key]: { code, name, price, description,
+ * commission, badge: { x, y, scale, png?, frameWidth? } } } (key = id ảnh trang phục).
  * PNG (data URL) được lưu ra data/assets/badge-<runId>-<key>.png. Mã được cấp cho ảnh trang phục trong sổ mã chung
  * (assignCode: mã đã thuộc ảnh khác thì từ chối). Trả về các dòng sau khi lưu.
  * Việc in lại mã lên ảnh do runner quyết định (codedImagesStale trong anh-model.sync).
@@ -361,8 +353,8 @@ export function saveRunProducts(run, products) {
       price: p.price === undefined ? prev.price ?? null : int(p.price),
       // không gửi -> giữ bản trước (null = chưa sửa, dòng vẫn lấy mô tả gốc từ asset.product); gửi "" = cố ý để trống
       description: p.description === undefined ? prev.description ?? null : plainDescription(p.description),
-      mainImage: isHttps(p.mainImage) ? p.mainImage : prev.mainImage || null,
-      category: p.category === undefined ? prev.category || '' : str(p.category, 100),
+      // Hoa hồng Shopee (đ): không gửi -> giữ bản trước (null = chưa sửa, dòng lấy asset.product.commission); gửi "" / null = bỏ số
+      commission: p.commission === undefined ? prev.commission ?? null : int(p.commission),
       badge: { ...DEFAULT_BADGE, ...(prev.badge || {}) },
       coded: prev.coded || null, // ảnh có mã đã in; sig lệch thì in lại
       updatedAt: Date.now(),
@@ -400,6 +392,10 @@ export function saveRunProducts(run, products) {
       // Ghi ngược metadata kế thừa từ ảnh gốc để chính ảnh này tự mang đủ tên / giá / link cho lần chạy sau
       asset.product = { ...(productMetaOf(asset) || {}), code };
     }
+    // Hoa hồng sửa tay trong bảng cũng ghi ngược lên ảnh trang phục (đi theo ảnh sang lần chạy / ảnh kết quả sau)
+    if (asset && entry.commission != null && entry.commission !== productMetaOf(asset)?.commission) {
+      asset.product = { ...(productMetaOf(asset) || {}), commission: entry.commission };
+    }
   }
   save();
   return buildProductRows(run);
@@ -423,10 +419,11 @@ async function thumbImage(file) {
 }
 
 /**
- * Dựng workbook đúng hợp đồng. rows = kết quả buildProductRows (hoặc dữ liệu cùng dạng trong test).
- * thumbnails = false -> không nhúng ảnh (nhanh, dùng trong test).
+ * Dựng workbook 5 cột. rows = kết quả buildProductRows (hoặc dữ liệu cùng dạng trong test: { code, price, description,
+ * commission, renderPath, renderName, renderUrl }). Cột "Ảnh": ảnh render nhúng trong ô (108×192) + chữ = tên file, link tới
+ * URL media của server (baseUrl + renderUrl). thumbnails = false -> không nhúng ảnh (nhanh, dùng trong test).
  */
-export async function buildWorkbook(rows, { thumbnails = true } = {}) {
+export async function buildWorkbook(rows, { thumbnails = true, baseUrl = DEFAULT_BASE_URL } = {}) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'web-video';
   wb.created = new Date();
@@ -442,43 +439,30 @@ export async function buildWorkbook(rows, { thumbnails = true } = {}) {
     cell.border = { bottom: { style: 'thin', color: { argb: 'FF9AA3B5' } } };
   });
 
+  const money = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Math.round(Number(v)) : null);
+  const base = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
   for (const r of rows) {
-    const images = Array.from({ length: IMAGE_COLUMNS }, (_, i) => r.images?.[i] || '');
-    const price = Number.isFinite(Number(r.price)) && r.price !== null && r.price !== '' ? Math.round(Number(r.price)) : null;
-    const row = ws.addRow([
-      r.code || '',
-      r.name || '',
-      price,
-      r.description || '',
-      ...images,
-      r.shopeeUrl || '',
-      r.category || '',
-      null, // Hoa hồng Shopee (đ): web-video không có, DiamondShop điền
-      r.note || '',
-      '',
-    ]);
+    const renderName = r.renderName || (r.renderPath ? path.basename(r.renderPath) : '');
+    const row = ws.addRow([r.code || '', money(r.price), r.description || '', renderName, money(r.commission)]);
     row.height = ROW_HEIGHT_PT;
     row.alignment = { vertical: 'top', wrapText: true };
-    const priceCell = row.getCell(3);
-    priceCell.numFmt = '#,##0';
-    priceCell.alignment = { vertical: 'top', horizontal: 'right' };
-    const linkCell = row.getCell(IMAGE_COLUMNS + 5);
-    if (r.shopeeUrl) {
-      linkCell.value = { text: r.shopeeUrl, hyperlink: r.shopeeUrl };
-      linkCell.font = { color: { argb: 'FF1F5BD6' }, underline: true };
+    for (const col of [2, 5]) {
+      const c = row.getCell(col);
+      c.numFmt = '#,##0';
+      c.alignment = { vertical: 'top', horizontal: 'right' };
     }
-    for (let i = 0; i < IMAGE_COLUMNS; i++) {
-      const c = row.getCell(5 + i);
-      if (images[i]) {
-        c.value = { text: images[i], hyperlink: images[i] };
-        c.font = { color: { argb: 'FF1F5BD6' }, underline: true, size: 9 };
-      }
+    const imgCell = row.getCell(IMAGE_COL + 1);
+    if (renderName && r.renderUrl) {
+      imgCell.value = { text: renderName, hyperlink: `${base}${r.renderUrl}` };
+      imgCell.font = { color: { argb: 'FF1F5BD6' }, underline: true, size: 9 };
     }
-    if (thumbnails && r.thumbPath) {
-      const img = await thumbImage(r.thumbPath);
+    // Ảnh nhúng nằm dưới dòng chữ tên file trong cùng ô
+    imgCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
+    if (thumbnails && r.renderPath) {
+      const img = await thumbImage(r.renderPath);
       if (img) {
         const id = wb.addImage({ buffer: img.buffer, extension: img.extension });
-        ws.addImage(id, { tl: { col: PREVIEW_COL + 0.1, row: row.number - 1 + 0.05 }, ext: { width: 72, height: 96 }, editAs: 'oneCell' });
+        ws.addImage(id, { tl: { col: IMAGE_COL + 0.05, row: row.number - 1 + 0.08 }, ext: IMAGE_EXT, editAs: 'oneCell' });
       }
     }
   }

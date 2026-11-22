@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fetch } from 'undici';
 import { db, save, DIRS, newId, mediaUrl } from './db.js';
 import { fetchProductWithBrowser, parseBrowserResult } from './browserScraper.js';
+import { fetchShopeeOffer, NO_CHROME_MSG } from './shopeeAffiliate.js';
+import { describeRates } from './shopeeOffer.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
@@ -426,9 +428,42 @@ export function normalizeProductMeta(p) {
     itemId: digits(p.itemId ?? ids.itemId ?? ids.productId),
     images,
     code: /^[a-zA-Z0-9-_]{1,32}$/.test(str(p.code, 32)) ? str(p.code, 32).toUpperCase() : null,
+    // Hoa hồng Shopee ước tính (VND số nguyên) + tổng tỷ lệ (bps, 1050 = 10,5%) đọc từ affiliate.shopee.vn (shopeeAffiliate.js)
+    // hoặc nhập tay; 0 / trống = chưa có
+    commission: num(p.commission),
+    commissionRateBps: num(p.commissionRateBps),
   };
   if (!meta.title && !meta.url && !meta.itemId && !images.length) return null;
   return meta;
+}
+
+/**
+ * Hoa hồng Shopee cho kết quả bóc tách: gọi offer/product qua Chrome Flow (shopeeAffiliate.js) theo itemId.
+ * opts.offer = hàm thay fetchShopeeOffer (test) hoặc false = không gọi. Trả về các trường gắn vào kết quả fetchProduct:
+ * commission (VND | null), commissionRateBps, commissionRateText ("XTRA 8% + Shopee 2,5% = 10,5%"), commissionCapVnd,
+ * commissionSource ('shopee' | null), commissionNote (lý do khi thiếu), offerPrice / offerName / offerImages (giá, tên, ảnh CDN Shopee
+ * báo trong cùng JSON — bù khi HTML không có, khỏi phải mở trang sản phẩm trong Chrome).
+ */
+export async function fetchCommission(platform, itemId, opts = {}) {
+  const none = (note) => ({ commission: null, commissionRateBps: null, commissionRateText: '', commissionCapVnd: null, commissionSource: null, commissionNote: note, offerPrice: null, offerName: '', offerImages: [] });
+  if (platform !== 'shopee') return none('');
+  if (!itemId) return none('Không tách được itemId từ link nên chưa tra được hoa hồng.');
+  if (opts.offer === false) return none('');
+  const r = await (opts.offer || fetchShopeeOffer)(itemId).catch((e) => ({ ok: false, reason: 'error', message: e.message }));
+  if (!r?.ok) return none(r?.message || NO_CHROME_MSG);
+  const o = r.offer;
+  const ok = o?.confidence === 'ok' && o.commissionVnd > 0;
+  return {
+    commission: ok ? o.commissionVnd : null,
+    commissionRateBps: o?.totalRateBps ?? null,
+    commissionRateText: describeRates(o),
+    commissionCapVnd: o?.capVnd ?? null,
+    commissionSource: ok ? 'shopee' : null,
+    commissionNote: ok ? '' : `Shopee không báo hoa hồng cho sản phẩm này${o?.notes?.length ? ` (${o.notes[0]})` : ''} — nhập tay nếu biết.`,
+    offerPrice: o?.priceVnd > 0 ? o.priceVnd : null,
+    offerName: o?.name || '',
+    offerImages: Array.isArray(o?.images) ? o.images : [],
+  };
 }
 
 /**
@@ -785,6 +820,15 @@ export async function fetchProduct(inputUrl, opts = {}) {
 
   let extracted = extractFromHtml(rawHtml, platform, finalUrl);
 
+  // Bước 3a (Shopee): Hoa hồng từ affiliate.shopee.vn offer/product (shopeeAffiliate.js, Chrome riêng thu nhỏ + cookie trong
+  // Cài đặt). JSON này có cả giá, tên, ảnh CDN của sản phẩm → bù trước cho HTML để KHÔNG phải mở trang sản phẩm trong Chrome của
+  // Flow (bước 3b) — mở trang sản phẩm dễ bị Shopee đòi xác minh / chặn lưu lượng. Không có cookie / Shopee từ chối → vẫn trả
+  // kết quả, commissionNote nêu lý do để người dùng nhập tay.
+  const comm = await fetchCommission(platform, ids?.itemId || null, opts);
+  if (!(extracted.price > 0) && comm.offerPrice > 0) extracted = { ...extracted, price: comm.offerPrice, priceSource: 'affiliate' };
+  if (!extracted.title && comm.offerName) extracted = { ...extracted, title: comm.offerName };
+  if (!(extracted.images?.length) && comm.offerImages?.length) extracted = { ...extracted, images: comm.offerImages.map((u) => ({ id: u, url: u, name: null, isFallback: false })), imageSource: 'affiliate' };
+
   // Bước 3b: Sàn giấu giá (Shopee: HTML SSR có tên + ảnh nhưng mọi trường giá đều null) hoặc không trả ảnh → đọc qua
   // Chrome của Flow (browserScraper.js: trang tự gọi API nội bộ của sàn, có giá). Chỉ bù phần HTML thiếu (mergeBrowserData);
   // Chrome chưa mở thì bỏ qua và báo trong priceNote để người dùng nhập giá tay ngay trong kết quả bóc tách.
@@ -805,7 +849,8 @@ export async function fetchProduct(inputUrl, opts = {}) {
   let rawTitle = extracted.title;
   const isGenericTitle = !rawTitle || /^(shopee|lazada|tiktok|robot or human|đăng nhập|xác minh)/i.test(rawTitle.trim());
   if (isGenericTitle) {
-    const slugTitle = extractSlugFallback(finalUrl);
+    // Tên trong JSON hoa hồng affiliate (tên thật của sản phẩm) tốt hơn đoán từ slug
+    const slugTitle = comm.offerName || extractSlugFallback(finalUrl);
     if (slugTitle) rawTitle = slugTitle;
   }
 
@@ -859,9 +904,17 @@ export async function fetchProduct(inputUrl, opts = {}) {
     usedGemini: cleaned.usedGemini,
     usedBrowser,
     imageSource: usedFallbackImage ? 'fallback' : extracted.imageSource || (extracted.images.length ? 'html' : 'none'),
-    // Nguồn giá: 'html' (trang sản phẩm) | 'browser' (Chrome của Flow) | null (chưa có → người dùng nhập tay, xem priceNote)
+    // Nguồn giá: 'html' (trang sản phẩm) | 'browser' (Chrome của Flow) | 'affiliate' (JSON hoa hồng affiliate.shopee.vn)
+    // | null (chưa có → người dùng nhập tay, xem priceNote)
     priceSource: cleaned.price > 0 ? extracted.priceSource || 'html' : null,
     priceNote: cleaned.price > 0 ? '' : browserNote || 'Sàn không trả giá — nhập giá tay bên dưới.',
+    // Hoa hồng Shopee ước tính (VND) + tỷ lệ; thiếu thì commissionNote nêu lý do (xem fetchCommission)
+    commission: comm.commission,
+    commissionRateBps: comm.commissionRateBps,
+    commissionRateText: comm.commissionRateText,
+    commissionCapVnd: comm.commissionCapVnd,
+    commissionSource: comm.commissionSource,
+    commissionNote: comm.commissionNote,
     note: images.length === 0 ? 'Không lấy được ảnh nào từ link này.' : '',
   };
 }

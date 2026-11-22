@@ -33,11 +33,8 @@ const { buildOverlayBadgeArgs } = await import('../server/ffmpeg.js');
 const { normalizeProductMeta, plainDescription } = await import('../server/productScraper.js');
 const { prefixFor, nextCode, assignCode, codeOfAsset } = await import('../server/productCodes.js');
 
-const CONTRACT = [
-  'Mã sản phẩm', 'Tên sản phẩm', 'Giá (đ)', 'Mô tả',
-  'Ảnh 1', 'Ảnh 2', 'Ảnh 3', 'Ảnh 4', 'Ảnh 5', 'Ảnh 6',
-  'Link Shopee', 'Danh mục', 'Hoa hồng Shopee (đ)', 'Ghi chú', 'Xem trước',
-];
+// 5 cột theo yêu cầu chủ web (22/11/2026): mã, giá, mô tả, ĐÚNG 1 ảnh đã render, hoa hồng Shopee
+const CONTRACT = ['Mã sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh', 'Hoa hồng Shopee (đ)'];
 const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 const assetOf = (id) => db.assets.find((a) => a.id === id);
 
@@ -48,7 +45,7 @@ async function main() {
   console.log('▶ Test 1: Hợp đồng cột Excel');
   assert.deepEqual(PRODUCT_COLUMNS, CONTRACT);
   assert.equal(SHEET_NAME, 'San pham');
-  console.log('  ✔ Đúng 15 cột, đúng thứ tự, sheet "San pham"');
+  console.log('  ✔ Đúng 5 cột, đúng thứ tự, sheet "San pham"');
 
   // 2. Mã dùng chung sổ mã productCodes.js (LOAI_SO)
   console.log('\n▶ Test 2: Gợi ý mã theo sổ mã chung (suggestProductCode / sanitizeCode)');
@@ -108,7 +105,7 @@ async function main() {
   const img = path.join(DATA_DIR, 'assets', 'outfit.png');
   fs.writeFileSync(img, Buffer.from(png1x1.split(',')[1], 'base64'));
   // ảnh gốc bóc link (nháp) -> ảnh làm sạch bằng Flow (không có product, chỉ fromAssetId) -> làm sạch lần 2 (có giá riêng)
-  const metaVay = { ...meta, title: 'Váy xanh', code: null, price: 199000, shopId: '111', itemId: '222', images: ['https://down-vn.img.susercontent.com/file/vay', 'https://down-vn.img.susercontent.com/file/vay2'] };
+  const metaVay = { ...meta, title: 'Váy xanh', code: null, price: 199000, shopId: '111', itemId: '222', commission: 20895, commissionRateBps: 1050, images: ['https://down-vn.img.susercontent.com/file/vay', 'https://down-vn.img.susercontent.com/file/vay2'] };
   db.assets.push({ id: 'o1', kind: 'product', name: 'Váy xanh – ảnh 1', path: img, source: 'https://down-vn.img.susercontent.com/file/vay', staging: true, product: metaVay });
   db.assets.push({ id: 'o1c', kind: 'product', name: 'Váy xanh – ảnh 1 (Flow)', path: img, fromAssetId: 'o1', fromJobId: 'jx' });
   db.assets.push({ id: 'o1cc', kind: 'product', name: 'Váy xanh – ảnh 1 (Flow) #2', path: img, fromAssetId: 'o1c', product: { price: 189000 } });
@@ -118,6 +115,7 @@ async function main() {
   assert.equal(productMetaOf(assetOf('o1c')).title, 'Váy xanh', 'ảnh làm sạch kế thừa metadata của ảnh gốc');
   assert.equal(productMetaOf(assetOf('o1cc')).price, 189000, 'giá riêng của ảnh gần hơn thắng');
   assert.equal(productMetaOf(assetOf('o1cc')).shopId, '111', 'thiếu gì thì lấy từ ảnh gốc');
+  assert.equal(productMetaOf(assetOf('o1cc')).commission, 20895, 'hoa hồng kế thừa từ ảnh gốc như tên / giá');
   assert.equal(sourceUrlOf(assetOf('o1cc')), 'https://down-vn.img.susercontent.com/file/vay', 'URL ảnh gốc lấy theo chuỗi fromAssetId');
   assert.equal(productMetaOf(assetOf('o2')), null);
   const out = path.join(DATA_DIR, 'outputs', 'image-r1.png');
@@ -141,7 +139,12 @@ async function main() {
   assert.equal(rows[0].linkOk, true);
   assert.deepEqual(rows[0].images, ['https://down-vn.img.susercontent.com/file/vay', 'https://down-vn.img.susercontent.com/file/vay2']);
   assert.equal(rows[0].hasMeta, true);
-  assert.equal(rows[0].thumbPath, out, 'thumbnail Excel = ảnh model đã render');
+  assert.equal(rows[0].commission, 20895, 'hoa hồng từ metadata');
+  assert.equal(rows[0].commissionRateBps, 1050);
+  assert.equal(rows[0].renderPath, out, 'ảnh Excel = ảnh model đã render');
+  assert.equal(rows[0].renderName, 'image-r1.png');
+  assert.equal(rows[0].renderUrl, '/media/outputs/image-r1.png');
+  assert.equal(rows[0].renderCoded, false);
   assert.ok(rows[0].outputUrl && rows[0].frameUrl, 'ảnh render dùng để xem trước khung mã');
   assert.equal(rows[0].codedUrl, null);
   assert.equal(rows[0].note, 'Ảnh model mặc đồ – Model Lan – Bộ 1');
@@ -150,7 +153,8 @@ async function main() {
   assert.deepEqual({ x: rows[0].badge.x, y: rows[0].badge.y, scale: rows[0].badge.scale }, DEFAULT_BADGE);
   assert.equal(rows[1].name, 'ao-thun-tu-may', 'ảnh tải từ máy -> tên ảnh');
   assert.equal(rows[1].hasMeta, false);
-  assert.equal(rows[1].thumbPath, img, 'chưa render -> thumbnail = ảnh trang phục');
+  assert.equal(rows[1].commission, null, 'ảnh từ máy -> chưa có hoa hồng');
+  assert.equal(rows[1].renderPath, null, 'chưa render -> không có ảnh Excel (không lấy ảnh trang phục / ảnh Shopee thay)');
   assert.equal(rows[1].outputUrl, null);
   assert.equal(rows[1].code, 'AO_01');
   assert.equal(rows[1].shopeeUrl, null);
@@ -164,6 +168,8 @@ async function main() {
   rows = buildProductRows(run);
   assert.equal(rows[0].code, 'VAY_09', 'mã của ảnh gốc (sổ mã) được dùng lại cho ảnh làm sạch');
   assert.equal(rows[0].codeSaved, true);
+  assert.equal(buildProductRows(run, { override: { o1cc: { commission: '25.000' } } })[0].commission, 25000, 'hoa hồng đang sửa (chưa lưu) dùng khi xuất thử');
+  assert.equal(buildProductRows(run, { override: { o1cc: { commission: '' } } })[0].commission, null, 'xoá ô = không hoa hồng');
   assert.deepEqual(codedImagesOf(run).map((c) => c.wanted), [false, false, false], 'chưa lưu mã -> chưa in');
   assert.equal(codedImagesStale(run), false);
   console.log('  ✔ 3 dòng theo ảnh trang phục, metadata + mã kế thừa qua chuỗi fromAssetId, gợi ý không trùng');
@@ -177,7 +183,7 @@ async function main() {
   assert.equal(run.products, undefined, 'có lỗi thì không ghi dở mục nào');
   rows = saveRunProducts(run, {
     o1cc: { code: 'VAY_09', badge: { x: 0.3, y: 0.2, scale: 1, png: png1x1, frameWidth: 720 } },
-    o2: { code: 'ao 2', name: 'Áo thun', price: '99.000', description: 'Mô tả mới', badge: { x: 0.5, y: 0.12, scale: 1, png: png1x1, frameWidth: 720 } },
+    o2: { code: 'ao 2', name: 'Áo thun', price: '99.000', description: 'Mô tả mới', commission: '5.000', badge: { x: 0.5, y: 0.12, scale: 1, png: png1x1, frameWidth: 720 } },
     o3: { code: '', name: 'Áo khoác dạ' }, // không mã -> không in
   });
   assert.equal(rows[0].code, 'VAY_09');
@@ -185,11 +191,15 @@ async function main() {
   assert.equal(assetOf('o1cc').product.code, 'VAY_09', 'ghi ngược mã vào metadata ảnh trang phục');
   assert.equal(assetOf('o1cc').product.title, 'Váy xanh', 'ghi ngược kèm metadata kế thừa (ảnh tự mang đủ tên / giá / link)');
   assert.equal(assetOf('o1cc').product.price, 189000);
+  assert.equal(assetOf('o1cc').product.commission, 20895, 'ghi ngược kèm hoa hồng kế thừa');
+  assert.equal(rows[0].commission, 20895, 'không gửi hoa hồng -> giữ của metadata');
   assert.equal(assetOf('o1').productCode, 'VAY_09', 'ảnh gốc giữ mã');
   assert.equal(rows[1].code, 'AO_2', 'mã gõ tay được chuẩn hoá');
   assert.equal(rows[1].name, 'Áo thun');
   assert.equal(rows[1].price, 99000);
   assert.equal(rows[1].description, 'Mô tả mới');
+  assert.equal(rows[1].commission, 5000, 'hoa hồng nhập tay "5.000" -> 5000');
+  assert.equal(assetOf('o2').product.commission, 5000, 'hoa hồng nhập tay ghi ngược lên ảnh trang phục (đi theo ảnh)');
   assert.equal(assetOf('o2').productCode, 'AO_2', 'cấp mã cho ảnh trang phục trong sổ mã chung (assignCode)');
   assert.ok(db.codes.some((c) => c.code === 'AO_2' && c.assetId === 'o2'), 'sổ mã có AO_2');
   assert.equal(rows[2].code, 'AO_03', 'không mã -> vẫn gợi ý (số kế tiếp sau AO_2 vừa cấp) nhưng không in');
@@ -234,41 +244,43 @@ async function main() {
   console.log('  ✔ Overlay theo tỷ lệ tâm khung, scale PNG khi ảnh khác bề rộng khung đã vẽ');
 
   // 8. Workbook: dựng -> đọc lại bằng exceljs
-  console.log('\n▶ Test 8: buildWorkbook -> đọc lại bằng exceljs');
+  console.log('\n▶ Test 8: buildWorkbook (5 cột) -> đọc lại bằng exceljs');
   const sample = [
-    { code: 'VAY_11', name: 'Đầm hoa nhí dáng xoè', price: 259000, description: 'Chất voan mát', images: ['https://down-vn.img.susercontent.com/file/a', 'https://down-vn.img.susercontent.com/file/b'], shopeeUrl: 'https://shopee.vn/product/1908715934/41434228389', category: 'Thời trang nữ', note: 'Ảnh model mặc đồ – Lan – Bộ 1', thumbPath: null },
-    { code: 'AO_07', name: 'Áo thun', price: '199000', description: '', images: [], shopeeUrl: null, category: '', note: 'Ảnh model mặc đồ – Lan – Bộ 2', thumbPath: null },
+    { code: 'VAY_11', name: 'Đầm hoa nhí dáng xoè', price: 259000, description: 'Chất voan mát', commission: 20895, renderPath: out, renderName: 'coded-run2-o1cc.png', renderUrl: '/media/outputs/coded-run2-o1cc.png' },
+    { code: 'AO_07', name: 'Áo thun', price: '199000', description: '', commission: null, renderPath: null, renderName: null, renderUrl: null },
   ];
-  const wb = await buildWorkbook(sample, { thumbnails: false });
+  const wb = await buildWorkbook(sample, { thumbnails: false, baseUrl: 'http://127.0.0.1:3001/' });
   const buf = await wb.xlsx.writeBuffer();
   const wb2 = new ExcelJS.Workbook();
   await wb2.xlsx.load(buf);
   const ws = wb2.getWorksheet('San pham');
   assert.ok(ws, 'phải có sheet "San pham"');
   const headers = ws.getRow(1).values.slice(1);
-  assert.deepEqual(headers, CONTRACT, 'dòng 1 = tiêu đề đúng hợp đồng');
+  assert.deepEqual(headers, CONTRACT, 'dòng 1 = tiêu đề đúng 5 cột');
   assert.equal(ws.getRow(1).getCell(1).font?.bold, true, 'tiêu đề in đậm');
+  assert.equal(ws.columnCount, 5, 'không có cột thừa');
+  const cellText = (c) => (c.value && typeof c.value === 'object' && 'text' in c.value ? c.value.text : c.value);
   const r2 = ws.getRow(2);
   assert.equal(r2.getCell(1).value, 'VAY_11');
-  assert.equal(r2.getCell(2).value, 'Đầm hoa nhí dáng xoè');
-  assert.equal(typeof r2.getCell(3).value, 'number', 'giá là số');
-  assert.equal(r2.getCell(3).value, 259000);
-  assert.equal(r2.getCell(4).value, 'Chất voan mát');
-  const cellText = (c) => (c.value && typeof c.value === 'object' && 'text' in c.value ? c.value.text : c.value);
-  assert.equal(cellText(r2.getCell(5)), 'https://down-vn.img.susercontent.com/file/a');
-  assert.equal(cellText(r2.getCell(6)), 'https://down-vn.img.susercontent.com/file/b');
-  assert.equal(r2.getCell(7).value ?? '', '', 'Ảnh 3 trống');
-  assert.match(cellText(r2.getCell(11)), /^https:\/\/shopee\.vn\/product\/\d+\/\d+$/, 'link chuẩn');
-  assert.equal(r2.getCell(12).value, 'Thời trang nữ');
-  assert.equal(r2.getCell(13).value ?? null, null, 'Hoa hồng Shopee để trống');
-  assert.equal(r2.getCell(14).value, 'Ảnh model mặc đồ – Lan – Bộ 1');
-  assert.equal(ws.getRow(3).getCell(3).value, 199000, 'giá dạng chuỗi vẫn ra số');
-  assert.ok(ws.getRow(2).height >= 60, 'dòng cao để nhúng thumbnail');
-  const pngFile = path.join(DATA_DIR, 'assets', 'thumb.png');
-  fs.writeFileSync(pngFile, Buffer.from(png1x1.split(',')[1], 'base64'));
-  const wb3 = await buildWorkbook([{ ...sample[0], thumbPath: pngFile }]);
-  assert.equal(wb3.getWorksheet('San pham').getImages().length, 1, 'thumbnail được nhúng từ file local');
-  console.log('  ✔ Tiêu đề đúng hợp đồng, giá là số, link chuẩn, hoa hồng trống, thumbnail nhúng');
+  assert.equal(typeof r2.getCell(2).value, 'number', 'giá là số');
+  assert.equal(r2.getCell(2).value, 259000);
+  assert.equal(r2.getCell(3).value, 'Chất voan mát');
+  assert.equal(cellText(r2.getCell(4)), 'coded-run2-o1cc.png', 'ô Ảnh = tên file ảnh render (bản có mã)');
+  assert.equal(r2.getCell(4).value.hyperlink, 'http://127.0.0.1:3001/media/outputs/coded-run2-o1cc.png', 'link tới ảnh trên server (baseUrl bỏ "/" cuối)');
+  assert.equal(r2.getCell(5).value, 20895, 'hoa hồng là số');
+  assert.equal(r2.getCell(5).numFmt, '#,##0');
+  const r3 = ws.getRow(3);
+  assert.equal(r3.getCell(2).value, 199000, 'giá dạng chuỗi vẫn ra số');
+  assert.equal(r3.getCell(4).value ?? '', '', 'chưa render -> ô Ảnh trống');
+  assert.equal(r3.getCell(5).value ?? null, null, 'không hoa hồng -> trống');
+  assert.ok(ws.getRow(2).height >= 140, 'dòng cao để nhúng ảnh render 108×192');
+  assert.equal(ws.getImages().length, 0, 'thumbnails:false -> không nhúng');
+  const wb3 = await buildWorkbook(sample);
+  assert.equal(wb3.getWorksheet('San pham').getImages().length, 1, 'chỉ dòng có ảnh render mới nhúng ảnh (từ file local)');
+  const wb3img = wb3.getWorksheet('San pham').getImages()[0];
+  assert.equal(Math.floor(wb3img.range.tl.col), 3, 'ảnh nhúng nằm trong cột "Ảnh" (cột 4)');
+  assert.equal(Math.floor(wb3img.range.tl.row), 1, 'ảnh nhúng ở dòng 2');
+  console.log('  ✔ 5 cột, giá / hoa hồng là số, ô Ảnh = tên file + link, ảnh render nhúng trong cột Ảnh');
 
   // db.js ghi file sau 100ms (debounce) -> chờ ghi xong rồi mới dọn thư mục tạm
   await new Promise((r) => setTimeout(r, 300));

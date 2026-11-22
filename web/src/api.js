@@ -79,6 +79,10 @@ export const api = {
   // Mã sản phẩm trên ảnh kết quả & Excel cho DiamondShop (Ảnh model mặc đồ)
   runProducts: (id) => req('GET', `/api/runs/${id}/products`), // { mode: 'input', rows, frame: { width, height }, products }
   saveRunProducts: (id, body) => req('PUT', `/api/runs/${id}/products`, body), // { products: { [assetId]: {...} } } -> { rows, remerge, run }
+  // Lấy (lại) hoa hồng Shopee cho ảnh trang phục có itemId -> { ok, commission, commissionRateText, message }
+  fetchAssetCommission: (id, force = false) => req('POST', `/api/assets/${id}/commission`, { force }),
+  // Thử cookie affiliate.shopee.vn (Cài đặt): cookie đang gõ (chưa lưu) hoặc '' = cookie đã lưu -> { ok, message, name, commissionVnd }
+  testShopeeAffiliate: (cookie = '') => req('POST', '/api/shopee/affiliate/test', { cookie }),
   suggestProductCode: (title, taken = []) =>
     req('GET', `/api/products/suggest-code?title=${encodeURIComponent(title || '')}&taken=${encodeURIComponent(taken.join(','))}`),
   // Tải file Excel (blob). body.products (tuỳ chọn) = dữ liệu đang sửa để xuất thử chưa cần lưu

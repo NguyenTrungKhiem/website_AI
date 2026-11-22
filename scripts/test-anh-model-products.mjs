@@ -1,8 +1,9 @@
 // Kiểm thử đầu-cuối "Ảnh model mặc đồ → Mã & sản phẩm → Excel cho DiamondShop" trên server thật với engine giả (mock),
 // dữ liệu riêng trong thư mục tạm (không đụng data/ thật), không cần mạng / Flow:
 //   nhập ảnh trang phục kèm metadata Shopee (như sau khi bóc link) → "làm mới ảnh" (làm sạch bằng Flow, engine giả) vẫn giữ
-//   metadata → chạy quy trình → bảng sản phẩm có sẵn tên / giá / link → lưu mã (sổ mã chung VAY_01…) → bước "In mã lên ảnh"
-//   (ffmpeg) → đổi vị trí in lại, bỏ mã thì dọn → Excel đúng hợp đồng → DiamondShop đọc được (parseProductRows, nếu repo nằm cạnh).
+//   metadata (kể cả hoa hồng Shopee) → chạy quy trình → bảng sản phẩm có sẵn tên / giá / hoa hồng / link → lưu mã (sổ mã chung
+//   VAY_01…) → bước "In mã lên ảnh" (ffmpeg) → đổi vị trí in lại, bỏ mã thì dọn → Excel 5 cột (ảnh = ảnh render có mã) →
+//   DiamondShop (parseProductRows, nếu repo nằm cạnh): hiện báo thiếu cột Tên / Link cho tới khi productImport.ts bên đó cập nhật.
 // Chạy: node scripts/test-anh-model-products.mjs
 //   DIAMONDSHOP_DIR=<thư mục repo DiamondShop> (mặc định ../web-site-aff) · TEST_PORT=<cổng> (mặc định 3188)
 import assert from 'node:assert/strict';
@@ -78,7 +79,8 @@ let stopping = false;
 let serverLog = '';
 async function startServer() {
   server = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
-    env: { ...process.env, DATA_DIR, PORT: String(PORT), HOST: '127.0.0.1' },
+    // SHOPEE_AFFILIATE_TAB=0: không đụng tới Chrome Flow / Shopee thật khi test
+    env: { ...process.env, DATA_DIR, PORT: String(PORT), HOST: '127.0.0.1', SHOPEE_AFFILIATE_TAB: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -133,6 +135,7 @@ async function main() {
     title: 'Đầm hoa nhí dáng xoè', rawTitle: '[HOT] Đầm hoa nhí dáng xoè', description: '<p>Chất <b>voan</b> mát</p><br>Form xoè nhẹ',
     features: ['Voan'], price: '259.000', url: 'https://shopee.vn/product-i.1908715934.41434228389', platform: 'shopee',
     shopId: '1908715934', itemId: '41434228389',
+    commission: 27195, commissionRateBps: 1050, // hoa hồng đọc từ affiliate.shopee.vn lúc bóc link (259.000đ × 10,5%)
     images: ['https://down-vn.img.susercontent.com/file/test-a', 'https://down-vn.img.susercontent.com/file/test-b'],
   };
   // ảnh gốc được tải từ URL http của chính server (thay cho CDN Shopee); đây là bước ExtractPopup.ensureAsset (ảnh nháp)
@@ -144,7 +147,9 @@ async function main() {
   assert.equal(src.product.title, 'Đầm hoa nhí dáng xoè');
   assert.equal(src.product.price, 259000);
   assert.equal(src.product.itemId, '41434228389');
-  console.log('  ✔ asset.product có tên, giá 259.000đ, shopId/itemId');
+  assert.equal(src.product.commission, 27195, 'hoa hồng lưu vào asset.product');
+  assert.equal(src.product.commissionRateBps, 1050);
+  console.log('  ✔ asset.product có tên, giá 259.000đ, hoa hồng 27.195đ, shopId/itemId');
 
   console.log('\n▶ 3. Làm mới ảnh (✨ Làm sạch bằng Flow, engine giả): ảnh mới phải giữ metadata rồi bấm Dùng');
   await api('POST', `/api/assets/${src.id}/clean`, { prompt: 'Clean product photo, keep only the garment' });
@@ -153,8 +158,9 @@ async function main() {
   assert.equal(cleaned.product?.title, 'Đầm hoa nhí dáng xoè', 'ảnh làm sạch kế thừa asset.product');
   assert.equal(cleaned.product?.price, 259000);
   assert.equal(cleaned.product?.shopId, '1908715934');
+  assert.equal(cleaned.product?.commission, 27195, 'hoa hồng đi theo ảnh làm sạch');
   await api('POST', `/api/assets/${cleaned.id}/use`);
-  console.log('  ✔ ảnh làm sạch mang theo tên / giá / shopId / itemId');
+  console.log('  ✔ ảnh làm sạch mang theo tên / giá / hoa hồng / shopId / itemId');
 
   console.log('\n▶ 4. Chạy Ảnh model mặc đồ: 2 trang phục (1 từ Shopee đã làm mới, 1 tải từ máy)');
   const run0 = await api('POST', '/api/runs', {
@@ -175,7 +181,8 @@ async function main() {
   assert.equal(lookbook.kind, 'lookbook');
   assert.equal(lookbook.outfitId, cleaned.id);
   assert.equal(lookbook.product?.title, 'Đầm hoa nhí dáng xoè', 'ảnh kết quả mang theo metadata của trang phục');
-  console.log('  ✔ 2 ảnh kết quả, ảnh lookbook kế thừa metadata, bước In mã bỏ qua khi chưa có mã');
+  assert.equal(lookbook.product?.commission, 27195, 'ảnh kết quả mang theo hoa hồng');
+  console.log('  ✔ 2 ảnh kết quả, ảnh lookbook kế thừa metadata (kể cả hoa hồng), bước In mã bỏ qua khi chưa có mã');
 
   console.log('\n▶ 5. Bảng Mã & sản phẩm: tên / giá / link Shopee có sẵn, mã gợi ý theo sổ mã chung');
   const pr = await api('GET', `/api/runs/${run0.id}/products`);
@@ -189,7 +196,11 @@ async function main() {
   assert.equal(r0.description, 'Chất voan mát\nForm xoè nhẹ');
   assert.equal(r0.shopeeUrl, 'https://shopee.vn/product/1908715934/41434228389');
   assert.equal(r0.linkOk, true);
-  assert.deepEqual(r0.images, found.images, 'ảnh Excel = URL CDN Shopee lúc bóc tách');
+  assert.equal(r0.commission, 27195, 'hoa hồng có sẵn trong bảng');
+  assert.equal(r0.commissionRateBps, 1050);
+  assert.deepEqual(r0.images, found.images, 'ảnh CDN Shopee chỉ để tham khảo trên giao diện');
+  assert.equal(r0.renderUrl, run1.outputs[0].outputUrl, 'ảnh Excel = ảnh model đã render (chưa in mã)');
+  assert.equal(r0.renderCoded, false);
   assert.equal(r0.hasMeta, true);
   assert.equal(r0.code, 'VAY_01', 'gợi ý theo tên "Đầm…" -> VAY_01 (sổ mã trống)');
   assert.equal(r0.codeSaved, false);
@@ -200,12 +211,18 @@ async function main() {
   assert.equal(r1.name, 'outfit2');
   assert.equal(r1.hasMeta, false);
   assert.equal(r1.price, null);
+  assert.equal(r1.commission, null);
   assert.equal(r1.shopeeUrl, null);
   assert.deepEqual(r1.images, []);
   assert.equal(r1.code, 'SP_01');
   const sug = await api('GET', `/api/products/suggest-code?title=${encodeURIComponent('Đầm dạ hội')}&taken=VAY_01`);
   assert.equal(sug.code, 'VAY_02', 'gợi ý bỏ qua mã đang đặt trên giao diện');
-  console.log('  ✔ dòng 1 đủ tên / giá / link / 2 ảnh CDN, mã VAY_01; dòng 2 (ảnh từ máy) báo thiếu dữ liệu');
+  // Lấy lại hoa hồng qua Chrome: ảnh từ máy không có itemId -> báo rõ; ảnh Shopee -> Chrome Flow chưa mở trong test -> ok:false kèm hướng dẫn
+  await assert.rejects(api('POST', `/api/assets/${outfit2.id}/commission`, {}), /itemId/);
+  const noChrome = await api('POST', `/api/assets/${cleaned.id}/commission`, {});
+  assert.equal(noChrome.ok, false);
+  assert.match(noChrome.message, /cookie/i, 'không có cookie (và không dùng Chrome trong test) -> hướng dẫn dán cookie vào Cài đặt');
+  console.log('  ✔ dòng 1 đủ tên / giá / hoa hồng / link, mã VAY_01; dòng 2 (ảnh từ máy) báo thiếu dữ liệu; lấy lại hoa hồng báo đúng lý do');
 
   console.log('\n▶ 6. Lưu mã → bước "In mã lên ảnh" in khung mã lên từng ảnh kết quả (ảnh gốc giữ nguyên)');
   const badgePng = 'data:image/png;base64,' + fs.readFileSync(path.join(fx, 'badge.png')).toString('base64');
@@ -218,11 +235,12 @@ async function main() {
   const saved = await api('PUT', `/api/runs/${run0.id}/products`, {
     products: {
       [cleaned.id]: { code: 'VAY_01', badge: badge(0.5, 0.12) },
-      [outfit2.id]: { code: 'AO_01', name: 'Áo thun trơn', price: 99000, badge: badge(0.5, 0.12) },
+      [outfit2.id]: { code: 'AO_01', name: 'Áo thun trơn', price: 99000, commission: 4500, badge: badge(0.5, 0.12) },
     },
   });
   assert.equal(saved.remerge, true, 'mã mới -> phải in mã lên ảnh');
   assert.equal(saved.rows[1].name, 'Áo thun trơn');
+  assert.equal(saved.rows[1].commission, 4500, 'hoa hồng nhập tay');
   const run2 = await waitRun(run0.id, 'in mã lên ảnh', (r) => r.outputs.every((o) => o.codedUrl && !o.codedStale));
   assert.equal(run2.stageList.find((s) => s.id === 'badge').status, 'done');
   assert.deepEqual(run2.outputs.map((o) => o.code), ['VAY_01', 'AO_01']);
@@ -239,6 +257,10 @@ async function main() {
   assert.equal(outfitNow.productCode, 'VAY_01', 'mã được cấp cho ảnh trang phục trong sổ mã chung');
   assert.equal(outfitNow.product.code, 'VAY_01', 'ghi ngược mã vào metadata ảnh trang phục');
   assert.equal(outfitNow.product.title, 'Đầm hoa nhí dáng xoè', 'ghi ngược không làm mất metadata');
+  assert.equal(st.assets.find((a) => a.id === outfit2.id).product?.commission, 4500, 'hoa hồng nhập tay ghi lên ảnh trang phục');
+  const pr2a = await api('GET', `/api/runs/${run0.id}/products`);
+  assert.equal(pr2a.rows[0].renderUrl, run2.outputs[0].codedUrl, 'đã in mã -> ảnh Excel = bản có mã');
+  assert.equal(pr2a.rows[0].renderCoded, true);
   const codes = await api('GET', '/api/codes');
   assert.deepEqual(codes.codes.map((c) => c.code).sort(), ['AO_01', 'VAY_01'], 'sổ mã (xuất .txt cho máy khác) có cả 2 mã');
   const pr2 = await api('GET', `/api/runs/${run0.id}/products`);
@@ -264,8 +286,8 @@ async function main() {
   assert.equal(run3.productCount, 1);
   console.log('  ✔ in lại khi đổi vị trí, dọn khi bỏ mã, lần chạy quay về Hoàn thành');
 
-  console.log('\n▶ 8. Excel đúng hợp đồng DiamondShop (dữ liệu đang sửa cũng xuất được)');
-  const buf = await api('POST', `/api/runs/${run0.id}/products.xlsx`, { products: { [outfit2.id]: { code: 'AO_07' } } });
+  console.log('\n▶ 8. Excel 5 cột: Mã · Giá · Mô tả · Ảnh (ảnh model đã render, bản có mã) · Hoa hồng (dữ liệu đang sửa cũng xuất được)');
+  const buf = await api('POST', `/api/runs/${run0.id}/products.xlsx`, { products: { [outfit2.id]: { code: 'AO_07', commission: 5200 } } });
   assert.ok(Buffer.isBuffer(buf) && buf.length > 2000);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
@@ -273,34 +295,29 @@ async function main() {
   assert.ok(ws, 'sheet "San pham"');
   const cellText = (c) => (c.value && typeof c.value === 'object' && 'text' in c.value ? c.value.text : c.value);
   const headers = ws.getRow(1).values.slice(1);
-  assert.deepEqual(headers, [
-    'Mã sản phẩm', 'Tên sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh 1', 'Ảnh 2', 'Ảnh 3', 'Ảnh 4', 'Ảnh 5', 'Ảnh 6',
-    'Link Shopee', 'Danh mục', 'Hoa hồng Shopee (đ)', 'Ghi chú', 'Xem trước',
-  ]);
+  assert.deepEqual(headers, ['Mã sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh', 'Hoa hồng Shopee (đ)']);
   assert.equal(ws.rowCount, 3, '1 tiêu đề + 2 sản phẩm');
   const x2 = ws.getRow(2);
   assert.equal(x2.getCell(1).value, 'VAY_01');
-  assert.equal(x2.getCell(2).value, 'Đầm hoa nhí dáng xoè');
-  assert.equal(x2.getCell(3).value, 259000);
-  assert.equal(x2.getCell(4).value, 'Chất voan mát\nForm xoè nhẹ');
-  assert.equal(cellText(x2.getCell(5)), found.images[0]);
-  assert.equal(cellText(x2.getCell(6)), found.images[1]);
-  assert.equal(x2.getCell(7).value ?? '', '');
-  assert.equal(cellText(x2.getCell(11)), 'https://shopee.vn/product/1908715934/41434228389');
-  assert.equal(x2.getCell(13).value ?? null, null, 'hoa hồng để trống');
-  assert.equal(x2.getCell(14).value, 'Ảnh model mặc đồ – model – Bộ 1');
+  assert.equal(x2.getCell(2).value, 259000);
+  assert.equal(x2.getCell(3).value, 'Chất voan mát\nForm xoè nhẹ');
+  assert.equal(cellText(x2.getCell(4)), path.basename(coded0), 'ô Ảnh = tên file ảnh có mã của bộ 1');
+  assert.equal(x2.getCell(4).value.hyperlink, `${BASE}${run2.outputs[0].codedUrl}`, 'link ảnh theo host của request');
+  assert.equal(x2.getCell(5).value, 27195, 'hoa hồng đọc lúc bóc link');
   const x3 = ws.getRow(3);
   assert.equal(x3.getCell(1).value, 'AO_07', 'mã đang sửa (chưa lưu) vẫn xuất');
-  assert.equal(x3.getCell(2).value, 'Áo thun trơn');
-  assert.equal(x3.getCell(3).value, 99000);
-  assert.equal(ws.getImages().length, 2, 'thumbnail "Xem trước" = ảnh có mã / ảnh render của từng bộ');
-  console.log('  ✔ 15 cột đúng thứ tự, giá là số, link chuẩn, hoa hồng trống, 2 thumbnail ảnh model');
+  assert.equal(x3.getCell(2).value, 99000);
+  assert.equal(cellText(x3.getCell(4)), path.basename(localPath(run3.outputs[1].outputUrl)), 'bộ 2 đã bỏ mã -> ảnh render gốc');
+  assert.equal(x3.getCell(5).value, 5200, 'hoa hồng đang sửa (chưa lưu) vẫn xuất');
+  assert.equal(ws.getImages().length, 2, '2 ảnh model nhúng trong cột Ảnh');
+  assert.ok(ws.getImages().every((im) => Math.floor(im.range.tl.col) === 3), 'ảnh nhúng đúng cột Ảnh');
+  console.log('  ✔ 5 cột đúng thứ tự, giá / hoa hồng là số, ô Ảnh = file render có mã + link, 2 ảnh nhúng');
 
-  console.log('\n▶ 9. DiamondShop đọc file (Admin Tab 5 "Nhập từ Excel" → parseProductRows)');
+  console.log('\n▶ 9. DiamondShop (Admin Tab 5 "Nhập từ Excel" → parseProductRows) CHƯA nhập được file 5 cột — xác nhận hệ quả');
   const matrix = [];
   ws.eachRow((row) => {
     const cells = [];
-    for (let c = 1; c <= 14; c++) {
+    for (let c = 1; c <= 5; c++) {
       const v = cellText(row.getCell(c));
       cells.push(v == null ? '' : String(v));
     }
@@ -309,23 +326,14 @@ async function main() {
   const parsed = await parseWithDiamondShop(matrix);
   if (!parsed) {
     console.log(`  (bỏ qua: không thấy repo DiamondShop ở ${DIAMONDSHOP_DIR} — đặt DIAMONDSHOP_DIR để kiểm)`);
+  } else if (parsed.errors.length === 0 && parsed.rows[0]?.status === 'new') {
+    // Bộ nhập DiamondShop đã được cập nhật cho file 5 cột
+    assert.equal(parsed.rows[0].draft.code, 'VAY_01');
+    assert.equal(parsed.rows[0].draft.commission, 27195);
+    console.log('  ✔ DiamondShop đã nhận file 5 cột (productImport.ts đã cập nhật): mã VAY_01, hoa hồng 27.195đ');
   } else {
-    assert.equal(parsed.errors.length, 0, 'không lỗi cấp file: ' + parsed.errors.join('; '));
-    assert.equal(parsed.rows.length, 2);
-    const d0 = parsed.rows[0];
-    assert.equal(d0.status, 'new', 'dòng Shopee nhập được: ' + d0.errors.join('; '));
-    assert.equal(d0.draft.code, 'VAY_01', 'mã dạng LOAI_SO hợp lệ với DiamondShop');
-    assert.equal(d0.draft.name, 'Đầm hoa nhí dáng xoè');
-    assert.equal(d0.draft.price, 259000);
-    assert.equal(d0.draft.shopeeUrl, 'https://shopee.vn/product/1908715934/41434228389');
-    assert.equal(d0.draft.shopId, '1908715934');
-    assert.equal(d0.draft.itemId, '41434228389');
-    assert.deepEqual(d0.draft.images, found.images);
-    assert.equal(d0.draft.commission, null, 'hoa hồng trống -> Admin điền sau');
-    const d1 = parsed.rows[1];
-    assert.equal(d1.status, 'error', 'ảnh tải từ máy không có link Shopee -> DiamondShop báo lỗi dòng đó');
-    assert.ok(d1.errors.some((e) => /link/i.test(e)), d1.errors.join('; '));
-    console.log(`  ✔ DiamondShop: dòng Shopee = new (đủ mã/tên/giá/link/ảnh, hoa hồng trống); dòng từ máy = error "${d1.errors[0]}"`);
+    assert.ok(parsed.errors.some((e) => /Tên sản phẩm|Link Shopee|cột/i.test(e)) || parsed.rows.every((r) => r.status === 'error'), 'DiamondShop phải báo thiếu cột: ' + JSON.stringify(parsed.errors));
+    console.log(`  ✔ Đúng như dự kiến, DiamondShop hiện báo: "${parsed.errors[0] || parsed.rows[0]?.errors?.[0]}" → cần sửa web-site-aff/src/lib/productImport.ts trước khi nhập`);
   }
 
   stopServer();
