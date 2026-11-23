@@ -8,6 +8,7 @@ import videoThoiTrang from './video-thoi-trang.js';
 import videoThoiTrangKhongVoice from './video-thoi-trang-khong-voice.js';
 import videoThoiTrangKhongVoiceNam from './video-thoi-trang-khong-voice-nam.js';
 import videoTapGym from './video-tap-gym.js';
+import nhacSuno from './nhac-suno.js';
 import { db } from '../db.js';
 
 export const WORKFLOWS = {
@@ -17,6 +18,7 @@ export const WORKFLOWS = {
   [videoThoiTrangKhongVoice.id]: videoThoiTrangKhongVoice,
   [videoThoiTrangKhongVoiceNam.id]: videoThoiTrangKhongVoiceNam,
   [videoTapGym.id]: videoTapGym,
+  [nhacSuno.id]: nhacSuno,
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,
@@ -41,6 +43,7 @@ export const listWorkflows = () =>
       icon: w.icon,
       description: w.description,
       noVideo: !!w.noVideo, // quy trình chỉ làm ảnh, không cần video gốc / đoạn cắt
+      sunoMode: !!w.sunoMode, // quy trình Nhạc Suno (chọn MP3 + phân tích Gemini Web ngầm)
       codedInput: w.codedInput || null, // key input mà mỗi ảnh có mã sản phẩm (giao diện hiện ô sửa mã)
       backInput: w.backInput || null, // key inputs chứa ảnh mặt sau theo từng ảnh mặt trước ({ frontId: backId })
       captionModes: !!w.captionModes, // chọn chữ trên video: mã sản phẩm / chữ tuỳ ý / không chữ

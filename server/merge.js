@@ -18,7 +18,7 @@ export function rangeOf(job) {
 // Kiểm tra trước khi ghép, trả về danh sách đoạn + cấu hình âm thanh cho ffmpeg
 // fileOverrides = { [jobId]: file } dùng file khác thay cho video của job khi ghép (vd. bản đã cân màu); sourcePaths vẫn là video gốc
 // của job để biết khi nào job đổi video mà phải ghép lại
-export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio = true, fileOverrides = {} }) {
+export function planMerge({ jobIds, audioId, audioMode, offset, delayMs = 0, keepOriginalAudio = true, fileOverrides = {} }) {
   const jobs = jobIds.map((id) => db.jobs.find((j) => j.id === id));
   if (!jobs.length) throw new Error('Chọn ít nhất 1 video');
   if (jobs.some((j) => !j?.outputPath || !fs.existsSync(j.outputPath))) throw new Error('Có video chưa xong hoặc đã bị xoá');
@@ -45,7 +45,7 @@ export function planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudi
   return {
     segments: jobs.map((j) => ({ file: fileOverrides[j.id] || j.outputPath })),
     sourcePaths: jobs.map((j) => j.outputPath),
-    audio: audio ? { file: audio.path, offset: Number(offset) || 0 } : null,
+    audio: audio ? { file: audio.path, offset: Number(offset) || 0, delayMs: Number(delayMs) || 0 } : null,
     keepOriginalAudio: audio ? false : (keepOriginalAudio !== false),
   };
 }
@@ -55,6 +55,7 @@ export function createMerge({
   audioId = null,
   audioMode = 'match',
   offset = 0,
+  delayMs = 0,
   name,
   runId = null,
   removeWatermark = true,
@@ -64,7 +65,7 @@ export function createMerge({
   keepOriginalAudio = true,
   fileOverrides = {},
 }) {
-  const plan = planMerge({ jobIds, audioId, audioMode, offset, keepOriginalAudio, fileOverrides });
+  const plan = planMerge({ jobIds, audioId, audioMode, offset, delayMs, keepOriginalAudio, fileOverrides });
   const id = newId();
   const effectiveMode = watermarkMode || (removeWatermark === false ? 'off' : (db.settings.watermarkMode || 'delogo'));
   const effectiveText = watermarkText !== undefined ? watermarkText : (db.settings.watermarkText || '');
@@ -77,6 +78,7 @@ export function createMerge({
     audioId,
     audioMode: audioId ? audioMode : null,
     offset,
+    delayMs: Number(delayMs) || 0,
     runId,
     watermarkMode: effectiveMode,
     watermarkText: effectiveText,

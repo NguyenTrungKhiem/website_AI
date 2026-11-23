@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { Badge, ConfirmButton, FileDrop, VideoThumbActions, fmt, useAction } from '../components.jsx';
+import AudioEditorModal from './AudioEditorModal.jsx';
 
 export default function MergePage({ state, refresh, go, handoff }) {
   const done = state.jobs.filter((j) => j.status === 'done' && j.type !== 'image'); // chỉ video, không lấy job sinh ảnh
@@ -12,6 +13,8 @@ export default function MergePage({ state, refresh, go, handoff }) {
   const [offset, setOffset] = useState(0);
   const [name, setName] = useState('');
   const [selected, setSelected] = useState([]);
+  const [audioEditorOpen, setAudioEditorOpen] = useState(false);
+  const [editorAudioId, setEditorAudioId] = useState(null);
   const [watermarkMode, setWatermarkMode] = useState(
     state.settings.watermarkMode || (state.settings.removeWatermark === false ? 'off' : 'delogo')
   );
@@ -164,7 +167,21 @@ export default function MergePage({ state, refresh, go, handoff }) {
       </div>
 
       <div className="card stack">
-        <b>2. Âm thanh</b>
+        <div className="row between">
+          <b>2. Âm thanh</b>
+          <button
+            type="button"
+            className="small-btn"
+            disabled={busy || state.audios.length === 0}
+            onClick={() => {
+              setEditorAudioId(audio?.id || state.audios[0]?.id || '');
+              setAudioEditorOpen(true);
+            }}
+            title="Cắt bỏ dạo đầu hoặc ghép nhiều đoạn nhạc thành 1 file MP3 mới"
+          >
+            ✂️ Cắt / Ghép nhạc
+          </button>
+        </div>
         <div className="audios">
           <label className={'audio' + (!audioId ? ' selected' : '')}>
             <input type="radio" checked={!audioId} onChange={() => setAudioId(null)} />
@@ -183,6 +200,18 @@ export default function MergePage({ state, refresh, go, handoff }) {
               <input type="radio" checked={audioId === a.id} onChange={() => setAudioId(a.id)} />
               <span className="grow ellipsis">{a.sourceId ? '🎬' : '🎵'} {a.name} <small className="muted">({fmt(a.duration)})</small></span>
               <audio src={a.url} controls preload="none" />
+              <button
+                type="button"
+                className="link"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setEditorAudioId(a.id);
+                  setAudioEditorOpen(true);
+                }}
+              >
+                ✂️ Cắt
+              </button>
               <a href={a.url} download>Tải về</a>
               <ConfirmButton link className="" armedText="Xoá?" onConfirm={() => run(async () => { await api.deleteAudio(a.id); if (audioId === a.id) setAudioId(null); await refresh(); })}>Xoá</ConfirmButton>
             </label>
@@ -336,6 +365,15 @@ export default function MergePage({ state, refresh, go, handoff }) {
           ))}
         </div>
       )}
+
+      <AudioEditorModal
+        open={audioEditorOpen}
+        onClose={() => setAudioEditorOpen(false)}
+        audios={state.audios}
+        initialAudioId={editorAudioId || audio?.id || ''}
+        refresh={refresh}
+        onCreated={(created) => setAudioId(created.id)}
+      />
     </section>
   );
 }

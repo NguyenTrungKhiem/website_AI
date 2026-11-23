@@ -6,6 +6,7 @@ import { AssetPicker, BackViewControl, CaptionModePicker, ConfirmButton, FileDro
 import FashionSalesView from './FashionSalesView.jsx';
 import MaleOutfits, { emptyLook } from './MaleOutfits.jsx';
 import SetPieces, { BOTTOM_LABELS } from './SetPieces.jsx';
+import SunoAudioPanel from './SunoAudioPanel.jsx';
 
 // siblings = các quy trình cùng nhóm tab (wf.tab.group, vd. không voice Nữ / Nam): hiện thanh tab trên đầu trang
 export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) {
@@ -73,9 +74,12 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
   const toggleClip = (id) => setClipIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const selectedClips = clips.filter((c) => clipIds.includes(c.id));
   const perClip = wf.perClipInputs || [];
-  const noVideo = !!wf.noVideo; // quy trình chỉ làm ảnh
+  const noVideo = !!wf.noVideo; // quy trình chỉ làm ảnh / video không cần video gốc
   const isEmpty = (inp) => (inp.multiple ? !(inputs[inp.key]?.length) : !inputs[inp.key]);
   const missing = wf.inputs.filter((i) => i.required && isEmpty(i)).map((i) => i.label);
+  if (wf.sunoMode && (!options.audioId || !state.audios.some((a) => a.id === options.audioId))) {
+    missing.push('File nhạc Suno (.mp3)');
+  }
   // Quy trình cần ảnh mặt sau cho từng trang phục: chưa chọn và cũng chưa có ảnh mặt sau tạo từ ảnh đó -> chưa chạy được
   if (wf.backInput && wf.codedInput) {
     const backOf = (frontId) => inputs[wf.backInput]?.[frontId] || state.assets.find((a) => a.fromAssetId === frontId && (a.isBackView || /Mặt sau Flow/.test(a.name || '')))?.id;
@@ -264,8 +268,18 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
         />
       )}
 
+      {wf.sunoMode && (
+        <SunoAudioPanel
+          state={state}
+          refresh={refresh}
+          wf={wf}
+          options={effectiveOptions}
+          onChange={(patch) => setOptions((s) => ({ ...s, ...patch }))}
+        />
+      )}
+
       <div className="card stack">
-        <b>{noVideo ? '2' : '3'}. Tuỳ chọn</b>
+        <b>{noVideo ? (wf.sunoMode ? '3' : '2') : '3'}. Tuỳ chọn</b>
         {wf.options.map((o) => {
           // Ô "Thời lượng": chỉ hiện các bản chuyển động đang chọn có; chuyển động 2 phân cảnh (không có bản nào) thì ẩn
           const isDuration = o.key === 'duration' && allowedDurations;
@@ -1250,7 +1264,7 @@ function RunCard({ run: r, state, refresh, go }) {
         ))}
       </div>
 
-      {(r.frameUrl || bgJob || trJob || r.backgroundUrl) && (
+      {(r.frameUrl || bgJob || trJob || r.backgroundUrl || r.merge?.url) && (
         <div className="row">
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
           {trJob && (

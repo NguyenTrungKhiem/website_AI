@@ -42,6 +42,12 @@ export function createRun({ workflowId, sourceId, clipIds = [], inputs = {}, cli
   }
   // Đầu vào có cấu trúc riêng của quy trình (vd. tab Nam: danh sách outfit nhiều món) do quy trình tự kiểm tra / làm sạch
   if (wf.prepareInputs) Object.assign(cleanInputs, wf.prepareInputs(inputs, options));
+  if (wf.sunoMode) {
+    const aid = options?.audioId;
+    if (!aid || !db.audios.find((a) => a.id === aid)) {
+      throw new Error('Chưa chọn file nhạc Suno (.mp3)');
+    }
+  }
   // Ảnh riêng cho từng đoạn (vd. Thay trang phục: mỗi đoạn một bộ trang phục): { [clipId]: { [key]: assetId } }
   const perClip = {};
   for (const clip of clips) {
@@ -537,19 +543,26 @@ function makeCtx(run, wf) {
       return a;
     },
 
-    // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) nếu có, tuỳ chọn xoá logo
+    // Ghép các job theo thứ tự + âm thanh gốc (khớp từng đoạn) hoặc file âm thanh tuỳ chỉnh (vd. Nhạc Suno), tuỳ chọn xoá logo
     // fileOverrides = { [jobId]: file } ghép bằng file khác thay cho video của job (vd. phân cảnh 2 đã cân màu theo phân cảnh 1)
-    ensureMerge({ jobIds, name, removeWatermark, watermarkMode, keepOriginalAudio, fileOverrides }) {
+    ensureMerge({ jobIds, name, removeWatermark, watermarkMode, keepOriginalAudio, fileOverrides, audioId, audioMode, offset, delayMs }) {
       const st = this.state;
       let merge = st.mergeId && db.merges.find((m) => m.id === st.mergeId);
       if (!merge) {
-        const audio = source ? db.audios.find((a) => a.sourceId === source.id) : null;
+        const useExplicitAudio = audioId !== undefined;
+        const sourceAudio = !useExplicitAudio && source ? db.audios.find((a) => a.sourceId === source.id) : null;
+        const resolvedAudioId = useExplicitAudio ? (audioId || null) : (sourceAudio?.id || null);
+        const resolvedAudioMode = resolvedAudioId
+          ? (audioMode || (useExplicitAudio ? 'continuous' : 'match'))
+          : null;
         const shouldRemoveWatermark = removeWatermark ?? run.options.removeWatermark ?? db.settings.removeWatermark ?? true;
         const shouldKeepAudio = keepOriginalAudio ?? run.options.keepAudio !== false;
         merge = createMerge({
           jobIds,
-          audioId: audio?.id || null,
-          audioMode: audio ? 'match' : null,
+          audioId: resolvedAudioId,
+          audioMode: resolvedAudioMode,
+          offset: Number(offset) || 0,
+          delayMs: Number(delayMs) || 0,
           name,
           runId: run.id,
           removeWatermark: shouldRemoveWatermark,

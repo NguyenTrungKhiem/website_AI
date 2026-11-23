@@ -112,6 +112,7 @@ export const api = {
     f.append('file', file);
     return req('POST', '/api/audios', f);
   },
+  editAudio: (body) => req('POST', '/api/audios/concat', body),
   deleteAudio: (id) => req('DELETE', `/api/audios/${id}`),
   merge: (body) => req('POST', '/api/merges', body),
   deleteMerge: (id) => req('DELETE', `/api/merges/${id}`),
@@ -128,4 +129,9 @@ export const api = {
   // AI làm sạch ảnh mặt sau :id (frontId = ảnh mặt trước của món đó, nếu có) -> job ảnh Flow, kết quả là ảnh mặt sau mới
   cleanBackAsset: (id, frontId, prompt) => req('POST', `/api/assets/${id}/clean-back`, { frontId: frontId || undefined, prompt }),
   analyzeFashionGarment: (body) => req('POST', '/api/fashion/analyze-and-prompt', body),
+  // Nhạc Suno + Playwright Gemini Web (chạy ngầm, bung cửa sổ khi lỗi)
+  geminiWebStatus: () => req('GET', '/api/gemini-web/status'),
+  openGeminiWeb: (url) => req('POST', '/api/gemini-web/open', url ? { url } : {}),
+  analyzeSunoAudio: (body) => req('POST', '/api/workflows/nhac-suno/analyze-audio', body),
+  rebuildSunoPrompt: (body) => req('POST', '/api/workflows/nhac-suno/rebuild-prompt', body),
 };

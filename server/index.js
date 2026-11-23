@@ -3,7 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import { db, save, DIRS, DATA_DIR, newId, mediaUrl, updateSettings } from './db.js';
-import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage, concatRanges } from './ffmpeg.js';
+import { probe, cutClip, thumbnail, splitRanges, extractAudio, filmstrip, removeWatermarkVideo, cropImage, concatRanges, concatAudioSegments } from './ffmpeg.js';
 import { createJob, createImportJob, retryJob, recoverJobs, pump, settledHooks, applyFlowVideoToJob } from './queue.js';
 import { publish } from './social.js';
 import * as zernio from './zernio.js';
@@ -24,6 +24,8 @@ import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replac
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf, productMetaOf } from './productExport.js';
 import { fetchShopeeOffer, testAffiliateCookie, affiliateStatus, closeAffiliateBrowser } from './shopeeAffiliate.js';
 import { describeRates } from './shopeeOffer.js';
+import { closeGeminiBrowser, geminiWebStatus, showGeminiWindow, DEFAULT_GEMINI_WEB_URL } from './geminiWeb.js';
+import { analyzeSunoAudioWithWeb, buildSunoVideoPrompt, SUNO_AUDIO_ANALYSIS_PROMPT } from './sunoAnalyzer.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -45,10 +47,10 @@ process.on('unhandledRejection', (reason) => {
 process.on('exit', (code) => {
   logServer('[PROCESS EXIT] Code:', code);
 });
-// Tắt server → đóng Chrome riêng gọi Shopee (nếu đang mở) rồi thoát
+// Tắt server → đóng Chrome riêng gọi Shopee & Gemini Web (nếu đang mở) rồi thoát
 const shutdown = (sig) => {
   logServer(`[SIGNAL] ${sig}`);
-  Promise.race([closeAffiliateBrowser(), new Promise((r) => setTimeout(r, 1500))]).finally(() => process.exit(0));
+  Promise.race([Promise.allSettled([closeAffiliateBrowser(), closeGeminiBrowser()]), new Promise((r) => setTimeout(r, 1500))]).finally(() => process.exit(0));
 };
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -165,6 +167,55 @@ app.post('/api/workflows/video-tap-gym/exercise-prompt', wrap(async (req, res) =
     model: db.settings.geminiModel || 'gemini-2.5-flash',
   });
   res.json(out);
+}));
+
+// Nhạc Suno + Gemini Web (Playwright chạy ngầm, chỉ bung cửa sổ Chrome khi có lỗi hoặc người dùng bấm Mở để đăng nhập)
+app.get('/api/gemini-web/status', (req, res) => {
+  res.json(geminiWebStatus());
+});
+app.post('/api/gemini-web/open', wrap(async (req, res) => {
+  res.json({ ok: true, ...(await showGeminiWindow(req.body?.url || db.settings.geminiWebUrl || DEFAULT_GEMINI_WEB_URL)) });
+}));
+app.post('/api/workflows/nhac-suno/analyze-audio', wrap(async (req, res) => {
+  const {
+    audioId,
+    startSec = 0,
+    durationSec = 10,
+    lyricsHint = '',
+    micType = 'handheld',
+    aspectRatio = '16:9',
+    modelName = 'Neon',
+    thinkingLevel = 'Trung bình',
+  } = req.body || {};
+  const audio = db.audios.find((a) => a.id === audioId);
+  if (!audio || !fs.existsSync(audio.path)) throw new Error('Không tìm thấy file nhạc Suno (.mp3) trong thư viện');
+  const saved = db.settings?.workflows?.['nhac-suno']?.prompts || {};
+  const out = await analyzeSunoAudioWithWeb({
+    audioPath: audio.path,
+    startSec,
+    durationSec,
+    lyricsHint,
+    micType,
+    aspectRatio,
+    modelName,
+    thinkingLevel,
+    url: db.settings.geminiWebUrl || DEFAULT_GEMINI_WEB_URL,
+    analysisTemplate: (saved.analyze || '').trim() || SUNO_AUDIO_ANALYSIS_PROMPT,
+  });
+  res.json(out);
+}));
+app.post('/api/workflows/nhac-suno/rebuild-prompt', wrap(async (req, res) => {
+  const {
+    timeline = [],
+    songMeta = {},
+    cameraStyle = '',
+    stageLighting = '',
+    aspectRatio = '16:9',
+    durationSec = 10,
+    micType = 'handheld',
+  } = req.body || {};
+  const videoPrompt = buildSunoVideoPrompt({ timeline, songMeta, cameraStyle, stageLighting, aspectRatio, durationSec, micType });
+  res.json({ videoPrompt });
 }));
 
 // Tab Nam – nút "Tạo ảnh outfit" trong thẻ outfit (trước khi chạy quy trình): job ảnh Flow (0 credit) KOL/KOC mặc đủ bộ.
@@ -294,6 +345,69 @@ app.post('/api/audios', upload.single('file'), wrap(async (req, res) => {
   db.audios.unshift(audio);
   save();
   res.json(audio);
+}));
+
+// Cắt bỏ dạo đầu / cắt nhiều đoạn / ghép nhiều file nhạc thành 1 file MP3 mới trong thư viện
+// body: { segments: [{ audioId, start, end }], name?: string, fadeMs?: number }
+app.post('/api/audios/concat', wrap(async (req, res) => {
+  const { segments, name, fadeMs = 0 } = req.body || {};
+  if (!Array.isArray(segments) || segments.length === 0 || segments.length > 50) {
+    throw new Error('Cần từ 1 đến 50 đoạn âm thanh để cắt hoặc ghép');
+  }
+
+  const resolved = segments.map((seg, idx) => {
+    const src = db.audios.find((a) => a.id === seg?.audioId);
+    if (!src || !fs.existsSync(src.path)) {
+      throw new Error(`Không tìm thấy file âm thanh ở đoạn #${idx + 1}`);
+    }
+    const s = Number(seg?.start);
+    let e = Number(seg?.end);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e <= s + 0.05) {
+      throw new Error(`Khoảng thời gian đoạn #${idx + 1} không hợp lệ (${seg?.start}–${seg?.end}s)`);
+    }
+    if (Number.isFinite(src.duration) && src.duration > 0) {
+      if (e > src.duration + 0.5) {
+        throw new Error(`Đoạn #${idx + 1} vượt quá độ dài file gốc (${src.duration.toFixed(1)}s)`);
+      }
+      e = Math.min(e, src.duration);
+      if (e <= s + 0.05) {
+        throw new Error(`Đoạn #${idx + 1} quá ngắn sau khi giới hạn theo độ dài file`);
+      }
+    }
+    return { file: src.path, start: s, end: e, srcName: src.name };
+  });
+
+  const totalDur = resolved.reduce((acc, x) => acc + (x.end - x.start), 0);
+  if (totalDur < 0.1 || totalDur > 3600) {
+    throw new Error(`Tổng thời lượng sau cắt/ghép không hợp lệ (${totalDur.toFixed(1)}s, cho phép 0.1s–3600s)`);
+  }
+
+  const base = path.parse(resolved[0].srcName).name;
+  const defaultName = resolved.length === 1
+    ? `${base} (cắt ${resolved[0].start.toFixed(1)}-${resolved[0].end.toFixed(1)}s)`
+    : `${base} (ghép ${resolved.length} đoạn)`;
+  const finalName = String(name || '').trim() || defaultName;
+
+  const id = newId();
+  const dest = path.join(DIRS.audio, `${id}.mp3`);
+  await concatAudioSegments(resolved, dest, { fadeMs: Number(fadeMs) || 0 });
+
+  let meta;
+  try {
+    meta = await probe(dest);
+  } catch (e) {
+    rm(dest);
+    throw new Error(`Không đọc được file âm thanh sau xử lý: ${e.message}`);
+  }
+  if (!meta?.hasAudio) {
+    rm(dest);
+    throw new Error('File âm thanh xuất ra không hợp lệ');
+  }
+
+  const audio = { id, sourceId: null, name: finalName, path: dest, duration: meta.duration, createdAt: Date.now() };
+  db.audios.unshift(audio);
+  save();
+  res.json({ ...audio, url: mediaUrl(audio.path) });
 }));
 
 app.delete('/api/audios/:id', (req, res) => {

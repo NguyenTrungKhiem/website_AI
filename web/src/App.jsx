@@ -25,8 +25,6 @@ function buildTabs(workflows = []) {
     ...items,
     { id: 'merge', label: 'Ghép video', icon: '🎞️' },
     { id: 'publish', label: 'Đăng video', icon: '🚀' },
-    { id: 'soon', group: 'Sắp có' },
-    { id: 'suno', label: 'Nhạc Suno', icon: '🎵', soon: true, sub: true },
     { id: 'settings', label: 'Cài đặt', icon: '⚙️' },
   ];
 }
@@ -120,21 +118,11 @@ export default function App() {
             {tab === 'merge' && <MergePage {...props} />}
             {tab === 'publish' && <PublishPage {...props} />}
             {tab === 'settings' && <SettingsPage {...props} />}
-            {tab === 'suno' && <ComingSoon tab={tab} />}
           </>
         )}
       </main>
       {/* Bấm vào video / ảnh bất kỳ trong app -> phóng to (video tự phát) */}
       <MediaLightbox />
     </div>
-  );
-}
-
-function ComingSoon({ tab }) {
-  return (
-    <section>
-      <h1>Tạo nhạc với Suno</h1>
-      <div className="card muted">Tính năng sẽ phát triển ở giai đoạn sau: tạo nhạc bằng Suno rồi ghép vào video.</div>
-    </section>
   );
 }

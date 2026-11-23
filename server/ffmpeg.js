@@ -66,6 +66,71 @@ export function extractAudio(src, dest) {
 }
 
 /**
+ * Cắt chính xác một lát âm thanh [startSec, startSec + durationSec) thành MP3 nhỏ gọn để gửi AI phân tích.
+ * Đặt -i trước -ss để cắt chính xác từng mili-giây theo đồng hồ chuẩn 0.0 -> durationSec.
+ */
+export function cutAudioSlice(src, dest, startSec = 0, durationSec = 10) {
+  const ss = Math.max(0, Number(startSec) || 0);
+  const dur = Math.max(1, Number(durationSec) || 10);
+  return run(ffmpegPath, [
+    '-y', '-i', src,
+    '-ss', String(ss), '-t', String(dur),
+    '-vn', '-c:a', 'libmp3lame', '-b:a', '128k', '-ac', '1', '-ar', '24000',
+    dest,
+  ]);
+}
+
+/**
+ * Tạo mảng tham số ffmpeg để cắt và/hoặc ghép nhiều đoạn âm thanh từ một hoặc nhiều file thành 1 file MP3.
+ * segments: [{ file, start, end }]
+ */
+export function buildConcatAudioArgs(segments, dest, { fadeMs = 0 } = {}) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    throw new Error('Cần ít nhất 1 đoạn âm thanh để cắt hoặc ghép');
+  }
+  const fadeSec = Math.max(0, Math.min(2, (Number(fadeMs) || 0) / 1000));
+  const args = ['-y'];
+  const filters = [];
+
+  segments.forEach((seg, i) => {
+    const file = seg?.file;
+    const s = Number(seg?.start);
+    const e = Number(seg?.end);
+    if (!file || typeof file !== 'string') {
+      throw new Error(`Đoạn #${i + 1} thiếu đường dẫn file âm thanh`);
+    }
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e <= s + 0.05) {
+      throw new Error(`Khoảng thời gian đoạn #${i + 1} không hợp lệ (${seg?.start}–${seg?.end}s)`);
+    }
+    args.push('-i', file);
+    const dur = e - s;
+    let chain = `[${i}:a]atrim=start=${s.toFixed(4)}:end=${e.toFixed(4)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`;
+    if (fadeSec > 0) {
+      const segFade = Math.min(fadeSec, dur / 3);
+      const fadeOutStart = Math.max(0, dur - segFade);
+      chain += `,afade=t=in:st=0:d=${segFade.toFixed(4)},afade=t=out:st=${fadeOutStart.toFixed(4)}:d=${segFade.toFixed(4)}`;
+    }
+    filters.push(`${chain}[a${i}]`);
+  });
+
+  if (segments.length === 1) {
+    args.push('-filter_complex', filters.join(';'), '-map', '[a0]');
+  } else {
+    const pads = segments.map((_, i) => `[a${i}]`).join('');
+    filters.push(`${pads}concat=n=${segments.length}:v=0:a=1[aout]`);
+    args.push('-filter_complex', filters.join(';'), '-map', '[aout]');
+  }
+
+  args.push('-vn', '-c:a', 'libmp3lame', '-b:a', '192k', '-ar', '44100', '-ac', '2', dest);
+  return args;
+}
+
+/** Cắt và/hoặc ghép danh sách đoạn âm thanh thành 1 file MP3 mới. */
+export function concatAudioSegments(segments, dest, opts = {}) {
+  return run(ffmpegPath, buildConcatAudioArgs(segments, dest, opts));
+}
+
+/**
  * Tính toạ độ logo Gemini/Flow (ngôi sao 4 cánh) ở góc dưới bên phải
  * Mẫu gốc 720x1280: x=572, y=1132, w=56, h=56
  */
@@ -188,7 +253,16 @@ export async function mergeVideos({
       audio.ranges.forEach(([s, e], i) => filters.push(`[${a}:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[a${i}]`));
       filters.push(`${audio.ranges.map((_, i) => `[a${i}]`).join('')}concat=n=${audio.ranges.length}:v=0:a=1[a]`);
     } else {
-      filters.push(`[${a}:a]atrim=start=${audio.offset || 0},asetpts=PTS-STARTPTS[a]`);
+      const delayMs = Math.round(Number(audio.delayMs) || 0);
+      const baseOffset = Math.max(0, Number(audio.offset) || 0);
+      if (delayMs > 0) {
+        filters.push(`[${a}:a]atrim=start=${baseOffset},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1[a]`);
+      } else if (delayMs < 0) {
+        const trimStart = +(baseOffset + Math.abs(delayMs) / 1000).toFixed(3);
+        filters.push(`[${a}:a]atrim=start=${trimStart},asetpts=PTS-STARTPTS[a]`);
+      } else {
+        filters.push(`[${a}:a]atrim=start=${baseOffset},asetpts=PTS-STARTPTS[a]`);
+      }
     }
     maps.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-shortest');
   } else if (preserveAudio) {

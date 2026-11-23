@@ -246,6 +246,7 @@ async function run(job) {
     ...(job.meta?.flowDuration ? { flowDuration: job.meta.flowDuration } : {}),
     ...(job.meta?.flowResolution ? { flowResolution: job.meta.flowResolution } : {}),
     ...(job.meta?.flowVideoMode ? { flowVideoMode: job.meta.flowVideoMode } : {}),
+    ...(job.meta?.flowVideoAudio ? { flowVideoAudio: job.meta.flowVideoAudio } : {}),
     ...(job.meta?.isFramesMode ? { isFramesMode: job.meta.isFramesMode } : {}),
   };
   const isCancelled = () => cancelledJobs.has(job.id);
