@@ -3,6 +3,7 @@ import dancing from './dancing.js';
 import thayTrangPhuc from './thay-trang-phuc.js';
 import hatNhep from './hat-nhep.js';
 import anhModel from './anh-model.js';
+import anhModelNam from './anh-model-nam.js';
 import fashionV2v from './fashion-v2v.js';
 import videoThoiTrang from './video-thoi-trang.js';
 import videoThoiTrangKhongVoice from './video-thoi-trang-khong-voice.js';
@@ -22,6 +23,7 @@ export const WORKFLOWS = {
   [hatNhep.id]: hatNhep,
   [fashionV2v.id]: fashionV2v,
   [anhModel.id]: anhModel,
+  [anhModelNam.id]: anhModelNam,
 };
 
 // Mô tả gửi cho giao diện (không gồm hàm run)
@@ -53,6 +55,8 @@ export const listWorkflows = () =>
       tab: w.tab || null,
       // Khối outfit nhiều món (tab Nam): { key, slots: [{ key, label }] } -> inputs[key] = [{ items: { slot: { front, back } }, style, main }]
       outfitSets: w.outfitSets || null,
+      // Khối Bộ trang phục (Ảnh model mặc đồ Nữ/Nam): { key, gender, slots, stylePresets }
+      modelOutfits: w.modelOutfits || null,
       runLabel: w.runLabel || null, // chữ trên nút chạy (mặc định "▶ Chạy <tên quy trình>")
       inputs: w.inputs, // input có multiple: true -> chọn nhiều ảnh (mảng id); max = số ảnh tối đa
       perClipInputs: w.perClipInputs || [], // ảnh riêng cho từng đoạn (vd. trang phục của đoạn đó)

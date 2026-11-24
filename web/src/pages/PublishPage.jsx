@@ -512,7 +512,14 @@ export default function PublishPage({ state, refresh, go, handoff }) {
                       new Date(p.createdAt).toLocaleString('vi-VN')
                     )}
                   </td>
-                  <td>{p.videoLabel}</td>
+                  <td>
+                    {p.videoLabel}
+                    {p.mediaType === 'photo_carousel' && (
+                      <div style={{ marginTop: 3 }}>
+                        <span className="badge blue small">🎞️ Photo Carousel ({p.slideCount || p.imagePaths?.length || 0} ảnh)</span>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {p.platform}
                     {p.tiktokShop?.enabled && (

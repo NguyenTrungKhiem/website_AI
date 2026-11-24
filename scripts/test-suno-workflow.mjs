@@ -16,9 +16,9 @@ assert.equal(path.resolve(DIRS.audio), path.resolve(DATA_DIR, 'audio'), 'Test PH
 const { chromePath } = await import('../server/flow.js');
 const { cutAudioSlice, mergeVideos, probe } = await import('../server/ffmpeg.js');
 const { runGeminiWebPrompt } = await import('../server/geminiWeb.js');
-const { extractJsonBlock, normalizeSunoTimeline, buildSunoVideoPrompt, analyzeSunoAudioWithWeb } = await import('../server/sunoAnalyzer.js');
+const { extractJsonBlock, normalizeSunoTimeline, buildSunoVideoPrompt, analyzeSunoAudioWithWeb, sanitizeVisualCue, checkLyricsCoverage } = await import('../server/sunoAnalyzer.js');
 const { _setSunoWebRunnerForTest } = await import('../server/workflows/nhac-suno.js');
-const { createRun } = await import('../server/workflows/runner.js');
+const { createRun, resyncRunAudio } = await import('../server/workflows/runner.js');
 
 function runBin(args) {
   return new Promise((resolve, reject) => {
@@ -31,22 +31,48 @@ function runBin(args) {
 }
 
 const SAMPLE_TIMELINE = [
-  { from: 0, to: 1, hasVoice: false, lyric: '', vocalIntensity: 'silent', mouthGuide: 'mouth closed', action: 'holds microphone below chin' },
-  { from: 1, to: 2, hasVoice: true, lyric: 'Đêm nay ánh đèn', vocalIntensity: 'soft', mouthGuide: 'gentle rounded lips', action: 'lifts chin slightly' },
-  { from: 2, to: 3, hasVoice: true, lyric: 'sân khấu sáng rực', vocalIntensity: 'medium', mouthGuide: 'clear open vowel motion', action: 'sways gently with mic' },
-  { from: 3, to: 4, hasVoice: true, lyric: 'anh vẫn đứng đây', vocalIntensity: 'medium', mouthGuide: 'crisp consonant lip closure', action: 'free hand gestures softly' },
-  { from: 4, to: 5, hasVoice: true, lyric: 'chờ em dưới mưa', vocalIntensity: 'belting', mouthGuide: 'wide sustained open mouth', action: 'leans into spotlight' },
-  { from: 5, to: 6, hasVoice: false, lyric: '[Silent]', vocalIntensity: 'silent', mouthGuide: 'calm breath', action: 'smiles warmly holding mic' },
-  { from: 6, to: 7, hasVoice: true, lyric: 'cùng hát vang lên', vocalIntensity: 'belting', mouthGuide: 'wide joyful singing mouth', action: 'raises free hand toward crowd' },
-  { from: 7, to: 8, hasVoice: true, lyric: 'giai điệu yêu thương', vocalIntensity: 'medium', mouthGuide: 'smooth jaw rhythm', action: 'glances subtly to side' },
-  { from: 8, to: 9, hasVoice: true, lyric: 'mãi không phai nhòa', vocalIntensity: 'soft', mouthGuide: 'gentle closing vowel', action: 'lowers free hand gently' },
-  { from: 9, to: 10, hasVoice: false, lyric: '', vocalIntensity: 'silent', mouthGuide: 'closed-lip smile', action: 'holds final poised frame' },
+  {
+    from: 0.0,
+    to: 3.2,
+    hasVoice: true,
+    lyric: 'Đêm nay ánh đèn sân khấu sáng rực',
+    vocalIntensity: 'medium',
+    shot: 'Hero medium shot from waist up on stage, slight low-angle slow push-in',
+    action: 'stands confidently under spotlight, grips wireless mic 4cm below lower lip, tilts head warmly',
+  },
+  {
+    from: 3.2,
+    to: 6.0,
+    hasVoice: true,
+    lyric: 'anh vẫn đứng đây chờ em dưới mưa',
+    vocalIntensity: 'belting',
+    shot: 'Smooth cut to dramatic 3/4 hero close-up orbit with glowing rim light',
+    action: 'leans passionately into light, opens free palm gracefully toward audience with charismatic gaze',
+  },
+  {
+    from: 6.0,
+    to: 7.0,
+    hasVoice: false,
+    lyric: '[Silent]',
+    vocalIntensity: 'silent',
+    shot: 'Hold dramatic close-up framing with shimmering background lights',
+    action: 'closes eyes briefly on emotional beat and takes a calm breath with lips closed',
+  },
+  {
+    from: 7.0,
+    to: 10.0,
+    hasVoice: true,
+    lyric: 'cùng hát vang lên giai điệu mãi không phai nhòa',
+    vocalIntensity: 'belting',
+    shot: 'Cinematic Steadicam medium close-up sweeping smoothly across stage',
+    action: 'locks intense magnetic gaze into lens, lowers free hand smoothly keeping mic 4cm below chin',
+  },
 ];
 
 const SAMPLE_JSON = {
-  songMeta: { language: 'vi', tempoBpm: 96, mood: 'emotional pop ballad', vocalGender: 'female', genre: 'V-Pop' },
-  cameraStyle: 'Medium close-up from waist up at 15-degree angle with ultra-smooth push-in, no cuts.',
-  stageLighting: 'Warm golden rim light and cool blue haze matching @Image2 concert crowd.',
+  songMeta: { language: 'vi', mood: 'emotional dramatic stage presence', vocalGender: 'female' },
+  cameraStyle: 'High-budget multi-angle stage framing alternating hero medium shot, 3/4 close-up, and Steadicam sweep.',
+  stageLighting: 'Warm golden spotlight and cool blue rim light with blurred glowing audience bokeh.',
   timeline: SAMPLE_TIMELINE,
 };
 
@@ -134,47 +160,92 @@ function makeFakeGeminiContext({ login = false, responseJson = SAMPLE_JSON } = {
 async function main() {
   console.log('--- KIỂM THỬ MODULE NHẠC SUNO (16:9 · 10s · Gemini Web ngầm) ---\n');
 
-  console.log('▶ Test 1: extractJsonBlock & normalizeSunoTimeline');
+  console.log('▶ Test 1: extractJsonBlock, sanitizeVisualCue, checkLyricsCoverage & normalizeSunoTimeline');
   const wrapped = `Tôi đã nghe xong file MP3:\n\`\`\`json\n{"foo":1}\n\`\`\`\nKịch bản chính thức:\n\`\`\`json\n${JSON.stringify(SAMPLE_JSON)}\n\`\`\``;
   const extracted = extractJsonBlock(wrapped);
-  assert.equal(extracted.timeline.length, 10);
+  assert.equal(extracted.timeline.length, 4);
   const norm = normalizeSunoTimeline(extracted.timeline, 10);
-  assert.equal(norm.length, 10);
+  assert.equal(norm.length, 4);
   assert.equal(norm[0].from, 0);
-  assert.equal(norm[0].hasVoice, false);
-  assert.equal(norm[5].hasVoice, false, '[Silent] phải ép thành im lặng');
-  assert.equal(norm[9].to, 10);
+  assert.equal(norm[0].hasVoice, true);
+  assert.equal(norm[2].hasVoice, false, '[Silent] phải ép thành im lặng');
+  assert.equal(norm[3].to, 10);
+  // Kiểm tra tự chèn [Silent] khi cụm từ bắt đầu lúc 0.6s và có khoảng nghỉ ở giữa
+  const sparse = normalizeSunoTimeline([
+    { from: 0.6, to: 3.5, hasVoice: true, lyric: 'Ta quen nhau' },
+    { from: 4.2, to: 9.2, hasVoice: true, lyric: 'đã bao lâu rồi' },
+  ], 10);
+  assert.equal(sparse[0].from, 0);
+  assert.equal(sparse[0].to, 0.6);
+  assert.equal(sparse[0].hasVoice, false);
+  assert.equal(sparse.at(-1).from, 9.2);
+  assert.equal(sparse.at(-1).to, 10);
+  assert.equal(sparse.at(-1).hasVoice, false);
+
+  const sanitized = sanitizeVisualCue('Swings emotionally under warm spotlight and rim light with piano and live band singing high notes at 76 BPM');
+  assert.ok(!/(piano|live band|singing|high notes?|bpm)/i.test(sanitized), `Còn từ cấm trong sanitizeVisualCue: ${sanitized}`);
+  assert.match(sanitized, /spotlight.*rim light/i);
+
+  const covMiss = checkLyricsCoverage('Đêm nay ánh đèn sân khấu sáng rực thiếu chữ cuối', norm, 10);
+  assert.deepEqual(covMiss.missingWords, ['thiếu', 'chữ', 'cuối']);
+  const covOk = checkLyricsCoverage('Đêm nay ánh đèn sân khấu sáng rực anh vẫn đứng đây chờ em dưới mưa cùng hát vang lên giai điệu mãi không phai nhòa', norm, 10);
+  assert.equal(covOk.missingWords.length, 0);
+
   assert.throws(() => extractJsonBlock('không có json'), /Không đọc được JSON/);
-  assert.throws(() => normalizeSunoTimeline([{ from: 0, to: 5, lyric: 'a' }], 10), /quá ít mốc/);
+  assert.throws(() => normalizeSunoTimeline([], 10), /kịch bản trống/);
   const wrappedWithCurly = `Lưu ý {chú thích nhịp 0-10s} ở ngoài:\n\`\`\`json\n${JSON.stringify(SAMPLE_JSON)}\n\`\`\`\nVà {ghi chú cuối}.`;
   const extractedCurly = extractJsonBlock(wrappedWithCurly);
-  assert.equal(extractedCurly.timeline.length, 10, 'Phải tách đúng JSON kể cả khi có {ngoặc nhọn} ngoài lề');
+  assert.equal(extractedCurly.timeline.length, 4, 'Phải tách đúng JSON kể cả khi có {ngoặc nhọn} ngoài lề');
   const fromCodeBlock = extractJsonBlock('Gemini đã nói {nội dung nhiễu}', [JSON.stringify(SAMPLE_JSON)]);
-  assert.equal(fromCodeBlock.timeline.length, 10, 'Phải ưu tiên parse từ codeBlocks sạch');
-  console.log('  ✔ extractJsonBlock chọn block chứa timeline, miễn nhiễm {ngoặc} ngoài lề & ưu tiên codeBlocks');
+  assert.equal(fromCodeBlock.timeline.length, 4, 'Phải ưu tiên parse từ codeBlocks sạch');
+  console.log('  ✔ normalize 0.1s, sanitizeVisualCue sạch từ nhạc/hát, checkLyricsCoverage bắt đúng từ thiếu');
 
-  console.log('\n▶ Test 2: buildSunoVideoPrompt — 16:9, @Image1, @Image2, không che miệng');
+  console.log('\n▶ Test 2: buildSunoVideoPrompt — Khuôn Voice: "..." gọn ~1.6k chars, chống tự chế lyric & 3 góc quay MV');
+  const dirtyTimeline = norm.map((r) => ({
+    ...r,
+    shot: `${r.shot} with ultra long extra cinematic dolly track crane sweeping camera movement across huge crowd`,
+    action: `${r.action} singing to piano beat while dramatically waving both arms endlessly through theatrical lighting effects`,
+  }));
   const built = buildSunoVideoPrompt({
-    timeline: norm,
-    songMeta: SAMPLE_JSON.songMeta,
-    cameraStyle: SAMPLE_JSON.cameraStyle,
-    stageLighting: SAMPLE_JSON.stageLighting,
+    timeline: dirtyTimeline,
+    songMeta: { language: 'vi', vocalGender: 'male', tempoBpm: 76, mood: 'emotional pop ballad' },
+    cameraStyle: 'Smooth concert music camera with live band at 76 BPM',
+    stageLighting: 'Warm golden spotlight with cheering crowd behind live band piano',
     aspectRatio: '16:9',
     durationSec: 10,
     micType: 'handheld',
+    cameraPreset: 'star-multicam',
+    lipSyncMode: 'spoken',
   });
-  assert.match(built, /widescreen 16:9/);
-  assert.match(built, /@Image1/);
-  assert.match(built, /@Image2/);
-  assert.match(built, /0\.0-1\.0s:.*Voice: \[Silent\]/);
-  assert.match(built, /1\.0-2\.0s:.*Voice: "Đêm nay ánh đèn"/);
-  assert.match(built, /never obscures the lips|never let the microphone/i);
-  const standBuilt = buildSunoVideoPrompt({ timeline: norm, micType: 'stand', aspectRatio: '9:16', durationSec: 10 });
-  assert.match(standBuilt, /vertical 9:16/);
-  assert.match(standBuilt, /mounted on a stand/);
-  const maleBuilt = buildSunoVideoPrompt({ timeline: norm, songMeta: { ...SAMPLE_JSON.songMeta, vocalGender: 'male' }, aspectRatio: '16:9', durationSec: 10 });
-  assert.match(maleBuilt, /He holds a wireless stage handheld microphone.*from his chin/);
-  console.log('  ✔ dựng prompt chuẩn Omni Flash 16:9 & 9:16, giữ @Image1/@Image2 & quy tắc không che môi');
+  assert.match(built, /^Setup \(10s\): Full 10s widescreen 16:9 live-stage clip/);
+  assert.match(built, /\nScene: @Image1 stands center-stage on the venue floor of @Image2/);
+  assert.match(built, /speech begins immediately on frame 1 at 0\.0s/);
+  assert.match(built, /0\.0-3\.2s:.*Voice: "Đêm nay ánh đèn sân khấu sáng rực\."/);
+  assert.match(built, /6\.0-7\.0s:.*Voice: \[Silent\]/);
+  assert.match(built, /\nTechnical Rule:.*Speak ONLY the exact verbatim words inside each Voice line/);
+  assert.match(built, /wireless handheld microphone 3-4cm below his lower lip/);
+  assert.ok(!/\[SHOT:|Complete Spoken Script/i.test(built), 'Không còn khung [SHOT:] hoặc Complete Spoken Script trùng ngoặc kép');
+  const voicedCount = norm.filter((r) => r.hasVoice).length;
+  assert.equal((built.match(/"/g) || []).length, voicedCount * 2, 'Không được có dấu ngoặc kép thừa ngoài các cụm Voice: "..."');
+  assert.ok(built.length <= 2200, `Prompt cần gọn <= 2200 ký tự để Omni Flash không loãng (thực tế ${built.length})`);
+  assert.ok(!/\b(singing|pop ballad|ballad|bpm|live band|piano|vocal performance|high notes?|cheering)\b/i.test(built), `Prompt vẫn còn từ kích hoạt hát/nhạc:\n${built}`);
+
+  const muteBuilt = buildSunoVideoPrompt({
+    timeline: sparse,
+    micType: 'stand',
+    aspectRatio: '9:16',
+    durationSec: 10,
+    cameraPreset: 'steadicam-orbit',
+    lipSyncMode: 'mute',
+  });
+  assert.match(muteBuilt, /vertical 9:16/);
+  assert.match(muteBuilt, /completely silent video/);
+  assert.match(muteBuilt, /mouth stays closed from 0\.0s to 0\.6s then begins mouthing immediately at 0\.6s/);
+  assert.match(muteBuilt, /Steadicam/);
+  assert.match(muteBuilt, /stage stand microphone/);
+  const closeupBuilt = buildSunoVideoPrompt({ timeline: sparse, cameraPreset: 'closeup-intimate', durationSec: 10 });
+  assert.match(closeupBuilt, /Intimate hero medium close-up/);
+  console.log(`  ✔ prompt chuẩn Voice: "..." gọn (${built.length} chars), 0 ngoặc kép thừa, 0 từ hát/nhạc, đủ 3 preset góc quay`);
 
   console.log('\n▶ Test 3: FFmpeg cutAudioSlice (10.0s) + mergeVideos thay tiếng AI bằng MP3 gốc (+ delayMs)');
   const tmpWork = path.join(DATA_DIR, 'media-test');
@@ -245,8 +316,10 @@ async function main() {
     audioPath: song15s,
     startSec: 2,
     durationSec: 10,
-    lyricsHint: 'Đêm nay ánh đèn',
+    lyricsHint: 'Đêm nay ánh đèn sân khấu sáng rực anh vẫn đứng đây chờ em dưới mưa cùng hát vang lên giai điệu mãi không phai nhòa',
     aspectRatio: '16:9',
+    cameraPreset: 'star-multicam',
+    lipSyncMode: 'spoken',
     runWeb: async ({ filePath, modelName, thinkingLevel }) => {
       assert.ok(fs.existsSync(filePath), 'file MP3 cắt 10s phải được tạo trước khi gọi Gemini Web');
       assert.equal(modelName, 'Neon');
@@ -254,7 +327,8 @@ async function main() {
       return { rawText: '```json\n' + JSON.stringify(SAMPLE_JSON) + '\n```', selectedModel: 'Neon' };
     },
   });
-  assert.equal(analyzed.timeline.length, 10);
+  assert.equal(analyzed.timeline.length, 4);
+  assert.equal(analyzed.coverage.missingWords.length, 0);
   assert.match(analyzed.videoPrompt, /widescreen 16:9/);
 
   // Chạy toàn bộ quy trình nhac-suno: analyze -> video (mock) -> merge (ghép MP3 gốc)
@@ -318,7 +392,41 @@ async function main() {
   assert.equal(mergeRec.keepOriginalAudio, false);
   const finalMeta = await probe(mergeRec.outputPath);
   assert.equal(finalMeta.hasAudio, true);
-  console.log('  ✔ quy trình nhac-suno hoàn tất 3 bước (analyze -> video -> merge), giữ đúng MP3 Suno gốc & metadata 16:9 10s');
+
+  // Kiểm thử resyncRunAudio (dịch khớp -250ms chỉ ghép FFmpeg, 0 job Flow mới)
+  const jobsBeforeResync = db.jobs.length;
+  resyncRunAudio(runObj, -250);
+  const resyncDeadline = Date.now() + 15_000;
+  while (Date.now() < resyncDeadline && runObj.status === 'running') {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(runObj.status, 'done');
+  assert.equal(db.jobs.length, jobsBeforeResync, 'resyncRunAudio KHÔNG được tạo thêm job Flow mới');
+  const resyncedMerge = db.merges.find((m) => m.id === runObj.stages.merge.mergeId);
+  assert.equal(resyncedMerge.delayMs, -250);
+
+  // Kiểm thử lipSyncMode: 'mute' -> flowVideoAudio = 'mute'
+  const muteRun = createRun({
+    workflowId: 'nhac-suno',
+    inputs: { model: 'singer1', background: 'stage1' },
+    options: {
+      audioId: 'audio1',
+      aspectRatio: '16:9',
+      duration: '10s',
+      lipSyncMode: 'mute',
+      customPrompt: 'Silent lip-sync test',
+      reviewScript: false,
+    },
+  });
+  const mDeadline = Date.now() + 15_000;
+  while (Date.now() < mDeadline && muteRun.status === 'running') {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(muteRun.status, 'done');
+  const muteJob = db.jobs.find((j) => j.id === muteRun.stages._jobs['video:part1']);
+  assert.equal(muteJob.meta.flowVideoAudio, 'mute');
+
+  console.log('  ✔ quy trình nhac-suno, resyncRunAudio 0 credit & lipSyncMode=mute đều hoạt động chuẩn');
 
   _setSunoWebRunnerForTest(null);
   save();
@@ -521,8 +629,8 @@ async function main() {
     assert.ok(elapsed >= 5000, `Không được thoát sớm trước khi JSON hoàn chỉnh (elapsed=${elapsed}ms)`);
     assert.ok(res7.codeBlocks.length >= 1, 'Phải gom được codeBlocks');
     const parsed7 = extractJsonBlock(res7.rawText, res7.codeBlocks);
-    assert.equal(parsed7.timeline.length, 10, 'Phải parse đủ 10 mốc từ JSON cuối cùng');
-    console.log(`  ✔ Không thoát sớm ở ${elapsed}ms, đọc đủ 10 mốc timeline khi Neon trả xong JSON`);
+    assert.equal(parsed7.timeline.length, 4, 'Phải parse đủ 4 cụm từ JSON cuối cùng');
+    console.log(`  ✔ Không thoát sớm ở ${elapsed}ms, đọc đủ 4 cụm timeline khi Neon trả xong JSON`);
   } finally {
     await realBrowser.close();
   }

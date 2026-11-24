@@ -471,6 +471,49 @@ export function overlayBadge(opts) {
 }
 
 /**
+ * Đè nhiều PNG khung mã sản phẩm (1..N) lên cùng 1 ảnh kết quả trong 1 lệnh ffmpeg duy nhất.
+ * badges = [{ file, x, y, frameWidth }, ...]
+ */
+export function buildOverlayBadgesArgs({ src, badges = [], dest, width }) {
+  const valid = (badges || []).filter((b) => b?.file);
+  if (!valid.length) throw new Error('Không có khung mã để in lên ảnh');
+  if (valid.length === 1) {
+    const b = valid[0];
+    return buildOverlayBadgeArgs({ src, badge: b.file, dest, x: b.x, y: b.y, frameWidth: b.frameWidth, width });
+  }
+  const w = Number(width);
+  const args = ['-y', '-i', src];
+  const filters = [];
+  valid.forEach((b, i) => {
+    args.push('-i', b.file);
+    const inIdx = i + 1;
+    const fw = Number(b.frameWidth);
+    const prep = fw > 0 && w > 0 && Math.abs(fw - w) > 1
+      ? `[${inIdx}:v]format=rgba,scale=trunc(iw*${w}/${fw}/2)*2:-2[b${i}]`
+      : `[${inIdx}:v]format=rgba[b${i}]`;
+    filters.push(prep);
+  });
+  valid.forEach((b, i) => {
+    const baseIn = i === 0 ? '0:v' : `v${i - 1}`;
+    const outTag = i === valid.length - 1 ? 'v' : `v${i}`;
+    filters.push(
+      `[${baseIn}][b${i}]overlay=x='max(0,min(W-overlay_w,W*${badgeRatio(b.x, 0.5)}-overlay_w/2))':y='max(0,min(H-overlay_h,H*${badgeRatio(b.y, 0.12)}-overlay_h/2))':format=auto[${outTag}]`,
+    );
+  });
+  args.push('-filter_complex', filters.join(';'), '-map', '[v]', '-frames:v', '1', dest);
+  return args;
+}
+
+export function overlayBadges(opts) {
+  return run(ffmpegPath, buildOverlayBadgesArgs(opts));
+}
+
+// Chuyển ảnh PNG/WEBP sang JPEG chất lượng cao để đăng TikTok Photo Mode (TikTok chỉ nhận JPG/WebP)
+export function convertToJpeg(src, dest, quality = 2) {
+  return run(ffmpegPath, ['-y', '-i', src, '-frames:v', '1', '-q:v', String(quality), dest]);
+}
+
+/**
  * Gộp các khoảng [start, end] của CÙNG một video thành 1 file (bỏ các đoạn không có trong ranges), một lần chạy ffmpeg,
  * không cần file tạm: trim từng khoảng rồi concat. Giữ âm thanh gốc nếu có và không mute.
  */

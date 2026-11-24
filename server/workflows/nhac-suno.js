@@ -12,6 +12,9 @@ import { DEFAULT_GEMINI_WEB_URL, runGeminiWebPrompt } from '../geminiWeb.js';
 import {
   analyzeSunoAudioWithWeb,
   buildSunoVideoPrompt,
+  CAMERA_PRESETS,
+  checkLyricsCoverage,
+  LIP_SYNC_MODES,
   MIC_TYPES,
   SUNO_ASPECT_RATIOS,
   SUNO_AUDIO_ANALYSIS_PROMPT,
@@ -32,9 +35,9 @@ export default {
   sunoMode: true,
   reviewNote: 'Đã phân tích xong lời & khẩu hình từng giây. Xem lại nếu cần rồi bấm Tiếp tục để gửi Omni Flash.',
   resumeLabel: '▶ Tiếp tục: tạo video hát nhép',
-  description: 'Ảnh nhân vật + ảnh sân khấu + nhạc MP3 Suno → Playwright chạy ngầm Gemini Web (Neon · Trung bình) phân tích từng giây để Omni Flash 16:9 hát nhép khớp nhịp, rồi ghép nhạc MP3 gốc hoàn chỉnh.',
+  description: 'Ảnh nhân vật + ảnh sân khấu + nhạc MP3 Suno → Playwright chạy ngầm Gemini Web (Neon · Trung bình) chia cụm câu 0.1s & đạo diễn đa góc quay ngôi sao để Omni Flash 16:9 nhép đủ chữ (0 hát, 0 nhạc đệm), rồi ghép MP3 gốc hoàn chỉnh.',
   sceneJobs: [
-    { key: 'video:part1', label: 'Video hát nhép (Omni Flash)', note: 'Thử lại / chọn bản tốt nhất → tự động ghép lại với nhạc MP3 Suno gốc.' },
+    { key: 'video:part1', label: 'Video thô từ Omni Flash (giọng nói khô để lấy khẩu hình)', note: 'Bản hoàn chỉnh ở trên đã tắt 100% tiếng AI và ghép MP3 gốc. Bấm Thử lại / chọn bản tốt nhất → tự ghép lại.' },
   ],
   inputs: [
     { key: 'model', kind: 'model', label: 'Ảnh nhân vật (@Image1)', required: true },
@@ -78,6 +81,18 @@ export default {
       default: 'handheld',
     },
     {
+      key: 'cameraPreset',
+      label: 'Góc quay & Đạo diễn sân khấu MV',
+      options: CAMERA_PRESETS,
+      default: 'star-multicam',
+    },
+    {
+      key: 'lipSyncMode',
+      label: 'Chế độ âm thanh khi Flow tạo khẩu hình',
+      options: LIP_SYNC_MODES,
+      default: 'spoken',
+    },
+    {
       key: 'geminiWebModel',
       type: 'text',
       label: 'Model Gemini Web',
@@ -118,16 +133,21 @@ export default {
         const startSec = Math.max(0, Number(o.audioStartSec) || 0);
         const aspectRatio = o.aspectRatio === '9:16' ? '9:16' : '16:9';
         const micType = o.micType === 'stand' ? 'stand' : 'handheld';
+        const cameraPreset = o.cameraPreset || 'star-multicam';
+        const lipSyncMode = o.lipSyncMode || 'spoken';
 
         // Nếu người dùng đã bấm "Phân tích thử trước" hoặc sửa tay customPrompt từ giao diện → dùng luôn, không mở lại Gemini Web
         const presetPrompt = String(o.customPrompt || '').trim();
         if (presetPrompt) {
           ctx.state.videoPrompt = presetPrompt;
-          if (Array.isArray(o.timeline)) ctx.state.timeline = o.timeline;
+          if (Array.isArray(o.timeline)) {
+            ctx.state.timeline = o.timeline;
+            ctx.state.coverage = checkLyricsCoverage(o.lyricsHint || '', o.timeline, durationSec);
+          }
           if (o.songMeta) ctx.state.songMeta = o.songMeta;
           ctx.state.audioStartSec = startSec;
           ctx.state.durationSec = durationSec;
-          ctx.state.note = 'Dùng kịch bản từng giây đã chuẩn bị sẵn trên giao diện';
+          ctx.state.note = 'Dùng kịch bản theo cụm câu đã chuẩn bị sẵn trên giao diện';
           return 'done';
         }
         if (ctx.state.videoPrompt && ctx.state.audioStartSec === startSec && ctx.state.durationSec === durationSec) {
@@ -146,6 +166,8 @@ export default {
           lyricsHint: o.lyricsHint || '',
           micType,
           aspectRatio,
+          cameraPreset,
+          lipSyncMode,
           modelName: o.geminiWebModel || 'Neon',
           thinkingLevel: o.geminiThinkingLevel || 'Trung bình',
           url: db.settings?.geminiWebUrl || DEFAULT_GEMINI_WEB_URL,
@@ -161,11 +183,12 @@ export default {
         ctx.state.cameraStyle = analysis.cameraStyle;
         ctx.state.stageLighting = analysis.stageLighting;
         ctx.state.timeline = analysis.timeline;
+        ctx.state.coverage = analysis.coverage;
         ctx.state.videoPrompt = analysis.videoPrompt;
         ctx.state.selectedModel = analysis.selectedModel;
         ctx.state.audioStartSec = startSec;
         ctx.state.durationSec = durationSec;
-        ctx.state.note = `Đã phân tích ${analysis.timeline.length} mốc giây bằng ${analysis.selectedModel || 'Gemini Web'}`;
+        ctx.state.note = `Đã phân tích ${analysis.timeline.length} cụm câu (${analysis.coverage?.timelineWords || 0} từ) bằng ${analysis.selectedModel || 'Gemini Web'}`;
         return 'done';
       },
     },
@@ -193,6 +216,8 @@ export default {
         const durationSec = parseFloat(duration) || 10;
         const aspectRatio = o.aspectRatio === '9:16' ? '9:16' : '16:9';
         const micType = o.micType === 'stand' ? 'stand' : 'handheld';
+        const cameraPreset = o.cameraPreset || 'star-multicam';
+        const lipSyncMode = o.lipSyncMode || 'spoken';
 
         let template = String(o.customPrompt || '').trim() || stAnalyze.videoPrompt;
         if (!template && Array.isArray(stAnalyze.timeline)) {
@@ -204,6 +229,8 @@ export default {
             aspectRatio,
             durationSec,
             micType,
+            cameraPreset,
+            lipSyncMode,
           });
         }
         if (!template) throw new Error('Chưa có kịch bản prompt hát nhép từ bước phân tích.');
@@ -222,7 +249,7 @@ export default {
             flowVideoModel: o.flowModel || FASHION_MODELS[0],
             flowDuration: duration,
             flowResolution: '720p',
-            flowVideoAudio: 'sound', // bắt buộc bật tiếng trên Flow để khẩu hình bám sát Voice từng giây
+            flowVideoAudio: lipSyncMode === 'mute' ? 'mute' : 'sound', // spoken: bật sound để nói thoại khô lấy khẩu hình; mute: câm trên Flow
           },
         });
         if (job.status === 'failed') throw ctx.jobError(job);

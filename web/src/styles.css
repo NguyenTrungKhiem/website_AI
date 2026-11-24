@@ -410,3 +410,51 @@ button.big { padding: 10px 18px; font-size: 15px; }
 .seg-editor-list { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .seg-editor-row { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; gap: 8px; }
 .seg-editor-row.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* Thẻ kết quả 16:9 + dịch khớp âm thanh nhanh (Nhạc Suno) */
+.suno-final-wrap { align-items: flex-start; flex-wrap: wrap; gap: 14px; width: 100%; }
+.suno-final-video { width: 360px; max-width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; display: block; object-fit: contain; }
+.suno-final-video.portrait { width: 180px; aspect-ratio: 9 / 16; }
+.suno-resync-box { flex: 1 1 250px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; gap: 8px; max-width: 440px; }
+
+/* Bộ chọn trang phục nhiều món (Ảnh model mặc đồ Nữ / Nam) */
+.model-outfits { gap: 10px; }
+.mo-drawer { background: var(--panel2); border: 1px dashed var(--accent, #6c7bff); border-radius: 10px; padding: 12px; gap: 10px; }
+.mo-matrix-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.mo-combo-preview { display: flex; flex-wrap: wrap; gap: 8px; max-height: 220px; overflow-y: auto; }
+.mo-combo-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+.mo-combo-chip img { width: 30px; height: 40px; object-fit: cover; border-radius: 4px; }
+.mo-combo-chip.off { opacity: 0.35; filter: grayscale(1); }
+
+.mo-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; gap: 10px; }
+.mo-card.empty-card { border-style: dashed; }
+.mo-num { font-size: 13px; color: var(--fg); }
+.mo-mode-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.mo-mode-pills .small-btn.on { background: var(--accent, #5b6cff); color: #fff; border-color: var(--accent, #5b6cff); }
+.danger-text { color: #ef6a6a; }
+.small-btn.primary-outline { border-color: var(--accent, #5b6cff); color: var(--accent, #8b98ff); }
+
+.mo-slots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.mo-slot { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: border-color 0.15s ease; min-height: 128px; }
+.mo-slot:hover:not(.locked) { border-color: var(--accent, #5b6cff); }
+.mo-slot.picked { border-color: rgba(74, 222, 128, 0.55); }
+.mo-slot.locked { opacity: 0.52; cursor: not-allowed; background: rgba(0, 0, 0, 0.18); }
+.mo-slot-head { align-items: center; gap: 4px; }
+.mo-clear { background: rgba(0,0,0,0.45); color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; line-height: 18px; padding: 0; cursor: pointer; font-size: 13px; }
+.mo-slot-thumb { display: flex; flex-direction: column; gap: 4px; }
+.mo-slot-thumb img { width: 100%; height: 92px; object-fit: cover; border-radius: 6px; background: #000; }
+.mo-slot-name { font-size: 11px; color: var(--muted); }
+.mo-slot-empty { flex: 1; display: grid; place-items: center; text-align: center; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 6px; }
+.mo-slot-locked { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; font-size: 11px; color: var(--amber, #f5b942); gap: 6px; padding: 4px; }
+.mo-slot-locked button { pointer-events: auto; font-size: 11px; }
+.mo-style-input { flex: 1 1 240px; min-width: 180px; font-size: 12px; padding: 4px 8px; }
+
+/* Multi-badge preview, chic font switcher & TikTok 5-slide packs */
+.badge-style-bar { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.code-badge.active-badge { outline: 2px dashed #ff8fab; outline-offset: 2px; z-index: 2; }
+.outfit-group-start td { border-top: 2px solid var(--line); }
+.slot-pill { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+.tiktok-slide-pack { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; gap: 10px; }
+.slide-num-pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #fe2c55; color: #fff; margin-right: 4px; }
+.mo-acc-pill { padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); cursor: pointer; }
+.mo-acc-pill.on { border-color: var(--accent, #5b6cff); background: rgba(91, 108, 255, 0.14); }

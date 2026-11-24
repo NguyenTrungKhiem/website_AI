@@ -430,6 +430,29 @@ export function resyncRun(run) {
   return stale;
 }
 
+/**
+ * Dịch khớp âm thanh MP3 Suno gốc (±ms) và chỉ chạy lại bước ghép FFmpeg (0 credit Flow).
+ */
+export function resyncRunAudio(run, syncOffsetMs = 0) {
+  if (run.workflow !== 'nhac-suno') {
+    throw new Error('Chỉ quy trình Nhạc Suno hỗ trợ dịch khớp MP3 nhanh');
+  }
+  const jId = run.stages?._jobs?.['video:part1'];
+  const j = jId && db.jobs.find((x) => x.id === jId);
+  if (!j?.outputPath || !fs.existsSync(j.outputPath)) {
+    throw new Error('Chưa có video thô từ Omni Flash để ghép lại nhạc');
+  }
+  const clamped = Math.max(-1500, Math.min(1500, Math.round(Number(syncOffsetMs) || 0)));
+  run.options = { ...(run.options || {}), syncOffsetMs: clamped };
+  run.stages.merge = { status: 'pending' };
+  run.status = 'running';
+  run.error = null;
+  run.finishedAt = null;
+  save();
+  advance(run);
+  return run;
+}
+
 // Gọi khi 1 job của quy trình đổi kết quả (xong sau khi thử lại, chọn lần tạo khác, xoá lần tạo)
 export function touchJob(jobId) {
   const job = db.jobs.find((j) => j.id === jobId);
@@ -619,15 +642,14 @@ export function viewRun(run) {
       );
       return { clipId: cid, name: clip?.name || cid, inputs, motion: brief(byKey(`motion:${cid}`)) || null, replace: brief(byKey(`replace:${cid}`)) || null };
     }),
-    // Quy trình có bảng "Mã & sản phẩm" (Ảnh model mặc đồ: mỗi ảnh trang phục 1 dòng, xem productExport.js).
-    // productMode: 'input' | null; productItemCount: số dòng; productCount: số dòng đã lưu mã
+    // Quy trình có bảng "Mã & sản phẩm" (Ảnh model mặc đồ: mỗi sản phẩm 1 dòng, xem productExport.js).
     hasProductInputs: runHasProducts(run),
     productMode: productInputsOf(run.workflow)?.mode || null,
     productItemCount: productItemsOf(run).filter((i) => i.assetId).length,
     productCount: Object.values(run.products || {}).filter((p) => p?.code).length,
     anchorUrl: mediaUrl(run.stages.motion?.anchorPath), // khung mặt đã render của đoạn 1 (Thay trang phục)
-    // Ảnh kết quả của quy trình chỉ làm ảnh (key "render:…"): job + ảnh đã lưu vào thư viện (nếu có) + mã sản phẩm và
-    // bản đã in mã (codedUrl; codedStale = mã / vị trí đổi, chưa in lại)
+    // Ảnh kết quả của quy trình chỉ làm ảnh (key "render:…"): job + ảnh đã lưu vào thư viện (nếu có) + các mã sản phẩm của bộ
+    // và bản đã in đủ mã (codedUrl; codedStale = mã / vị trí / kiểu chữ đổi, chưa in lại)
     outputs: Object.entries(active)
       .filter(([k]) => k.startsWith('render:'))
       .map(([k, j]) => {
@@ -640,6 +662,9 @@ export function viewRun(run) {
           assetId: a?.id || null,
           assetUrl: a ? mediaUrl(a.path) : null,
           outfitId: j.meta?.outfitId || null,
+          outfitIndex: j.meta?.outfitIndex ?? null,
+          outfitItems: j.meta?.items || null,
+          codes: c?.codes || [],
           code: c?.code || null,
           codedUrl: c?.current?.path ? mediaUrl(c.current.path) : null,
           codedStale: !!c?.stale,
@@ -670,7 +695,12 @@ export function viewRun(run) {
     resumeLabel: wf?.resumeLabel || null, // chữ trên nút Tiếp tục khi đang dừng chờ duyệt
     frameUrl: mediaUrl(run.stages.frame?.path),
     backgroundUrl: bgAsset ? mediaUrl(bgAsset.path) : null,
-    background: brief(byKey('background:bg')) || null, // job sinh ảnh bối cảnh (để Thử lại / chọn lần tạo)
+    background: brief(byKey('background:bg')) || brief(byKey('background:bg:0')) || null, // job sinh ảnh bối cảnh (1 nền hoặc nền #1)
+    // Danh sách tất cả job bối cảnh sạch khi quy trình xoay vòng nhiều bối cảnh
+    backgrounds: Object.entries(active)
+      .filter(([k]) => k === 'background:bg' || k.startsWith('background:bg:'))
+      .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+      .map(([k, j], idx) => ({ key: k, index: idx + 1, ...brief(j) })),
     turnaround: brief(byKey('turnaround:sheet')) || null, // Fashion V2V: job sinh ảnh vóc dáng 16:9
     jobIds: jobs.map((j) => j.id),
     merge: merge ? { id: merge.id, status: merge.status, url: mediaUrl(merge.outputPath), thumbUrl: mediaUrl(merge.thumbPath), error: merge.error } : null,

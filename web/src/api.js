@@ -99,7 +99,26 @@ export const api = {
     const m = /filename\*?=(?:UTF-8'')?"?([^";]+)/i.exec(res.headers.get('content-disposition') || '');
     return { blob: await res.blob(), filename: m ? decodeURIComponent(m[1]) : 'san-pham.xlsx' };
   },
+  // Tải gói ZIP chia thư mục từng bài TikTok Photo Mode (mặc định 5 slide/bài, ảnh JPG sắc nét)
+  downloadTiktokZip: async (id, { perPost = 5, coded = true, format = 'jpg', postIndex = 'all' } = {}) => {
+    const qs = new URLSearchParams({
+      perPost: String(perPost),
+      coded: coded ? '1' : '0',
+      format,
+      postIndex: String(postIndex),
+    });
+    const res = await fetch(`/api/runs/${id}/tiktok-zip?${qs.toString()}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Lỗi ${res.status}`);
+    }
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)/i.exec(res.headers.get('content-disposition') || '');
+    return { blob: await res.blob(), filename: m ? decodeURIComponent(m[1]) : `tiktok-slides-${id}.zip` };
+  },
+  // Đăng / lên lịch bài TikTok Photo Mode Carousel (2..35 ảnh/bài) qua Zernio
+  publishTiktokSlides: (id, body) => req('POST', `/api/runs/${id}/publish-tiktok-slides`, body),
   cancelRun: (id) => req('POST', `/api/runs/${id}/cancel`),
+  resyncRunAudio: (id, syncOffsetMs) => req('POST', `/api/runs/${id}/resync-audio`, { syncOffsetMs }),
   importFlowRun: (id, body = {}) => req('POST', `/api/runs/${id}/import-flow`, body),
   deleteRun: (id, withJobs = true) => req('DELETE', `/api/runs/${id}?withJobs=${withJobs ? 1 : 0}`),
   fetchLatestFlowVideo: () => req('POST', '/api/flow/latest-video'),

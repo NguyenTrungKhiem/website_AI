@@ -20,12 +20,13 @@ import { captionModeOf, cleanCaptionText } from './caption.js';
 import { writeExercisePrompt, GYM_BASE_PROMPT, GYM_REWRITE_PROMPT } from './workflows/video-tap-gym.js';
 import { lookPreviewSpec } from './workflows/video-thoi-trang-khong-voice-nam.js';
 import { createSplitJobs, onSplitJobSettled } from './setSplit.js';
-import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun } from './workflows/runner.js';
-import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf, productMetaOf } from './productExport.js';
+import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun, resyncRunAudio } from './workflows/runner.js';
+import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf, productMetaOf, badgePrefsOf, codedImagesOf } from './productExport.js';
+import { createZipBuffer } from './zipPack.js';
 import { fetchShopeeOffer, testAffiliateCookie, affiliateStatus, closeAffiliateBrowser } from './shopeeAffiliate.js';
 import { describeRates } from './shopeeOffer.js';
 import { closeGeminiBrowser, geminiWebStatus, showGeminiWindow, DEFAULT_GEMINI_WEB_URL } from './geminiWeb.js';
-import { analyzeSunoAudioWithWeb, buildSunoVideoPrompt, SUNO_AUDIO_ANALYSIS_PROMPT } from './sunoAnalyzer.js';
+import { analyzeSunoAudioWithWeb, buildSunoVideoPrompt, checkLyricsCoverage, SUNO_AUDIO_ANALYSIS_PROMPT } from './sunoAnalyzer.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -184,6 +185,8 @@ app.post('/api/workflows/nhac-suno/analyze-audio', wrap(async (req, res) => {
     lyricsHint = '',
     micType = 'handheld',
     aspectRatio = '16:9',
+    cameraPreset = 'star-multicam',
+    lipSyncMode = 'spoken',
     modelName = 'Neon',
     thinkingLevel = 'Trung bình',
   } = req.body || {};
@@ -197,6 +200,8 @@ app.post('/api/workflows/nhac-suno/analyze-audio', wrap(async (req, res) => {
     lyricsHint,
     micType,
     aspectRatio,
+    cameraPreset,
+    lipSyncMode,
     modelName,
     thinkingLevel,
     url: db.settings.geminiWebUrl || DEFAULT_GEMINI_WEB_URL,
@@ -213,9 +218,23 @@ app.post('/api/workflows/nhac-suno/rebuild-prompt', wrap(async (req, res) => {
     aspectRatio = '16:9',
     durationSec = 10,
     micType = 'handheld',
+    cameraPreset = 'star-multicam',
+    lipSyncMode = 'spoken',
+    lyricsHint = '',
   } = req.body || {};
-  const videoPrompt = buildSunoVideoPrompt({ timeline, songMeta, cameraStyle, stageLighting, aspectRatio, durationSec, micType });
-  res.json({ videoPrompt });
+  const videoPrompt = buildSunoVideoPrompt({
+    timeline,
+    songMeta,
+    cameraStyle,
+    stageLighting,
+    aspectRatio,
+    durationSec,
+    micType,
+    cameraPreset,
+    lipSyncMode,
+  });
+  const coverage = checkLyricsCoverage(lyricsHint, timeline, durationSec);
+  res.json({ videoPrompt, coverage });
 }));
 
 // Tab Nam – nút "Tạo ảnh outfit" trong thẻ outfit (trước khi chạy quy trình): job ảnh Flow (0 credit) KOL/KOC mặc đủ bộ.
@@ -1133,6 +1152,10 @@ app.post('/api/runs', wrap(async (req, res) => {
 }));
 app.post('/api/runs/:id/resume', wrap(async (req, res) => res.json(viewRun(resumeRun(findRun(req.params.id))))));
 app.post('/api/runs/:id/cancel', wrap(async (req, res) => res.json(viewRun(cancelRun(findRun(req.params.id))))));
+app.post('/api/runs/:id/resync-audio', wrap(async (req, res) => {
+  const run = findRun(req.params.id);
+  res.json(viewRun(resyncRunAudio(run, req.body?.syncOffsetMs ?? 0)));
+}));
 // Thay video motion của đoạn clipId (và các đoạn kế tiếp nếu nhiều file) bằng video nhập từ máy
 app.post('/api/runs/:id/replace', upload.array('files', 50), wrap(async (req, res) => {
   if (!req.files?.length) throw new Error('Chưa chọn file');
@@ -1178,15 +1201,21 @@ const findProductRun = (id) => {
 // Dòng sản phẩm từng ảnh trang phục + kích thước ảnh kết quả (để trình duyệt vẽ PNG khung mã đúng độ phân giải)
 app.get('/api/runs/:id/products', wrap(async (req, res) => {
   const run = findProductRun(req.params.id);
-  res.json({ mode: productInputsOf(run.workflow).mode, rows: buildProductRows(run), frame: await frameSizeOf(run), products: run.products || {} });
+  res.json({
+    mode: productInputsOf(run.workflow).mode,
+    rows: buildProductRows(run),
+    frame: await frameSizeOf(run),
+    products: run.products || {},
+    badgePrefs: badgePrefsOf(run),
+  });
 }));
 // Lưu mã / tên / giá / mô tả / ảnh chính / khung mã (PNG data URL) -> mã hoặc vị trí đổi so với ảnh đã in thì in lại
 // (anh-model.js stage 'badge'); remerge = true khi có bước phải làm lại
 app.put('/api/runs/:id/products', wrap(async (req, res) => {
   const run = findProductRun(req.params.id);
-  const rows = saveRunProducts(run, req.body?.products);
+  const rows = saveRunProducts(run, req.body?.products, { badgePrefs: req.body?.badgePrefs || null });
   const remerge = resyncRun(run);
-  res.json({ rows, remerge, run: viewRun(run) });
+  res.json({ rows, remerge, badgePrefs: badgePrefsOf(run), run: viewRun(run) });
 }));
 // Excel theo hợp đồng DiamondShop; body { products } (tuỳ chọn) = dữ liệu đang sửa trên giao diện để xuất thử mà chưa lưu
 app.post('/api/runs/:id/products.xlsx', wrap(async (req, res) => {
@@ -1199,6 +1228,114 @@ app.post('/api/runs/:id/products.xlsx', wrap(async (req, res) => {
   res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   await wb.xlsx.write(res);
   res.end();
+}));
+
+// ---------- Gom bài TikTok Photo Mode (mặc định 5 slide/bài): Tải ZIP & Đăng Zernio Photo Carousel ----------
+function runDoneOutputs(run, { useCoded = true } = {}) {
+  const jobsMap = run.stages?._jobs || {};
+  const codedMap = Object.fromEntries(codedImagesOf(run).map((c) => [c.outfitKey, c]));
+  return Object.entries(jobsMap)
+    .filter(([k]) => k.startsWith('render:'))
+    .map(([key, jid]) => ({ key, job: db.jobs.find((j) => j.id === jid) }))
+    .filter((x) => x.job?.status === 'done' && x.job.outputPath && fs.existsSync(x.job.outputPath))
+    .sort((a, b) => (a.job.meta?.outfitIndex ?? 0) - (b.job.meta?.outfitIndex ?? 0) || a.key.localeCompare(b.key, undefined, { numeric: true }))
+    .map(({ key, job }) => {
+      const outfitId = job.meta?.outfitId;
+      const coded = outfitId ? codedMap[outfitId] : null;
+      const codedPath = useCoded && coded?.current?.path && fs.existsSync(coded.current.path) ? coded.current.path : null;
+      return {
+        key,
+        outfitId,
+        codes: coded?.codes || [],
+        filePath: codedPath || job.outputPath,
+        label: job.videoLabel || outfitId || 'slide',
+      };
+    });
+}
+
+app.get('/api/runs/:id/tiktok-zip', wrap(async (req, res) => {
+  const run = findRun(req.params.id);
+  const perPost = Math.max(1, Math.min(35, Number(req.query.perPost) || 5));
+  const useCoded = req.query.coded !== '0';
+  const asJpg = req.query.format !== 'png';
+  const postIndex = req.query.postIndex !== undefined && req.query.postIndex !== 'all' ? Number(req.query.postIndex) : null;
+
+  const done = runDoneOutputs(run, { useCoded });
+  if (!done.length) throw new Error('Chưa có ảnh kết quả nào hoàn thành để đóng gói ZIP');
+
+  const chunks = [];
+  for (let i = 0; i < done.length; i += perPost) chunks.push(done.slice(i, i + perPost));
+  const selectedChunks = postIndex != null && Number.isFinite(postIndex)
+    ? (chunks[postIndex] ? [[postIndex, chunks[postIndex]]] : [])
+    : chunks.map((c, idx) => [idx, c]);
+  if (!selectedChunks.length) throw new Error('Không tìm thấy cụm bài TikTok được chọn');
+
+  const entries = [];
+  for (const [idx, items] of selectedChunks) {
+    const folder = `Bai-${String(idx + 1).padStart(2, '0')}`;
+    for (let s = 0; s < items.length; s++) {
+      const it = items[s];
+      const src = asJpg ? await zernio.ensureTikTokJpeg(it.filePath) : it.filePath;
+      const ext = path.extname(src).toLowerCase() || (asJpg ? '.jpg' : '.png');
+      const codeTag = (it.codes.length ? it.codes.join('_') : it.outfitId || `bo_${s + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+      const slideName = `${String(s + 1).padStart(2, '0')}-${codeTag}${ext}`;
+      entries.push({ name: `${folder}/${slideName}`, data: fs.readFileSync(src) });
+    }
+  }
+  const zipBuf = createZipBuffer(entries);
+  const suffix = postIndex != null && Number.isFinite(postIndex) ? `-bai-${postIndex + 1}` : '';
+  res.set('Content-Type', 'application/zip');
+  res.set('Content-Disposition', `attachment; filename="tiktok-slides-${run.id}${suffix}.zip"`);
+  res.send(zipBuf);
+}));
+
+app.post('/api/runs/:id/publish-tiktok-slides', wrap(async (req, res) => {
+  const run = findRun(req.params.id);
+  const {
+    posts = [],
+    useCoded = true,
+    zernioAccounts = [],
+    timezone = 'Asia/Ho_Chi_Minh',
+    tiktokSettings = null,
+  } = req.body || {};
+  if (!db.settings.zernioApiKey?.trim()) throw new Error('Chưa nhập Zernio API Key trong Cài đặt');
+  if (!Array.isArray(zernioAccounts) || !zernioAccounts.length) throw new Error('Chưa chọn tài khoản Zernio để đăng');
+  if (!Array.isArray(posts) || !posts.length) throw new Error('Chưa chọn bài TikTok Slide nào để đăng');
+
+  const all = Object.fromEntries(runDoneOutputs(run, { useCoded }).map((o) => [o.key, o]));
+  const created = [];
+  for (let i = 0; i < posts.length; i++) {
+    const p = posts[i];
+    const keys = Array.isArray(p.outputKeys) ? p.outputKeys : [];
+    const slides = keys.map((k) => all[k]).filter(Boolean);
+    if (slides.length < 2) throw new Error(`Bài ${i + 1} cần ít nhất 2 ảnh đã render để đăng TikTok Photo Carousel`);
+    if (slides.length > 35) throw new Error(`Bài ${i + 1} vượt quá tối đa 35 ảnh/bài của TikTok`);
+    const imagePaths = slides.map((s) => s.filePath);
+    const post = {
+      id: newId(),
+      runId: run.id,
+      mediaType: 'photo_carousel',
+      imagePaths,
+      slideCount: imagePaths.length,
+      filePath: imagePaths[0],
+      videoLabel: p.title || `TikTok Photo Slide #${i + 1} (${imagePaths.length} ảnh)`,
+      provider: 'zernio',
+      platform: zernioAccounts.map((a) => a.platform).join(', '),
+      zernioAccounts,
+      caption: p.caption || '',
+      title: p.title || '',
+      tiktokSettings: tiktokSettings || { draft: true, autoAddMusic: true },
+      scheduledFor: p.scheduledFor || null,
+      timezone: timezone || 'Asia/Ho_Chi_Minh',
+      status: 'queued',
+      createdAt: Date.now(),
+    };
+    db.posts.unshift(post);
+    created.push(post);
+  }
+  save();
+  runZernioPosts(created);
+  res.json(created);
 }));
 
 // ---------- Zernio API ----------
@@ -1345,20 +1482,38 @@ async function runZernioPosts(posts) {
     post.status = 'running';
     save();
     try {
-      if (!fs.existsSync(post.filePath)) throw new Error('File video không còn tồn tại');
       const apiKey = db.settings.zernioApiKey;
       if (!apiKey) throw new Error('Chưa cấu hình Zernio API Key');
 
-      const zRes = await zernio.createOrSchedulePost(apiKey, {
-        content: post.caption,
-        title: post.title,
-        filePath: post.filePath,
-        platforms: post.zernioAccounts,
-        scheduledFor: post.scheduledFor,
-        timezone: post.timezone,
-        publishNow: !post.scheduledFor,
-        tiktokSettings: post.tiktokSettings,
-      });
+      let zRes;
+      if (post.mediaType === 'photo_carousel') {
+        const imgs = Array.isArray(post.imagePaths) ? post.imagePaths : [];
+        if (imgs.length < 2 || imgs.some((f) => !fs.existsSync(f))) {
+          throw new Error('Có ảnh trong bài TikTok Carousel không còn tồn tại');
+        }
+        zRes = await zernio.createOrSchedulePhotoCarousel(apiKey, {
+          content: post.caption,
+          title: post.title,
+          imagePaths: imgs,
+          platforms: post.zernioAccounts,
+          scheduledFor: post.scheduledFor,
+          timezone: post.timezone,
+          publishNow: !post.scheduledFor,
+          tiktokSettings: post.tiktokSettings,
+        });
+      } else {
+        if (!fs.existsSync(post.filePath)) throw new Error('File video không còn tồn tại');
+        zRes = await zernio.createOrSchedulePost(apiKey, {
+          content: post.caption,
+          title: post.title,
+          filePath: post.filePath,
+          platforms: post.zernioAccounts,
+          scheduledFor: post.scheduledFor,
+          timezone: post.timezone,
+          publishNow: !post.scheduledFor,
+          tiktokSettings: post.tiktokSettings,
+        });
+      }
 
       const zPost = zRes.post || zRes;
       post.zernioPostId = zPost._id || zPost.id;

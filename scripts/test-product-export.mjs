@@ -33,8 +33,8 @@ const { buildOverlayBadgeArgs } = await import('../server/ffmpeg.js');
 const { normalizeProductMeta, plainDescription } = await import('../server/productScraper.js');
 const { prefixFor, nextCode, assignCode, codeOfAsset } = await import('../server/productCodes.js');
 
-// 5 cột theo yêu cầu chủ web (22/11/2026): mã, giá, mô tả, ĐÚNG 1 ảnh đã render, hoa hồng Shopee
-const CONTRACT = ['Mã sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh', 'Hoa hồng Shopee (đ)'];
+// 6 cột: mã, giá, mô tả, ĐÚNG 1 ảnh đã render, hoa hồng Shopee, Link Shopee Aff
+const CONTRACT = ['Mã sản phẩm', 'Giá (đ)', 'Mô tả', 'Ảnh', 'Hoa hồng Shopee (đ)', 'Link Shopee Aff'];
 const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 const assetOf = (id) => db.assets.find((a) => a.id === id);
 
@@ -76,13 +76,14 @@ async function main() {
   assert.equal(shopeeProductUrl('abc', '1'), null);
   const meta = normalizeProductMeta({
     title: 'Đầm hoa nhí', rawTitle: '[HOT] Đầm hoa nhí', description: '<p>Chất <b>voan</b> mát</p><br>Form xoè&nbsp;nhẹ',
-    features: ['Voan', ''], price: '259.000', url: 'https://shopee.vn/product-i.1.2', platform: 'shopee',
+    features: ['Voan', ''], price: '259.000', url: 'https://shopee.vn/product-i.1.2', affiliateUrl: 'https://s.shopee.vn/affDemo1', platform: 'shopee',
     rawId: { shopId: '1908715934', itemId: '41434228389' },
     images: [{ url: 'https://down-vn.img.susercontent.com/file/a' }, 'http://khong-https', 'https://down-vn.img.susercontent.com/file/b'],
   });
   assert.equal(meta.shopId, '1908715934');
   assert.equal(meta.itemId, '41434228389');
   assert.equal(meta.price, 259000);
+  assert.equal(meta.affiliateUrl, 'https://s.shopee.vn/affDemo1');
   assert.equal(meta.description, 'Chất voan mát\nForm xoè nhẹ');
   assert.deepEqual(meta.images, ['https://down-vn.img.susercontent.com/file/a', 'https://down-vn.img.susercontent.com/file/b']);
   assert.equal(meta.code, null);
@@ -91,9 +92,9 @@ async function main() {
   console.log('  ✔ Link https://shopee.vn/product/<shopId>/<itemId>; mô tả text thuần ≤ 600; chỉ ảnh https');
 
   // 4. Quy trình nào có bảng Mã & sản phẩm
-  console.log('\n▶ Test 4: productInputsOf — chỉ quy trình có ô ảnh sản phẩm chọn nhiều');
-  assert.equal(productInputsOf('anh-model').mode, 'input');
-  assert.equal(productInputsOf('anh-model').primary.key, 'outfits');
+  console.log('\n▶ Test 4: productInputsOf — chỉ quy trình Ảnh model mặc đồ (Nữ & Nam)');
+  assert.equal(productInputsOf('anh-model').mode, 'modelOutfits');
+  assert.equal(productInputsOf('anh-model-nam').mode, 'modelOutfits');
   assert.equal(productInputsOf('thay-trang-phuc'), null, 'quy trình video: mã in qua prompt (productCodes.js), không dùng bảng này');
   assert.equal(productInputsOf('video-thoi-trang'), null);
   assert.equal(productInputsOf('dancing'), null);
@@ -136,6 +137,7 @@ async function main() {
   assert.equal(rows[0].name, 'Váy xanh');
   assert.equal(rows[0].price, 189000);
   assert.equal(rows[0].shopeeUrl, 'https://shopee.vn/product/111/222');
+  assert.equal(rows[0].affiliateUrl, 'https://s.shopee.vn/affDemo1', 'link Shopee Aff kế thừa theo chuỗi fromAssetId');
   assert.equal(rows[0].linkOk, true);
   assert.deepEqual(rows[0].images, ['https://down-vn.img.susercontent.com/file/vay', 'https://down-vn.img.susercontent.com/file/vay2']);
   assert.equal(rows[0].hasMeta, true);
@@ -147,7 +149,7 @@ async function main() {
   assert.equal(rows[0].renderCoded, false);
   assert.ok(rows[0].outputUrl && rows[0].frameUrl, 'ảnh render dùng để xem trước khung mã');
   assert.equal(rows[0].codedUrl, null);
-  assert.equal(rows[0].note, 'Ảnh model mặc đồ – Model Lan – Bộ 1');
+  assert.equal(rows[0].note, 'Ảnh model mặc đồ – Nữ – Model Lan – Bộ 1');
   assert.equal(rows[0].code, 'VAY_06', 'chưa có mã -> gợi ý theo sổ mã (VAY_05 đã dùng)');
   assert.equal(rows[0].codeSaved, false);
   assert.deepEqual({ x: rows[0].badge.x, y: rows[0].badge.y, scale: rows[0].badge.scale }, DEFAULT_BADGE);
@@ -176,14 +178,14 @@ async function main() {
 
   // 6. saveRunProducts: lưu theo id ảnh, cấp mã trong sổ chung, PNG khung mã, ghi ngược metadata, chữ ký in mã
   console.log('\n▶ Test 6: saveRunProducts + sổ mã chung + chữ ký in mã lên ảnh');
-  assert.throws(() => saveRunProducts(run, { o1cc: { code: 'VAY_09', name: 'a' }, o2: { code: 'VAY_09', name: 'b' } }), /2 ảnh/);
+  assert.throws(() => saveRunProducts(run, { o1cc: { code: 'VAY_09', name: 'a' }, o2: { code: 'VAY_09', name: 'b' } }), /2 sản phẩm/);
   assert.throws(() => saveRunProducts(run, { o2: { code: 'khongcoso' } }), /LOAI_SO/, 'thiếu phần số sau "_" -> sai dạng');
   assert.throws(() => saveRunProducts(run, { o2: { code: 'AO-1' } }), /LOAI_SO/, 'mã kiểu cũ "AO-1" bị từ chối');
   assert.throws(() => saveRunProducts(run, { o2: { code: 'VAY_05' } }), /đã thuộc ảnh "Váy cũ"/, 'mã của ảnh khác thì từ chối');
   assert.equal(run.products, undefined, 'có lỗi thì không ghi dở mục nào');
   rows = saveRunProducts(run, {
     o1cc: { code: 'VAY_09', badge: { x: 0.3, y: 0.2, scale: 1, png: png1x1, frameWidth: 720 } },
-    o2: { code: 'ao 2', name: 'Áo thun', price: '99.000', description: 'Mô tả mới', commission: '5.000', badge: { x: 0.5, y: 0.12, scale: 1, png: png1x1, frameWidth: 720 } },
+    o2: { code: 'ao 2', name: 'Áo thun', price: '99.000', description: 'Mô tả mới', commission: '5.000', affiliateUrl: 'https://s.shopee.vn/aoThun99k', badge: { x: 0.5, y: 0.12, scale: 1, png: png1x1, frameWidth: 720 } },
     o3: { code: '', name: 'Áo khoác dạ' }, // không mã -> không in
   });
   assert.equal(rows[0].code, 'VAY_09');
@@ -199,7 +201,9 @@ async function main() {
   assert.equal(rows[1].price, 99000);
   assert.equal(rows[1].description, 'Mô tả mới');
   assert.equal(rows[1].commission, 5000, 'hoa hồng nhập tay "5.000" -> 5000');
+  assert.equal(rows[1].affiliateUrl, 'https://s.shopee.vn/aoThun99k');
   assert.equal(assetOf('o2').product.commission, 5000, 'hoa hồng nhập tay ghi ngược lên ảnh trang phục (đi theo ảnh)');
+  assert.equal(assetOf('o2').product.affiliateUrl, 'https://s.shopee.vn/aoThun99k', 'link Shopee Aff nhập tay ghi ngược lên ảnh trang phục');
   assert.equal(assetOf('o2').productCode, 'AO_2', 'cấp mã cho ảnh trang phục trong sổ mã chung (assignCode)');
   assert.ok(db.codes.some((c) => c.code === 'AO_2' && c.assetId === 'o2'), 'sổ mã có AO_2');
   assert.equal(rows[2].code, 'AO_03', 'không mã -> vẫn gợi ý (số kế tiếp sau AO_2 vừa cấp) nhưng không in');
@@ -244,10 +248,10 @@ async function main() {
   console.log('  ✔ Overlay theo tỷ lệ tâm khung, scale PNG khi ảnh khác bề rộng khung đã vẽ');
 
   // 8. Workbook: dựng -> đọc lại bằng exceljs
-  console.log('\n▶ Test 8: buildWorkbook (5 cột) -> đọc lại bằng exceljs');
+  console.log('\n▶ Test 8: buildWorkbook (6 cột) -> đọc lại bằng exceljs');
   const sample = [
-    { code: 'VAY_11', name: 'Đầm hoa nhí dáng xoè', price: 259000, description: 'Chất voan mát', commission: 20895, renderPath: out, renderName: 'coded-run2-o1cc.png', renderUrl: '/media/outputs/coded-run2-o1cc.png' },
-    { code: 'AO_07', name: 'Áo thun', price: '199000', description: '', commission: null, renderPath: null, renderName: null, renderUrl: null },
+    { code: 'VAY_11', name: 'Đầm hoa nhí dáng xoè', price: 259000, description: 'Chất voan mát', commission: 20895, affiliateUrl: 'https://s.shopee.vn/vay11', renderPath: out, renderName: 'coded-run2-o1cc.png', renderUrl: '/media/outputs/coded-run2-o1cc.png' },
+    { code: 'AO_07', name: 'Áo thun', price: '199000', description: '', commission: null, affiliateUrl: '', renderPath: null, renderName: null, renderUrl: null },
   ];
   const wb = await buildWorkbook(sample, { thumbnails: false, baseUrl: 'http://127.0.0.1:3001/' });
   const buf = await wb.xlsx.writeBuffer();
@@ -256,9 +260,9 @@ async function main() {
   const ws = wb2.getWorksheet('San pham');
   assert.ok(ws, 'phải có sheet "San pham"');
   const headers = ws.getRow(1).values.slice(1);
-  assert.deepEqual(headers, CONTRACT, 'dòng 1 = tiêu đề đúng 5 cột');
+  assert.deepEqual(headers, CONTRACT, 'dòng 1 = tiêu đề đúng 6 cột');
   assert.equal(ws.getRow(1).getCell(1).font?.bold, true, 'tiêu đề in đậm');
-  assert.equal(ws.columnCount, 5, 'không có cột thừa');
+  assert.equal(ws.columnCount, 6, 'không có cột thừa');
   const cellText = (c) => (c.value && typeof c.value === 'object' && 'text' in c.value ? c.value.text : c.value);
   const r2 = ws.getRow(2);
   assert.equal(r2.getCell(1).value, 'VAY_11');
@@ -269,10 +273,13 @@ async function main() {
   assert.equal(r2.getCell(4).value.hyperlink, 'http://127.0.0.1:3001/media/outputs/coded-run2-o1cc.png', 'link tới ảnh trên server (baseUrl bỏ "/" cuối)');
   assert.equal(r2.getCell(5).value, 20895, 'hoa hồng là số');
   assert.equal(r2.getCell(5).numFmt, '#,##0');
+  assert.equal(cellText(r2.getCell(6)), 'https://s.shopee.vn/vay11');
+  assert.equal(r2.getCell(6).value.hyperlink, 'https://s.shopee.vn/vay11');
   const r3 = ws.getRow(3);
   assert.equal(r3.getCell(2).value, 199000, 'giá dạng chuỗi vẫn ra số');
   assert.equal(r3.getCell(4).value ?? '', '', 'chưa render -> ô Ảnh trống');
   assert.equal(r3.getCell(5).value ?? null, null, 'không hoa hồng -> trống');
+  assert.equal(r3.getCell(6).value ?? '', '', 'không link Aff -> trống');
   assert.ok(ws.getRow(2).height >= 140, 'dòng cao để nhúng ảnh render 108×192');
   assert.equal(ws.getImages().length, 0, 'thumbnails:false -> không nhúng');
   const wb3 = await buildWorkbook(sample);

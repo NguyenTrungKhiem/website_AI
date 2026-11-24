@@ -633,6 +633,18 @@ function Lightbox({ asset, selected, onSelect, onClose, onTryOther }) {
         <img src={asset.url} alt={asset.name} />
         <div className="zoom-bar">
           <span className="zoom-name" title={asset.name}>{asset.fromJobId && '✨ '}{asset.name}</span>
+          {(asset.product?.affiliateUrl || asset.product?.url) && (
+            <a
+              className="small"
+              href={asset.product.affiliateUrl || asset.product.url}
+              target="_blank"
+              rel="noreferrer"
+              title={`Link Shopee Aff: ${asset.product.affiliateUrl || asset.product.url}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              🔗 Link SP ↗
+            </a>
+          )}
           <span className="grow" />
           {selected ? <span className="ok">✓ Đang dùng</span> : <button onClick={() => onSelect(asset.id)}>✓ Dùng ảnh này</button>}
           {onTryOther && <button className="primary" onClick={onTryOther} title="Trượt qua các ảnh khác và làm sạch lại">🔄 Thử ảnh khác</button>}
@@ -656,6 +668,7 @@ export const productMeta = (found) =>
         commission: found.commission,
         commissionRateBps: found.commissionRateBps,
         url: found.url,
+        affiliateUrl: found.affiliateUrl || '',
         platform: found.platform,
         shopId: found.shopId ?? found.rawId?.shopId ?? null,
         itemId: found.itemId ?? found.rawId?.itemId ?? found.rawId?.productId ?? null,
@@ -782,6 +795,21 @@ export function ProductImport({ kind, found, setFound, onOpen, refresh, onImport
 
             {!(found.price > 0) && found.priceNote && <small className="warn-text">⚠ Chưa có giá: {found.priceNote}</small>}
             {found.platform === 'shopee' && !(found.commission > 0) && found.commissionNote && <small className="warn-text">⚠ Chưa có hoa hồng: {found.commissionNote}</small>}
+
+            <div className="row gap-xs" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="small muted" style={{ whiteSpace: 'nowrap' }}>🔗 Link Shopee Aff:</span>
+              <input
+                type="url"
+                style={{ flex: '1 1 240px', minWidth: 0, fontSize: 12 }}
+                value={found.affiliateUrl ?? ''}
+                placeholder="Link Shopee Aff đi kèm theo ảnh sản phẩm..."
+                onChange={(e) => setFound({ ...found, affiliateUrl: e.target.value.trim() })}
+                title="Link này đi liền với ảnh trong thư viện và tự xuất ra cột Link Shopee Aff trong Excel"
+              />
+              {/^https?:\/\//i.test(found.affiliateUrl || '') && (
+                <a className="small" href={found.affiliateUrl} target="_blank" rel="noreferrer">Mở ↗</a>
+              )}
+            </div>
 
             <div className="product-title-block">
               <div className="product-title">

@@ -416,6 +416,7 @@ export function normalizeProductMeta(p) {
     .map((im) => (typeof im === 'string' ? im : im?.url))
     .filter((u) => typeof u === 'string' && /^https:\/\//i.test(u))
     .slice(0, 12);
+  const rawAff = str(p.affiliateUrl ?? p.inputUrl, 2000);
   const meta = {
     title: str(p.title),
     rawTitle: str(p.rawTitle),
@@ -423,6 +424,7 @@ export function normalizeProductMeta(p) {
     features: (Array.isArray(p.features) ? p.features : []).map((f) => str(f, 200)).filter(Boolean).slice(0, 10),
     price: num(p.price),
     url: /^https?:\/\//i.test(str(p.url, 2000)) ? str(p.url, 2000) : '',
+    affiliateUrl: /^https?:\/\//i.test(rawAff) ? rawAff : '',
     platform: str(p.platform, 20) || 'unknown',
     shopId: digits(p.shopId ?? ids.shopId),
     itemId: digits(p.itemId ?? ids.itemId ?? ids.productId),
@@ -433,7 +435,7 @@ export function normalizeProductMeta(p) {
     commission: num(p.commission),
     commissionRateBps: num(p.commissionRateBps),
   };
-  if (!meta.title && !meta.url && !meta.itemId && !images.length) return null;
+  if (!meta.title && !meta.url && !meta.affiliateUrl && !meta.itemId && !images.length) return null;
   return meta;
 }
 
@@ -887,6 +889,8 @@ export async function fetchProduct(inputUrl, opts = {}) {
     platform,
     platformLabel: getPlatformLabel(platform),
     url: finalUrl,
+    // Giữ nguyên link gốc người dùng dán (Shopee Aff / link rút gọn...) để đi liền với ảnh sản phẩm & xuất ra Excel
+    affiliateUrl: rawInput,
     rawId: ids,
     // Mã shop / mã sản phẩm phẳng (Shopee: shopId + itemId; TikTok: productId -> itemId) để dựng link chuẩn cho DiamondShop
     shopId: ids?.shopId || null,

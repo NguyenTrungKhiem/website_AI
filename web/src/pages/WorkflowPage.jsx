@@ -5,8 +5,25 @@ import { api } from '../api.js';
 import { AssetPicker, BackViewControl, CaptionModePicker, ConfirmButton, FileDrop, ImageZoom, JobCard, JobList, MAX_CAPTION_TEXT, PromptVersionPicker, cleanCaptionText, fmt, useAction } from '../components.jsx';
 import FashionSalesView from './FashionSalesView.jsx';
 import MaleOutfits, { emptyLook } from './MaleOutfits.jsx';
+import ModelOutfitsEditor, { emptyModelOutfit, validateModelOutfitsClient } from './ModelOutfitsEditor.jsx';
 import SetPieces, { BOTTOM_LABELS } from './SetPieces.jsx';
 import SunoAudioPanel from './SunoAudioPanel.jsx';
+import TikTokSlidesModal from './TikTokSlidesModal.jsx';
+
+function initInputsForWorkflow(wf, saved = {}) {
+  const next = { ...(saved || {}) };
+  if (wf?.modelOutfits) {
+    if (!next.backgrounds && next.background) next.backgrounds = [next.background];
+    if ((!Array.isArray(next.modelOutfits) || !next.modelOutfits.length) && Array.isArray(next.outfits) && next.outfits.length) {
+      const slotKey = wf.modelOutfits.gender === 'female' ? 'dress' : 'set';
+      next.modelOutfits = next.outfits.map((id, i) => ({ id: `o${i + 1}`, items: { [slotKey]: id }, style: '' }));
+    }
+    if (!Array.isArray(next.modelOutfits) || !next.modelOutfits.length) {
+      next.modelOutfits = [emptyModelOutfit()];
+    }
+  }
+  return next;
+}
 
 // siblings = các quy trình cùng nhóm tab (wf.tab.group, vd. không voice Nữ / Nam): hiện thanh tab trên đầu trang
 export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) {
@@ -26,7 +43,7 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
 
   const [sourceId, setSourceId] = useState(() => savedWfDraft?.sourceId || state.sources[0]?.id || null);
   const [clipIds, setClipIds] = useState(() => savedWfDraft?.clipIds || []);
-  const [inputs, setInputs] = useState(() => savedWfDraft?.inputs || {});
+  const [inputs, setInputs] = useState(() => initInputsForWorkflow(wf, savedWfDraft?.inputs));
   const [clipInputs, setClipInputs] = useState(() => savedWfDraft?.clipInputs || {}); // ảnh riêng từng đoạn: { [clipId]: { [key]: assetId } }
   const [options, setOptions] = useState(() => savedWfDraft?.options || Object.fromEntries(wf.options.map((o) => [o.key, o.default])));
   const { busy, error, run } = useAction();
@@ -76,9 +93,16 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
   const perClip = wf.perClipInputs || [];
   const noVideo = !!wf.noVideo; // quy trình chỉ làm ảnh / video không cần video gốc
   const isEmpty = (inp) => (inp.multiple ? !(inputs[inp.key]?.length) : !inputs[inp.key]);
-  const missing = wf.inputs.filter((i) => i.required && isEmpty(i)).map((i) => i.label);
+  const missing = wf.inputs.filter((i) => (i.required || i.requiredUi) && isEmpty(i)).map((i) => i.label);
   if (wf.sunoMode && (!options.audioId || !state.audios.some((a) => a.id === options.audioId))) {
     missing.push('File nhạc Suno (.mp3)');
+  }
+  const modelOutfitsKey = wf.modelOutfits?.key || null;
+  const modelOutfits = modelOutfitsKey
+    ? (Array.isArray(inputs[modelOutfitsKey]) && inputs[modelOutfitsKey].length ? inputs[modelOutfitsKey] : [emptyModelOutfit()])
+    : null;
+  if (wf.modelOutfits) {
+    for (const msg of validateModelOutfitsClient(wf.modelOutfits, modelOutfits, state.assets)) missing.push(msg);
   }
   // Quy trình cần ảnh mặt sau cho từng trang phục: chưa chọn và cũng chưa có ảnh mặt sau tạo từ ảnh đó -> chưa chạy được
   if (wf.backInput && wf.codedInput) {
@@ -118,14 +142,23 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
   const maxLooks = rule?.maxOutfitsByDuration?.[effectiveOptions.duration] || rule?.maxOutfits || 3;
   if (looks && looks.length > maxLooks) missing.push(`${ruleName}${rule?.maxOutfitsByDuration ? ` bản ${effectiveOptions.duration}` : ''} nhận tối đa ${maxLooks} outfit (đang có ${looks.length})`);
   if (looks && captionMode === 'text' && !cleanCaptionText(looks[0]?.text).trim()) missing.push('Chữ trên video (outfit 1)');
-  const outfitCount = wf.inputs.find((i) => i.multiple) ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0) : 0;
+  const outfitCount = modelOutfits
+    ? modelOutfits.length
+    : wf.inputs.find((i) => i.multiple)
+      ? (inputs[wf.inputs.find((i) => i.multiple).key]?.length || 0)
+      : 0;
   const missingClips = perClip.length
     ? selectedClips.filter((c) => perClip.some((inp) => inp.required && !clipInputs[c.id]?.[inp.key])).length
     : 0;
 
   const start = () =>
     run(async () => {
-      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs: looksKey ? { ...inputs, [looksKey]: looks } : inputs, clipInputs, options: effectiveOptions });
+      const payloadInputs = modelOutfitsKey
+        ? { ...inputs, [modelOutfitsKey]: modelOutfits }
+        : looksKey
+          ? { ...inputs, [looksKey]: looks }
+          : inputs;
+      await api.createRun({ workflowId: wf.id, sourceId, clipIds, inputs: payloadInputs, clipInputs, options: effectiveOptions });
       await refresh();
     });
 
@@ -200,7 +233,7 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
               <AssetPicker
                 key={inp.key}
                 kind={inp.kind}
-                label={label + (inp.required ? ' *' : '')}
+                label={label + (inp.required || inp.requiredUi ? ' *' : '')}
                 assets={state.assets}
                 multiple={!!inp.multiple}
                 hide={inp.hideBackViews ? (a) => a.isBackView || /Mặt sau Flow/.test(a.name || '') : null}
@@ -254,6 +287,15 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
             max={maxLooks}
             captionMode={captionMode || 'code'}
             onCaptionMode={(v) => setOptions((st) => ({ ...st, captionMode: v }))}
+            state={state}
+            refresh={refresh}
+          />
+        )}
+        {wf.modelOutfits && (
+          <ModelOutfitsEditor
+            config={wf.modelOutfits}
+            value={modelOutfits}
+            onChange={(v) => setInputs((s) => ({ ...s, [wf.modelOutfits.key]: v }))}
             state={state}
             refresh={refresh}
           />
@@ -341,7 +383,18 @@ export default function WorkflowPage({ state, refresh, go, wf, siblings = [] }) 
 
       <div className="row">
         <button className="primary big" disabled={busy || (!noVideo && !clipIds.length) || missing.length > 0 || missingClips > 0} onClick={start}>
-          {wf.runLabel || <>▶ Chạy {wf.name} {noVideo ? (outfitCount ? `– ${outfitCount} ảnh` : '') : `cho ${clipIds.length} đoạn`}</>}
+          {wf.runLabel || (
+            <>
+              ▶ Chạy {wf.name}{' '}
+              {noVideo
+                ? (outfitCount
+                    ? modelOutfits && outfitCount >= 2
+                      ? `– ${outfitCount} bộ (${Math.ceil(outfitCount / 5)} bài TikTok 5 slide)`
+                      : `– ${outfitCount} ảnh`
+                    : '')
+                : `cho ${clipIds.length} đoạn`}
+            </>
+          )}
         </button>
         {missing.length > 0 && <span className="muted small">Cần chọn: {missing.join(', ')}</span>}
         {missingClips > 0 && <span className="muted small">Còn {missingClips} đoạn chưa chọn trang phục</span>}
@@ -771,12 +824,26 @@ function SceneTable({ run: r, jobs, refresh }) {
 }
 
 // Ảnh kết quả của quy trình chỉ làm ảnh: mỗi ảnh là thẻ job thu gọn (xem, Thử lại, chọn lần tạo) + tải về + lưu làm ảnh model
-function OutputGallery({ run: r, jobs, refresh }) {
+// + chế độ gom bài TikTok Photo Mode (mặc định 5 slide/bài): Tải ZIP theo bài hoặc Đăng/Lên lịch Carousel qua Zernio.
+function OutputGallery({ run: r, jobs, state, refresh }) {
   const { busy, error, run } = useAction();
   const byId = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
   const [savedMsg, setSavedMsg] = useState('');
   const [zoom, setZoom] = useState(null); // { key, coded } ảnh kết quả đang phóng to (coded = xem bản có mã)
+  const [slideMode, setSlideMode] = useState(false);
+  const [perPost, setPerPost] = useState(5);
+  const [useCodedZip, setUseCodedZip] = useState(true);
+  const [slideModalPacks, setSlideModalPacks] = useState(null);
+
   const zoomOut = zoom && r.outputs.find((o) => o.key === zoom.key);
+  const doneOutputs = useMemo(() => r.outputs.filter((o) => o.status === 'done' && o.outputUrl), [r.outputs]);
+  const slidePacks = useMemo(() => {
+    const n = Math.max(2, Math.min(35, Number(perPost) || 5));
+    const chunks = [];
+    for (let i = 0; i < doneOutputs.length; i += n) chunks.push(doneOutputs.slice(i, i + n));
+    return chunks;
+  }, [doneOutputs, perPost]);
+
   const saveAs = (assetId, kind) =>
     run(async () => {
       await api.copyAsset(assetId, kind);
@@ -784,36 +851,134 @@ function OutputGallery({ run: r, jobs, refresh }) {
       setSavedMsg(kind === 'model' ? 'Đã lưu vào thư viện ảnh model' : 'Đã lưu');
       setTimeout(() => setSavedMsg(''), 2500);
     });
+
+  const downloadZip = (postIndex = 'all') =>
+    run(async () => {
+      const { blob, filename } = await api.downloadTiktokZip(r.id, {
+        perPost: Math.max(1, Math.min(35, Number(perPost) || 5)),
+        coded: useCodedZip,
+        format: 'jpg',
+        postIndex,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    });
+
+  const renderOutputCard = (o, slideNum = null) => {
+    const job = byId[o.id];
+    const codes = o.codes?.length ? o.codes : o.code ? [o.code] : [];
+    return (
+      <div key={o.key} className="output stack">
+        <small className="ellipsis" title={o.label}>
+          {slideNum != null && <span className="slide-num-pill">#{slideNum}</span>}
+          {codes.map((c) => <span key={c} className="code-chip" style={{ marginTop: 0, marginRight: 4 }}>{c}</span>)}
+          {o.label}
+        </small>
+        {job ? (
+          <div className="zoomable" onClick={(e) => { if (o.outputUrl && e.target.tagName === 'IMG') setZoom({ key: o.key, coded: false }); }} title={o.outputUrl ? 'Bấm vào ảnh để phóng to' : undefined}>
+            <JobCard compact job={job} refresh={refresh} />
+          </div>
+        ) : <span className="muted">–</span>}
+        {o.outputUrl && (
+          <div className="row gap-xs" style={{ flexWrap: 'wrap' }}>
+            <a onClick={() => setZoom({ key: o.key, coded: false })} title="Xem ảnh to">🔍 Phóng to</a>
+            <a href={o.outputUrl} download>Tải về</a>
+            {o.codedUrl && <a href={o.codedUrl} download title="Ảnh kết quả đã in đủ mã sản phẩm">🏷️ Tải ảnh có mã</a>}
+            {codes.length > 0 && o.codedStale && <span className="warn-text" title="Mã / vị trí / font đổi — sẽ in lại khi lần chạy tiếp tục">⚠ chưa in mã mới</span>}
+            {o.assetId && <a onClick={() => saveAs(o.assetId, 'model')} title="Sao chép vào thư viện ảnh model để dùng cho AI Dancing / Thay trang phục">Lưu làm ảnh model</a>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="stack">
-      <b>Ảnh kết quả ({r.outputs.filter((o) => o.status === 'done').length}/{r.outputs.length})</b>
-      <div className="outputs">
-        {r.outputs.map((o) => {
-          const job = byId[o.id];
-          return (
-            <div key={o.key} className="output stack">
-              <small className="ellipsis" title={o.label}>
-                {o.code && <span className="code-chip" style={{ marginTop: 0, marginRight: 6 }}>{o.code}</span>}
-                {o.label}
-              </small>
-              {job ? (
-                <div className="zoomable" onClick={(e) => { if (o.outputUrl && e.target.tagName === 'IMG') setZoom({ key: o.key, coded: false }); }} title={o.outputUrl ? 'Bấm vào ảnh để phóng to' : undefined}>
-                  <JobCard compact job={job} refresh={refresh} />
-                </div>
-              ) : <span className="muted">–</span>}
-              {o.outputUrl && (
-                <div className="row gap-xs" style={{ flexWrap: 'wrap' }}>
-                  <a onClick={() => setZoom({ key: o.key, coded: false })} title="Xem ảnh to">🔍 Phóng to</a>
-                  <a href={o.outputUrl} download>Tải về</a>
-                  {o.codedUrl && <a href={o.codedUrl} download title="Ảnh kết quả đã in mã sản phẩm (khung đen mờ, chữ trắng)">🏷️ Tải ảnh có mã</a>}
-                  {o.code && o.codedStale && <span className="warn-text" title="Mã / vị trí khung đổi hoặc ảnh render mới — sẽ in lại khi lần chạy tiếp tục">⚠ chưa in mã mới</span>}
-                  {o.assetId && <a onClick={() => saveAs(o.assetId, 'model')} title="Sao chép vào thư viện ảnh model để dùng cho AI Dancing / Thay trang phục">Lưu làm ảnh model</a>}
-                </div>
-              )}
+      <div className="row between" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <b>Ảnh kết quả ({doneOutputs.length}/{r.outputs.length})</b>
+          {r.outputs.length >= 2 && (
+            <div className="tabs" style={{ marginBottom: 0 }}>
+              <button type="button" className={!slideMode ? 'on' : ''} onClick={() => setSlideMode(false)}>🖼️ Tất cả ảnh</button>
+              <button type="button" className={slideMode ? 'on' : ''} onClick={() => setSlideMode(true)}>🎞️ Bài TikTok Slide ({slidePacks.length})</button>
             </div>
-          );
-        })}
+          )}
+        </div>
+        {doneOutputs.length >= 1 && (
+          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {slideMode && (
+              <label className="row small" style={{ gap: 4, alignItems: 'center' }} title="Mặc định 5 slide cho 1 bài đăng TikTok Photo Mode">
+                <span>Slide/bài:</span>
+                <input type="number" min={2} max={35} style={{ width: 52 }} value={perPost} onChange={(e) => setPerPost(e.target.value)} />
+              </label>
+            )}
+            <label className="check small" title="Ưu tiên đóng gói / đăng bản đã in mã sản phẩm (nếu có)">
+              <input type="checkbox" checked={useCodedZip} onChange={(e) => setUseCodedZip(e.target.checked)} />
+              Bản có mã
+            </label>
+            <button type="button" className="small-btn" disabled={busy} onClick={() => downloadZip('all')} title="Tải toàn bộ ảnh dạng .jpg chia sẵn từng thư mục Bài-01, Bài-02…">
+              {busy ? '⏳ Đang nén ZIP…' : `📦 Tải ZIP (${slidePacks.length} bài)`}
+            </button>
+            {doneOutputs.length >= 2 && (
+              <button type="button" className="small-btn primary" disabled={busy} onClick={() => setSlideModalPacks(slidePacks)} title="Đăng hoặc lên lịch bài TikTok Photo Carousel qua Zernio API">
+                🚀 Đăng TikTok Slide
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {!slideMode ? (
+        <div className="outputs">
+          {r.outputs.map((o) => renderOutputCard(o))}
+        </div>
+      ) : (
+        <div className="stack" style={{ gap: 10 }}>
+          {slidePacks.map((pack, pi) => {
+            const packCodes = [...new Set(pack.flatMap((o) => (o.codes?.length ? o.codes : o.code ? [o.code] : [])))];
+            return (
+              <div key={pi} className="tiktok-slide-pack stack">
+                <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <b>🎞️ Bài {pi + 1} · {pack.length} slide</b>
+                    {packCodes.length > 0 && (
+                      <span className="small muted">Mã trong bài: {packCodes.join(' · ')}</span>
+                    )}
+                  </div>
+                  <div className="row gap-xs">
+                    <button type="button" className="small-btn" disabled={busy} onClick={() => downloadZip(pi)}>
+                      📦 Tải ZIP bài {pi + 1} (.jpg)
+                    </button>
+                    {pack.length >= 2 && (
+                      <button type="button" className="small-btn primary" disabled={busy} onClick={() => setSlideModalPacks([pack])}>
+                        🚀 Đăng bài này
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="outputs">
+                  {pack.map((o, si) => renderOutputCard(o, si + 1))}
+                </div>
+              </div>
+            );
+          })}
+          {r.outputs.some((o) => o.status !== 'done' || !o.outputUrl) && (
+            <div className="stack">
+              <small className="muted">Ảnh đang chờ / chưa hoàn thành:</small>
+              <div className="outputs">
+                {r.outputs.filter((o) => o.status !== 'done' || !o.outputUrl).map((o) => renderOutputCard(o))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {savedMsg && <span className="ok small">{savedMsg}</span>}
       {error && <div className="err">{error}</div>}
       {zoomOut?.outputUrl && (
@@ -830,7 +995,16 @@ function OutputGallery({ run: r, jobs, refresh }) {
           )}
         </ImageZoom>
       )}
-      <small className="muted">Bấm vào ảnh hoặc 🔍 để phóng to. Ảnh được tải về từ Flow ở bản 2K Upscaled (≈1536×2752). Mỗi ảnh có nút Thử lại / chọn lần tạo như video. Ảnh kết quả đã được lưu vào thư viện (loại lookbook); bấm "Lưu làm ảnh model" nếu muốn dùng nó cho các quy trình video.{r.hasProductInputs && <> Bấm <b>🏷️ Mã & sản phẩm</b> để đặt mã in lên từng ảnh và tải Excel (tên, giá, link Shopee có sẵn từ lúc lấy ảnh trang phục) cho DiamondShop.</>}</small>
+      {slideModalPacks && (
+        <TikTokSlidesModal
+          run={r}
+          packs={slideModalPacks}
+          state={state}
+          refresh={refresh}
+          onClose={() => setSlideModalPacks(null)}
+        />
+      )}
+      <small className="muted">Bấm vào ảnh hoặc 🔍 để phóng to. Ảnh được tải về từ Flow ở bản 2K Upscaled (≈1536×2752). Chọn chế độ <b>🎞️ Bài TikTok Slide</b> để gom {perPost} ảnh thành 1 bài trượt Photo Mode, tải ZIP JPG hoặc đăng thẳng qua Zernio.{r.hasProductInputs && <> Bấm <b>🏷️ Mã & sản phẩm</b> để đặt mã cho từng món và xuất Excel DiamondShop.</>}</small>
     </div>
   );
 }
@@ -880,9 +1054,42 @@ function PreviewGallery({ run: r, jobs, refresh }) {
   );
 }
 
-// ---------- Mã & sản phẩm (Ảnh model mặc đồ): khung mã in lên ảnh kết quả + Excel cho DiamondShop ----------
-const BADGE_FONT = "'Segoe UI', Roboto, Arial, sans-serif";
-// Mã dạng LOAI_SO như video thời trang (server/productCodes.js): bỏ dấu, in hoa, khoảng trắng/chấm -> "_"
+// ---------- Mã & sản phẩm (Ảnh model mặc đồ): nhiều khung mã + font chữ cá tính dễ đọc + Excel cho DiamondShop ----------
+const BADGE_STYLES = {
+  boutique_female: {
+    label: '✨ Boutique Nữ (Quicksand)',
+    font: "'Quicksand', 'Segoe UI', sans-serif",
+    bg: 'rgba(24, 15, 30, 0.72)',
+    border: 'rgba(255, 236, 244, 0.82)',
+    color: '#ffffff',
+    pill: true,
+  },
+  editorial_serif: {
+    label: '🌷 Tạp chí (Playfair)',
+    font: "'Playfair Display', Georgia, serif",
+    bg: 'rgba(28, 22, 18, 0.72)',
+    border: 'rgba(248, 232, 208, 0.78)',
+    color: '#fffaf2',
+    pill: false,
+  },
+  modern_male: {
+    label: '⚡ Hiện đại / Nam (Space Grotesk)',
+    font: "'Space Grotesk', 'Montserrat', 'Segoe UI', sans-serif",
+    bg: 'rgba(12, 16, 22, 0.78)',
+    border: 'rgba(255, 255, 255, 0.45)',
+    color: '#ffffff',
+    pill: false,
+  },
+  classic: {
+    label: '⬜ Cổ điển',
+    font: "'Segoe UI', Roboto, Arial, sans-serif",
+    bg: 'rgba(0, 0, 0, 0.55)',
+    border: null,
+    color: '#ffffff',
+    pill: false,
+  },
+};
+
 const normalizeCodeInput = (v) =>
   String(v || '')
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -892,9 +1099,17 @@ const normalizeCodeInput = (v) =>
     .replace(/[^A-Z0-9_-]/g, '');
 const isValidCode = (c) => /^[A-Z0-9]+(?:_[A-Z0-9-]+)+$/.test(c || '');
 
+function badgeDisplayText(row, codeVal, showSlotPrefix) {
+  const cleanCode = codeVal || '';
+  if (row?.outfitItemCount >= 2 && showSlotPrefix && row?.slotShort) {
+    return `${row.slotShort} · ${cleanCode || 'MÃ'}`;
+  }
+  return cleanCode || row?.slotShort || 'MÃ';
+}
+
 function badgeMetrics(frameH, scale = 1) {
   const font = Math.max(10, Math.round((frameH || 1280) * 0.036 * (Number(scale) || 1)));
-  return { font, padX: Math.round(font * 0.6), padY: Math.round(font * 0.32), radius: Math.round(font * 0.38) };
+  return { font, padX: Math.round(font * 0.62), padY: Math.round(font * 0.34), radius: Math.round(font * 0.38) };
 }
 function roundRectPath(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -906,101 +1121,158 @@ function roundRectPath(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-// PNG (data URL) của khung mã: nền đen mờ 55% bo góc nhẹ, chữ trắng đậm, vẽ ở kích thước thật của ảnh kết quả
-function renderBadgePng(code, frame, scale) {
+
+// PNG (data URL) của khung mã theo đúng font + phong cách đã chọn ở kích thước thật 2K
+function renderBadgePng(text, frame, scale, styleId = 'boutique_female') {
+  const st = BADGE_STYLES[styleId] || BADGE_STYLES.boutique_female;
   const m = badgeMetrics(frame.height, scale);
   const canvas = document.createElement('canvas');
   let ctx = canvas.getContext('2d');
-  ctx.font = `700 ${m.font}px ${BADGE_FONT}`;
-  const textW = Math.ceil(ctx.measureText(code).width);
+  ctx.font = `700 ${m.font}px ${st.font}`;
+  const textW = Math.ceil(ctx.measureText(text).width);
   canvas.width = textW + m.padX * 2;
-  canvas.height = Math.round(m.font * 1.25) + m.padY * 2;
-  ctx = canvas.getContext('2d'); // đổi kích thước canvas thì context bị đặt lại
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  roundRectPath(ctx, 0, 0, canvas.width, canvas.height, m.radius);
+  canvas.height = Math.round(m.font * 1.28) + m.padY * 2;
+  ctx = canvas.getContext('2d');
+
+  const r = st.pill ? canvas.height / 2 : m.radius;
+  const lw = st.border ? Math.max(1.5, Math.round(m.font * 0.045)) : 0;
+  roundRectPath(ctx, lw / 2, lw / 2, canvas.width - lw, canvas.height - lw, Math.max(1, r - lw / 2));
+  ctx.fillStyle = st.bg;
   ctx.fill();
-  ctx.font = `700 ${m.font}px ${BADGE_FONT}`;
-  ctx.fillStyle = '#fff';
+  if (st.border && lw > 0) {
+    ctx.strokeStyle = st.border;
+    ctx.lineWidth = lw;
+    ctx.stroke();
+  }
+
+  ctx.font = `700 ${m.font}px ${st.font}`;
+  ctx.fillStyle = st.color;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(code, canvas.width / 2, canvas.height / 2 + m.font * 0.04);
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  ctx.shadowBlur = Math.max(2, Math.round(m.font * 0.08));
+  ctx.shadowOffsetY = 1;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + m.font * 0.03);
   return canvas.toDataURL('image/png');
 }
 
-// Ảnh kết quả + khung mã vẽ đè đúng tỷ lệ; kéo thả (hoặc bấm) để đặt tâm khung (x, y = tỷ lệ 0–1)
-function BadgePreview({ frameUrl, frame, code, badge, onChange }) {
+// Xem trước đồng thời TẤT CẢ khung mã của 1 Bộ trên cùng 1 ảnh kết quả; bấm/kéo thả trực tiếp từng khung mã!
+function MultiBadgePreview({ frameUrl, frame, badges, activeKey, styleId, onSelectKey, onChange }) {
   const ref = useRef();
-  const [dragging, setDragging] = useState(false);
+  const dragKeyRef = useRef(null);
+  const [draggingKey, setDraggingKey] = useState(null);
+  const st = BADGE_STYLES[styleId] || BADGE_STYLES.boutique_female;
+
   const ar = frame.width / frame.height || 9 / 16;
-  // Ô xem trước: cao tối đa 240px, rộng tối đa 320px, giữ đúng tỷ lệ khung hình
-  let h = 240;
+  let h = 260;
   let pw = Math.round(h * ar);
-  if (pw > 320) { pw = 320; h = Math.round(pw / ar); }
-  const k = h / frame.height; // 1px khung hình thật = k px xem trước
-  const m = badgeMetrics(frame.height, badge.scale);
-  const place = (e) => {
+  if (pw > 330) { pw = 330; h = Math.round(pw / ar); }
+  const k = h / frame.height;
+
+  const coordsOf = (e) => {
     const rect = ref.current.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-    onChange({ x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 });
+    return { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 };
   };
-  const down = (e) => { e.preventDefault(); ref.current.setPointerCapture?.(e.pointerId); setDragging(true); place(e); };
-  const move = (e) => { if (dragging) place(e); };
-  const up = () => setDragging(false);
+
+  const activeInGroup = badges.some((b) => b.key === activeKey) ? activeKey : badges[0]?.key;
+
+  const down = (e, targetKey = null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chosen = targetKey || activeInGroup;
+    if (!chosen) return;
+    dragKeyRef.current = chosen;
+    setDraggingKey(chosen);
+    onSelectKey(chosen);
+    ref.current.setPointerCapture?.(e.pointerId);
+    onChange(chosen, coordsOf(e));
+  };
+  const move = (e) => {
+    if (!dragKeyRef.current) return;
+    onChange(dragKeyRef.current, coordsOf(e));
+  };
+  const up = () => {
+    dragKeyRef.current = null;
+    setDraggingKey(null);
+  };
+
   return (
     <div
       ref={ref}
-      className={'badge-preview' + (dragging ? ' dragging' : '')}
+      className={'badge-preview' + (draggingKey ? ' dragging' : '')}
       style={{ width: pw, height: h }}
-      onPointerDown={down}
+      onPointerDown={(e) => down(e, null)}
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={up}
-      title="Kéo / bấm để đặt vị trí khung mã"
+      title="Kéo từng khung mã để đổi vị trí (bấm nền ảnh để di chuyển mã đang chọn)"
     >
       {frameUrl ? <img src={frameUrl} alt="" draggable={false} /> : <div className="no-frame">Chưa có ảnh kết quả (đang render)</div>}
-      <div
-        className="code-badge"
-        style={{
-          left: `${badge.x * 100}%`,
-          top: `${badge.y * 100}%`,
-          fontSize: Math.max(6, m.font * k),
-          padding: `${m.padY * k}px ${m.padX * k}px`,
-          borderRadius: m.radius * k,
-          opacity: code ? 1 : 0.4,
-        }}
-      >
-        {code || 'MÃ'}
-      </div>
+      {badges.map((b) => {
+        const m = badgeMetrics(frame.height, b.scale);
+        const isActive = badges.length > 1 && b.key === activeKey;
+        return (
+          <div
+            key={b.key}
+            className={`code-badge ${styleId}` + (isActive ? ' active-badge' : '')}
+            onPointerDown={(e) => down(e, b.key)}
+            style={{
+              left: `${b.x * 100}%`,
+              top: `${b.y * 100}%`,
+              fontSize: Math.max(6, m.font * k),
+              fontFamily: st.font,
+              background: st.bg,
+              color: st.color,
+              border: st.border ? `1px solid ${st.border}` : 'none',
+              padding: `${m.padY * k}px ${m.padX * k}px`,
+              borderRadius: st.pill ? 999 : m.radius * k,
+              opacity: b.hasCode ? 1 : 0.45,
+            }}
+            title={`Kéo để đặt vị trí cho ${b.text}`}
+          >
+            {b.text}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-// Bảng "Mã & sản phẩm" của 1 lần chạy Ảnh model mặc đồ: mỗi ảnh trang phục một dòng (mã, tên, giá, mô tả, ảnh chính, link,
-// khung mã), lưu & in mã lên từng ảnh kết quả, tải Excel cho Admin DiamondShop. Dữ liệu từ GET /api/runs/:id/products
-// (key = id ảnh trang phục; tên / giá / link lấy từ metadata Shopee của ảnh đó; mã theo sổ mã chung VAY_01…).
+// Bảng "Mã & sản phẩm": hỗ trợ nhiều sản phẩm trên cùng 1 ảnh (Áo Trái trên, Quần/Váy Phải trên, Khoác/Túi đối xứng)
+// + 4 bộ font chữ cá tính dễ nhìn + xuất Excel 5 cột chuẩn DiamondShop.
 function ProductCodeSheet({ run: r, refresh, onClose }) {
-  const [frame, setFrame] = useState(null); // { width, height } của ảnh kết quả
+  const [frame, setFrame] = useState(null);
   const [rows, setRows] = useState(null);
+  const [badgeStyle, setBadgeStyle] = useState(() => (r.workflow === 'anh-model-nam' ? 'modern_male' : 'boutique_female'));
+  const [showSlotPrefix, setShowSlotPrefix] = useState(true);
+  const [activeKey, setActiveKey] = useState(null);
   const [dirty, setDirty] = useState(false);
-  const [saved, setSaved] = useState(null); // { at, remerge } sau khi lưu
+  const [saved, setSaved] = useState(null);
   const [copied, setCopied] = useState(false);
   const { busy, error, run, setError } = useAction();
 
   useEffect(() => {
     let alive = true;
     api.runProducts(r.id)
-      .then((d) => { if (!alive) return; setFrame(d.frame); setRows(d.rows); })
+      .then((d) => {
+        if (!alive) return;
+        setFrame(d.frame);
+        setRows(d.rows);
+        if (d.badgePrefs?.style) setBadgeStyle(d.badgePrefs.style);
+        if (typeof d.badgePrefs?.showSlotPrefix === 'boolean') setShowSlotPrefix(d.badgePrefs.showSlotPrefix);
+      })
       .catch((e) => alive && setError(e.message));
     return () => { alive = false; };
   }, [r.id]);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'INPUT') onClose(); };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose]);
-  // Bước "In mã lên ảnh" xong / in lại (ảnh có mã trên thẻ lần chạy đổi) -> tải lại dòng để ảnh thu nhỏ hiện bản đã in mã
-  // (chỉ khi không có thay đổi đang sửa, để không đè dữ liệu người dùng đang gõ)
+
   const codedSig = (r.outputs || []).map((o) => `${o.outfitId}:${o.codedUrl || ''}:${o.codedStale ? 1 : 0}`).join('|');
   useEffect(() => {
     if (!rows || dirty) return;
@@ -1009,63 +1281,126 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
     return () => { alive = false; };
   }, [codedSig]);
 
-  const update = (key, patch) => { setRows((rs) => rs.map((x) => (x.key === key ? { ...x, ...patch } : x))); setDirty(true); };
-  const updateBadge = (key, patch) => { setRows((rs) => rs.map((x) => (x.key === key ? { ...x, badge: { ...x.badge, ...patch } } : x))); setDirty(true); };
-  const applyBadgeAll = (key) => {
-    const b = rows.find((x) => x.key === key)?.badge;
-    if (!b) return;
-    setRows((rs) => rs.map((x) => ({ ...x, badge: { ...x.badge, x: b.x, y: b.y, scale: b.scale } })));
+  const update = (key, patch) => {
+    setRows((rs) => {
+      const target = rs.find((x) => x.key === key);
+      // Nếu Mix & Match dùng cùng 1 ảnh sản phẩm ở nhiều Bộ -> tự đồng bộ mã sản phẩm & Link Shopee Aff theo cùng ảnh
+      if (target?.assetId && (patch.code !== undefined || patch.affiliateUrl !== undefined)) {
+        const sharedPatch = {
+          ...(patch.code !== undefined ? { code: patch.code } : {}),
+          ...(patch.affiliateUrl !== undefined ? { affiliateUrl: patch.affiliateUrl } : {}),
+        };
+        return rs.map((x) => (x.key === key ? { ...x, ...patch } : x.assetId === target.assetId ? { ...x, ...sharedPatch } : x));
+      }
+      return rs.map((x) => (x.key === key ? { ...x, ...patch } : x));
+    });
     setDirty(true);
   };
+  const updateBadge = (key, patch) => {
+    setRows((rs) => rs.map((x) => (x.key === key ? { ...x, badge: { ...x.badge, ...patch } } : x)));
+    setDirty(true);
+  };
+  const resetOutfitLayout = (outfitKey) => {
+    setRows((rs) => rs.map((x) => {
+      if (x.outfitKey !== outfitKey) return x;
+      const d = x.defaultBadge || { x: 0.5, y: 0.12, scale: 1 };
+      return { ...x, badge: { ...x.badge, x: d.x, y: d.y, scale: d.scale } };
+    }));
+    setDirty(true);
+  };
+  const applyScaleAll = (scale) => {
+    setRows((rs) => rs.map((x) => ({ ...x, badge: { ...x.badge, scale } })));
+    setDirty(true);
+  };
+
   const resuggest = (row) =>
     run(async () => {
-      const taken = rows.filter((x) => x.key !== row.key).map((x) => x.code).filter(Boolean);
+      const taken = rows
+        .filter((x) => x.key !== row.key && (!row.assetId || x.assetId !== row.assetId))
+        .map((x) => x.code)
+        .filter(Boolean);
       const { code } = await api.suggestProductCode(row.name, taken);
       update(row.key, { code });
     });
+
   const codeOf = (row) => normalizeCodeInput(row.code).replace(/^_+|_+$/g, '');
-  const dupCodes = new Set(rows ? rows.map(codeOf).filter((c, i, a) => c && a.indexOf(c) !== i) : []);
+  // Chỉ báo trùng mã khi 2 SẢN PHẨM KHÁC NHAU đặt cùng 1 mã (Mix & Match cùng assetId dùng chung mã là hợp lệ!)
+  const dupCodes = useMemo(() => {
+    if (!rows) return new Set();
+    const owner = new Map();
+    const dups = new Set();
+    for (const row of rows) {
+      const c = codeOf(row);
+      if (!c) continue;
+      const aId = row.assetId || row.key;
+      if (owner.has(c) && owner.get(c) !== aId) dups.add(c);
+      else owner.set(c, aId);
+    }
+    return dups;
+  }, [rows]);
+
   const badCode = (row) => { const c = codeOf(row); return c && (!isValidCode(c) || dupCodes.has(c)); };
   const invalid = rows ? rows.filter(badCode).length : 0;
   const withCode = rows ? rows.filter((x) => codeOf(x)).length : 0;
 
-  // Dữ liệu gửi server; withPng = kèm PNG khung mã vẽ bằng Canvas (lúc lưu; xuất Excel thử thì không cần)
+  const outfitGroups = useMemo(() => {
+    if (!rows) return [];
+    const map = new Map();
+    for (const row of rows) {
+      const gk = row.outfitKey || row.key;
+      if (!map.has(gk)) map.set(gk, { outfitKey: gk, outfitLabel: row.outfitLabel || `Bộ #${map.size + 1}`, rows: [] });
+      map.get(gk).rows.push(row);
+    }
+    return [...map.values()];
+  }, [rows]);
+
   const payload = (withPng) =>
     Object.fromEntries(
-      rows.map((x) => [
-        x.key,
-        {
-          code: codeOf(x),
-          name: x.name,
-          price: x.price,
-          description: x.description,
-          commission: x.commission,
-          badge: {
-            x: x.badge.x,
-            y: x.badge.y,
-            scale: x.badge.scale,
-            png: withPng && codeOf(x) && frame ? renderBadgePng(codeOf(x), frame, x.badge.scale) : null,
-            frameWidth: frame?.width,
-            frameHeight: frame?.height,
+      rows.map((x) => {
+        const c = codeOf(x);
+        const text = badgeDisplayText(x, c, showSlotPrefix);
+        return [
+          x.key,
+          {
+            code: c,
+            name: x.name,
+            price: x.price,
+            description: x.description,
+            commission: x.commission,
+            affiliateUrl: x.affiliateUrl ?? '',
+            badge: {
+              x: x.badge.x,
+              y: x.badge.y,
+              scale: x.badge.scale,
+              png: withPng && c && frame ? renderBadgePng(text, frame, x.badge.scale, badgeStyle) : null,
+              frameWidth: frame?.width,
+              frameHeight: frame?.height,
+            },
           },
-        },
-      ]),
+        ];
+      }),
     );
-  // Lấy (lại) hoa hồng Shopee cho 1 dòng qua tab affiliate.shopee.vn trong Chrome của Flow (cần đã đăng nhập ở đó)
+
   const fetchCommission = (row) =>
     run(async () => {
       const res = await api.fetchAssetCommission(row.assetId, true);
       if (!res.ok) throw new Error(res.message || 'Không lấy được hoa hồng');
       update(row.key, { commission: res.commission, commissionRateText: res.commissionRateText });
     });
+
   const save = () =>
     run(async () => {
-      const res = await api.saveRunProducts(r.id, { products: payload(true) });
+      if (document.fonts?.ready) await document.fonts.ready;
+      const res = await api.saveRunProducts(r.id, {
+        products: payload(true),
+        badgePrefs: { style: badgeStyle, showSlotPrefix },
+      });
       setRows(res.rows);
       setDirty(false);
       setSaved({ at: Date.now(), remerge: res.remerge });
       await refresh();
     });
+
   const download = () =>
     run(async () => {
       const { blob, filename } = await api.exportRunProducts(r.id, dirty ? { products: payload(false) } : null);
@@ -1078,6 +1413,7 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
     });
+
   const copyCodes = async () => {
     try {
       await navigator.clipboard.writeText(rows.map((x) => `${codeOf(x)}\t${x.name}`).join('\n'));
@@ -1086,18 +1422,17 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
     } catch (e) { setError('Không sao chép được: ' + e.message); }
   };
 
-  // Tiến trình in mã lên ảnh (RunCard nhận state mới mỗi vài giây nên r luôn mới)
   const badgeSt = r.stages?.badge?.status;
   const printing = r.status === 'running' && (r.stage === 'badge' || badgeSt === 'running' || badgeSt === 'pending');
   const outputs = r.outputs || [];
-  const codedCodes = outputs.filter((o) => o.codedUrl && !o.codedStale).map((o) => o.code).filter(Boolean);
-  const codedStale = outputs.some((o) => o.code && o.codedStale);
+  const codedCodes = [...new Set(outputs.filter((o) => o.codedUrl && !o.codedStale).flatMap((o) => (o.codes?.length ? o.codes : o.code ? [o.code] : [])))];
+  const codedStale = outputs.some((o) => (o.codes?.length || o.code) && o.codedStale);
   const rendered = outputs.some((o) => o.status === 'done');
   let note = null;
   if (printing) note = ['busy', '⏳ Đang in mã lên ảnh kết quả… (xem bước "In mã lên ảnh" trên thẻ lần chạy)'];
   else if (r.status === 'failed' && r.stage === 'badge') note = ['warn', `In mã lên ảnh lỗi: ${r.error || ''}`];
-  else if (codedStale) note = ['warn', r.status === 'running' ? '⚠ Ảnh kết quả chưa có mã mới — sẽ in khi render xong.' : '⚠ Ảnh kết quả chưa có mã mới (sẽ in lại khi lần chạy tiếp tục).'];
-  else if (codedCodes.length) note = ['ok', `✓ Đã in mã lên ảnh: ${codedCodes.join(', ')} — tải "ảnh có mã" ở mục Ảnh kết quả.`];
+  else if (codedStale) note = ['warn', r.status === 'running' ? '⚠ Ảnh kết quả chưa có mã mới — sẽ in khi render xong.' : '⚠ Ảnh kết quả chưa có mã / font mới (sẽ in lại khi lần chạy tiếp tục).'];
+  else if (codedCodes.length) note = ['ok', `✓ Đã in mã lên ảnh: ${codedCodes.join(', ')} — tải "ảnh có mã" ở Ảnh kết quả hoặc gói ZIP TikTok.`];
   else if (rendered) note = ['', 'Ảnh kết quả hiện chưa in mã nào — đặt mã rồi bấm Lưu & in mã lên ảnh. Ảnh gốc vẫn giữ nguyên.'];
   else note = ['', 'Chưa có ảnh kết quả (đang render). Vẫn đặt mã / tải Excel được; mã sẽ in lên ảnh khi render xong.'];
 
@@ -1106,14 +1441,35 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
       <div className="products-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="row between">
           <div>
-            <h2>🏷️ Mã & sản phẩm — {rows ? rows.length : r.productItemCount || 0} ảnh trang phục</h2>
+            <h2>🏷️ Mã & sản phẩm — {outfitGroups.length} Bộ ({rows ? rows.length : r.productItemCount || 0} sản phẩm)</h2>
             <small className="muted">
-              Mỗi ảnh trang phục là một sản phẩm: giá, mô tả, hoa hồng Shopee lấy sẵn từ lúc bóc link; mã dạng <code>VAY_01</code> dùng chung sổ mã với video thời trang
-              và in lên ảnh model đã render (khung đen mờ, chữ trắng, phía trên đầu nhân vật). Excel 5 cột: Mã · Giá · Mô tả · Ảnh (ảnh model đã render, bản có mã) · Hoa hồng Shopee.
-              {frame && ` Ảnh ${frame.width}×${frame.height}${frame.probed ? '' : ' (ước lượng, chưa có ảnh render)'}.`}
+              Khi 1 ảnh mặc 2–4 món (VD Áo + Quần/Váy), hệ thống tự chia vị trí Trái trên (Áo/Bộ) · Phải trên (Quần/Váy) · Tầng 2 (Khoác/Túi) và in đủ các mã lên cùng 1 ảnh 2K. Excel 6 cột (Mã · Giá · Mô tả · Ảnh · Hoa hồng Shopee · Link Shopee Aff) xuất đủ từng món.
+              {frame && ` Ảnh ${frame.width}×${frame.height}${frame.probed ? '' : ' (ước lượng)'}.`}
             </small>
           </div>
           <button className="lightbox-close" onClick={onClose} title="Đóng (Esc)">×</button>
+        </div>
+
+        {/* Thanh chọn Font chữ & Phong cách khung mã */}
+        <div className="badge-style-bar row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <b className="small">Font & kiểu khung mã:</b>
+            {Object.entries(BADGE_STYLES).map(([id, s]) => (
+              <button
+                key={id}
+                type="button"
+                className={'small-btn' + (badgeStyle === id ? ' on primary-outline' : '')}
+                style={{ fontFamily: s.font }}
+                onClick={() => { setBadgeStyle(id); setDirty(true); }}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <label className="check small" title="Khi 1 ảnh có từ 2 sản phẩm trở lên, tự thêm nhãn món ở trước mã để khách dễ phân biệt (VD: ÁO · AO_01)">
+            <input type="checkbox" checked={showSlotPrefix} onChange={(e) => { setShowSlotPrefix(e.target.checked); setDirty(true); }} />
+            Hiện tên món khi ảnh có ≥ 2 mã (VD: <code>ÁO · AO_01</code>)
+          </label>
         </div>
 
         {!rows ? (
@@ -1122,86 +1478,138 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
           <table className="table products-table">
             <thead>
               <tr>
-                <th className="clip-col">Trang phục → ảnh kết quả</th>
-                <th>Sản phẩm</th>
+                <th className="clip-col">Sản phẩm</th>
+                <th>Thông tin & Mã sản phẩm</th>
                 <th className="badge-col">Khung mã trên ảnh kết quả</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.key}>
-                  <td className="clip-col">
-                    <b>#{row.index}</b> <span className="small muted">{row.clipName}</span>
-                    <div className="row gap-xs" style={{ marginTop: 4, alignItems: 'flex-start' }}>
-                      {row.thumbUrl ? <img className="mini-thumb" src={row.thumbUrl} alt="" title={row.assetName || 'Ảnh trang phục'} style={{ width: 64, height: 86 }} /> : <div className="small muted">Không có ảnh trang phục</div>}
-                      {row.codedUrl || row.outputUrl ? (
-                        <img className="mini-thumb" src={row.codedUrl || row.outputUrl} alt="" title={row.codedUrl ? 'Ảnh kết quả đã in mã — đây là ảnh xuất vào Excel' : 'Ảnh kết quả (chưa in mã) — đây là ảnh xuất vào Excel'} style={{ width: 64, height: 86 }} />
-                      ) : <div className="small muted" style={{ width: 64 }}>Chưa render</div>}
-                    </div>
-                    <div className="small muted" style={{ marginTop: 2 }}>{row.renderName ? `Ảnh Excel: ${row.renderCoded ? 'bản có mã' : 'ảnh render'}` : 'Ảnh Excel: chưa có (chưa render)'}</div>
-                    {!row.hasMeta && <div className="warn-text" title="Ảnh này không được tải từ link sản phẩm nên không có tên/giá/hoa hồng sẵn">⚠ Ảnh chưa có dữ liệu sản phẩm</div>}
-                  </td>
-                  <td>
-                    <div className="field-grid">
-                      <label>
-                        <span>Mã sản phẩm * (dạng VAY_01)</span>
-                        <div className="code-row">
-                          <input className={'code-input' + (badCode(row) ? ' bad' : '')} value={row.code || ''} placeholder={row.suggestedCode} onChange={(e) => update(row.key, { code: normalizeCodeInput(e.target.value) })} />
-                          <button className="small-btn" disabled={busy} onClick={() => resuggest(row)} title="Gợi ý mã mới theo tên sản phẩm (số kế tiếp trong sổ mã)">Gợi ý lại</button>
-                        </div>
-                        {badCode(row) && <span className="err small">{dupCodes.has(codeOf(row)) ? 'Mã trùng với ảnh khác' : 'Cần dạng LOAI_SO, vd. VAY_01 (chữ, số, gạch dưới)'}</span>}
-                      </label>
-                      <label>
-                        <span>Giá (đ)</span>
-                        <input type="number" min="0" step="1000" value={row.price ?? ''} onChange={(e) => update(row.key, { price: e.target.value === '' ? null : Number(e.target.value) })} />
-                      </label>
-                      <label className="full">
-                        <span>Tên sản phẩm</span>
-                        <input value={row.name || ''} onChange={(e) => update(row.key, { name: e.target.value })} />
-                      </label>
-                      <label className="full">
-                        <span>Mô tả (≤ 600 ký tự) · {(row.description || '').length}/600</span>
-                        <textarea rows={3} maxLength={600} value={row.description || ''} onChange={(e) => update(row.key, { description: e.target.value })} />
-                      </label>
-                      <label className="full">
-                        <span>
-                          Hoa hồng Shopee (đ){row.commissionRateBps ? ` · tỷ lệ ${(row.commissionRateBps / 100).toLocaleString('vi-VN')}%` : ''}
-                          {row.commissionRateText ? ` (${row.commissionRateText})` : ''}
-                        </span>
-                        <div className="code-row">
-                          <input type="number" min="0" step="100" value={row.commission ?? ''} placeholder="chưa có — nhập tay hoặc lấy từ Shopee" onChange={(e) => update(row.key, { commission: e.target.value === '' ? null : Number(e.target.value) })} />
-                          {row.itemId && row.platform === 'shopee' && (
-                            <button className="small-btn" disabled={busy} onClick={() => fetchCommission(row)} title="Gọi affiliate.shopee.vn (tab đã đăng nhập trong Chrome của Flow) để lấy hoa hồng ước tính của sản phẩm này">
-                              🔄 Lấy hoa hồng
-                            </button>
-                          )}
-                        </div>
-                        {!(row.commission > 0) && <span className="warn-text">Chưa có hoa hồng — cột "Hoa hồng Shopee (đ)" trong Excel sẽ trống.</span>}
-                      </label>
-                      <div className="full link-ro">
-                        Link Shopee:{' '}
-                        {row.shopeeUrl ? <a href={row.shopeeUrl} target="_blank" rel="noreferrer">{row.shopeeUrl}</a> : <span>– chưa có –</span>}
-                        {!row.linkOk && <div className="warn-text">⚠ Thiếu shopId/itemId nên chưa dựng được link chuẩn <code>shopee.vn/product/&lt;shopId&gt;/&lt;itemId&gt;</code> — dán lại link sản phẩm khi lấy ảnh để có đủ.</div>}
+              {outfitGroups.map((group) => {
+                const first = group.rows[0];
+                const previewBadges = group.rows.map((x) => {
+                  const c = codeOf(x);
+                  return {
+                    key: x.key,
+                    text: badgeDisplayText(x, c, showSlotPrefix),
+                    hasCode: !!c,
+                    x: x.badge.x,
+                    y: x.badge.y,
+                    scale: x.badge.scale,
+                  };
+                });
+                const activeRow = group.rows.find((x) => x.key === activeKey) || first;
+
+                return group.rows.map((row, ri) => (
+                  <tr key={row.key} className={ri === 0 ? 'outfit-group-start' : ''}>
+                    <td className="clip-col">
+                      <b>#{row.index}</b>{' '}
+                      {row.slotLabel && <span className="slot-pill">{row.slotLabel}</span>}
+                      <div className="small muted">{group.outfitLabel} · {row.clipName}</div>
+                      <div className="row gap-xs" style={{ marginTop: 4, alignItems: 'flex-start' }}>
+                        {row.thumbUrl ? <img className="mini-thumb" src={row.thumbUrl} alt="" title={row.assetName || 'Ảnh sản phẩm'} style={{ width: 64, height: 86 }} /> : <div className="small muted">Không có ảnh SP</div>}
+                        {ri === 0 && (row.codedUrl || row.outputUrl) && (
+                          <img className="mini-thumb" src={row.codedUrl || row.outputUrl} alt="" title={row.codedUrl ? 'Ảnh kết quả đã in mã — đây là ảnh xuất vào Excel' : 'Ảnh kết quả (chưa in mã)'} style={{ width: 64, height: 86 }} />
+                        )}
                       </div>
-                    </div>
-                  </td>
-                  <td className="badge-col">
-                    <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap' }}>
-                      {frame && <BadgePreview frameUrl={row.frameUrl} frame={frame} code={codeOf(row)} badge={row.badge} onChange={(p) => updateBadge(row.key, p)} />}
-                      <div className="badge-tools small">
-                        <span className="muted">Kéo khung trên hình để đổi vị trí.</span>
+                      <div className="small muted" style={{ marginTop: 2 }}>{row.renderName ? `Ảnh Excel: ${row.renderCoded ? 'bản có mã' : 'ảnh render'}` : 'Ảnh Excel: chưa render'}</div>
+                      {!row.hasMeta && <div className="warn-text">⚠ Chưa có dữ liệu SP</div>}
+                    </td>
+                    <td>
+                      <div className="field-grid">
                         <label>
-                          <span>Cỡ chữ ×{Number(row.badge.scale).toFixed(2)}</span>
-                          <input type="range" min="0.5" max="2" step="0.05" value={row.badge.scale} onChange={(e) => updateBadge(row.key, { scale: Number(e.target.value) })} />
+                          <span>Mã sản phẩm * (dạng LOAI_SO)</span>
+                          <div className="code-row">
+                            <input
+                              className={'code-input' + (badCode(row) ? ' bad' : '')}
+                              value={row.code || ''}
+                              placeholder={row.suggestedCode}
+                              onFocus={() => setActiveKey(row.key)}
+                              onChange={(e) => update(row.key, { code: normalizeCodeInput(e.target.value) })}
+                            />
+                            <button className="small-btn" disabled={busy} onClick={() => resuggest(row)} title="Gợi ý mã mới">Gợi ý lại</button>
+                          </div>
+                          {badCode(row) && <span className="err small">{dupCodes.has(codeOf(row)) ? 'Mã trùng với sản phẩm khác' : 'Cần dạng LOAI_SO, vd. VAY_01'}</span>}
                         </label>
-                        <span className="muted">Tâm: {Math.round(row.badge.x * 100)}% · {Math.round(row.badge.y * 100)}%</span>
-                        <a onClick={() => updateBadge(row.key, { x: 0.5, y: 0.12, scale: 1 })}>Về mặc định</a>
-                        {rows.length > 1 && <a onClick={() => applyBadgeAll(row.key)} title="Dùng vị trí và cỡ này cho mọi ảnh">Áp vị trí cho mọi ảnh</a>}
+                        <label>
+                          <span>Giá (đ)</span>
+                          <input type="number" min="0" step="1000" value={row.price ?? ''} onChange={(e) => update(row.key, { price: e.target.value === '' ? null : Number(e.target.value) })} />
+                        </label>
+                        <label className="full">
+                          <span>Tên sản phẩm</span>
+                          <input value={row.name || ''} onChange={(e) => update(row.key, { name: e.target.value })} />
+                        </label>
+                        <label className="full">
+                          <span>Mô tả (≤ 600 ký tự) · {(row.description || '').length}/600</span>
+                          <textarea rows={2} maxLength={600} value={row.description || ''} onChange={(e) => update(row.key, { description: e.target.value })} />
+                        </label>
+                        <label className="full">
+                          <span>
+                            Hoa hồng Shopee (đ){row.commissionRateBps ? ` · ${(row.commissionRateBps / 100).toLocaleString('vi-VN')}%` : ''}
+                            {row.commissionRateText ? ` (${row.commissionRateText})` : ''}
+                          </span>
+                          <div className="code-row">
+                            <input type="number" min="0" step="100" value={row.commission ?? ''} placeholder="nhập tay hoặc lấy từ Shopee" onChange={(e) => update(row.key, { commission: e.target.value === '' ? null : Number(e.target.value) })} />
+                            {row.itemId && row.platform === 'shopee' && (
+                              <button className="small-btn" disabled={busy} onClick={() => fetchCommission(row)}>🔄 Lấy hoa hồng</button>
+                            )}
+                          </div>
+                        </label>
+                        <label className="full">
+                          <span>🔗 Link Shopee Aff (đi theo ảnh sản phẩm · xuất ra cột 6 Excel)</span>
+                          <div className="code-row">
+                            <input
+                              type="url"
+                              value={row.affiliateUrl || ''}
+                              placeholder="https://s.shopee.vn/... (tự điền khi bóc link, hoặc dán tay)"
+                              onChange={(e) => update(row.key, { affiliateUrl: e.target.value })}
+                            />
+                            {/^https?:\/\//i.test((row.affiliateUrl || '').trim()) && (
+                              <a className="small" href={row.affiliateUrl.trim()} target="_blank" rel="noreferrer" style={{ whiteSpace: 'nowrap' }}>Mở ↗</a>
+                            )}
+                          </div>
+                          {row.shopeeUrl && row.shopeeUrl !== row.affiliateUrl && (
+                            <small className="muted">Link gốc SP: <a href={row.shopeeUrl} target="_blank" rel="noreferrer">{row.shopeeUrl}</a></small>
+                          )}
+                        </label>
                       </div>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    {ri === 0 && (
+                      <td className="badge-col" rowSpan={group.rows.length}>
+                        <div className="stack" style={{ gap: 8 }}>
+                          {frame && (
+                            <MultiBadgePreview
+                              frameUrl={first.frameUrl}
+                              frame={frame}
+                              badges={previewBadges}
+                              activeKey={activeRow.key}
+                              styleId={badgeStyle}
+                              onSelectKey={(k) => setActiveKey(k)}
+                              onChange={(k, p) => updateBadge(k, p)}
+                            />
+                          )}
+                          <div className="badge-tools small">
+                            <span className="muted">
+                              {group.rows.length > 1
+                                ? <>Đang chỉnh: <b>{activeRow.slotLabel || activeRow.clipName}</b> (bấm trực tiếp từng khung mã trên ảnh để kéo)</>
+                                : 'Kéo khung mã trên hình để đổi vị trí.'}
+                            </span>
+                            <label>
+                              <span>Cỡ chữ ({activeRow.slotShort || 'Mã'}): ×{Number(activeRow.badge.scale).toFixed(2)}</span>
+                              <input type="range" min="0.45" max="2" step="0.05" value={activeRow.badge.scale} onChange={(e) => updateBadge(activeRow.key, { scale: Number(e.target.value) })} />
+                            </label>
+                            <div className="row gap-xs" style={{ flexWrap: 'wrap' }}>
+                              <a onClick={() => resetOutfitLayout(group.outfitKey)} title="Đặt lại vị trí Trái/Phải trên gọn đẹp">↺ Vị trí mặc định</a>
+                              {rows.length > 1 && (
+                                <a onClick={() => applyScaleAll(activeRow.badge.scale)} title="Áp cỡ chữ đang chỉnh cho toàn bộ các mã">Áp cỡ chữ cho tất cả</a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ));
+              })}
             </tbody>
           </table>
         )}
@@ -1211,10 +1619,10 @@ function ProductCodeSheet({ run: r, refresh, onClose }) {
         {error && <div className="err">{error}</div>}
 
         <div className="row">
-          <button className="primary" disabled={busy || !rows || invalid > 0 || !frame} onClick={save} title="Lưu mã / thông tin và in khung mã lên từng ảnh kết quả (ảnh gốc giữ nguyên)">
+          <button className="primary" disabled={busy || !rows || invalid > 0 || !frame} onClick={save} title="Lưu mã / thông tin và in đủ các khung mã lên từng ảnh kết quả">
             💾 Lưu & in mã lên ảnh{withCode ? ` (${withCode} mã)` : ''}
           </button>
-          <button disabled={busy || !rows} onClick={download} title="Tải file Excel đúng cột cho Admin DiamondShop (dữ liệu đang sửa cũng được xuất)">📊 Tải Excel</button>
+          <button disabled={busy || !rows} onClick={download} title="Tải file Excel 6 cột (kèm Link Shopee Aff)">📊 Tải Excel</button>
           <button disabled={!rows} onClick={copyCodes}>{copied ? '✓ Đã sao chép' : '📋 Sao chép mã'}</button>
           {dirty && <small className="muted">Có thay đổi chưa lưu</small>}
           {invalid > 0 && <small className="err">Sửa {invalid} mã không hợp lệ / trùng trước khi lưu</small>}
@@ -1231,6 +1639,10 @@ const RUN_STATUS = { running: ['Đang chạy', 'blue'], paused: ['Chờ bạn ki
 function RunCard({ run: r, state, refresh, go }) {
   const [showJobs, setShowJobs] = useState(false);
   const [showProducts, setShowProducts] = useState(false); // bảng Mã & sản phẩm (Ảnh model mặc đồ)
+  const [syncMs, setSyncMs] = useState(Number(r.options?.syncOffsetMs) || 0);
+  useEffect(() => {
+    setSyncMs(Number(r.options?.syncOffsetMs) || 0);
+  }, [r.options?.syncOffsetMs]);
   const canProducts = r.hasProductInputs && r.productItemCount > 0;
   const { busy, error, run } = useAction();
   const source = state.sources.find((s) => s.id === r.sourceId);
@@ -1241,13 +1653,22 @@ function RunCard({ run: r, state, refresh, go }) {
   // Đang dừng chờ kiểm tra ở bước nào (trước khi tạo video, hay sau khi thay nhân vật)
   const pausedBeforeMotion = r.status === 'paused' && r.stageList.some((s) => s.id === 'motion' && s.status !== 'done');
   const act = (fn) => run(async () => { await fn(); await refresh(); });
+  const isSuno = r.workflow === 'nhac-suno';
 
   return (
     <div className={'card stack run' + (r.status === 'failed' ? ' failed' : '')}>
       <div className="row between">
         <div>
           <b>{r.sourceId ? (source?.name || 'Video gốc đã xoá') : r.workflowName}</b>{' '}
-          <small className="muted">· {r.sourceId ? `${r.clipIds.length} đoạn` : r.previews?.length ? `${r.previews.length} ảnh xem trước` : `${r.outputs?.length || 0} ảnh`} · {new Date(r.createdAt).toLocaleString('vi-VN')}</small>
+          <small className="muted">
+            · {r.sourceId
+              ? `${r.clipIds.length} đoạn`
+              : isSuno
+                ? `${r.options?.duration || '10s'} · ${r.options?.aspectRatio || '16:9'}`
+                : r.previews?.length
+                  ? `${r.previews.length} ảnh xem trước`
+                  : `${r.outputs?.length || 0} ảnh`} · {new Date(r.createdAt).toLocaleString('vi-VN')}
+          </small>
         </div>
         <span className={`badge ${color}`}>{label}</span>
       </div>
@@ -1264,8 +1685,8 @@ function RunCard({ run: r, state, refresh, go }) {
         ))}
       </div>
 
-      {(r.frameUrl || bgJob || trJob || r.backgroundUrl || r.merge?.url) && (
-        <div className="row">
+      {(r.frameUrl || bgJob || r.backgrounds?.length > 1 || trJob || r.backgroundUrl || r.merge?.url) && (
+        <div className="row" style={{ flexWrap: 'wrap' }}>
           {r.frameUrl && <figure className="mini"><img src={r.frameUrl} alt="" /><figcaption>Khung hình gốc</figcaption></figure>}
           {trJob && (
             // Thẻ job ảnh vóc dáng 16:9: Thử lại / Sửa prompt / chọn lần tạo. Đổi ảnh → mọi đoạn tạo video lại.
@@ -1276,7 +1697,17 @@ function RunCard({ run: r, state, refresh, go }) {
             </div>
           )}
           {r.anchorUrl && <figure className="mini"><img src={r.anchorUrl} alt="" /><figcaption>Mặt đã render (đoạn 1) làm mẫu cho đoạn sau</figcaption></figure>}
-          {bgJob ? (
+          {r.backgrounds?.length > 1 ? (
+            r.backgrounds.map((bgItem) => {
+              const j = jobs.find((x) => x.id === bgItem.id);
+              return j ? (
+                <div key={bgItem.key} className="stack bg-job">
+                  <small className="muted">Bối cảnh sạch #{bgItem.index}</small>
+                  <JobCard compact job={j} refresh={refresh} />
+                </div>
+              ) : null;
+            })
+          ) : bgJob ? (
             // Thẻ job ảnh bối cảnh: Thử lại / Sửa prompt / chọn lần tạo. Đổi bối cảnh → web tự thay nền lại cho mọi đoạn.
             <div className="stack bg-job">
               <small className="muted">Bối cảnh mới</small>
@@ -1284,7 +1715,62 @@ function RunCard({ run: r, state, refresh, go }) {
               <small className="muted">Thử lại hoặc chọn lần tạo khác → mọi đoạn phải thay bối cảnh lại (≈20 credit/đoạn) và ghép lại.</small>
             </div>
           ) : r.backgroundUrl && <figure className="mini"><img src={r.backgroundUrl} alt="" /><figcaption>Bối cảnh mới</figcaption></figure>}
-          {r.merge?.url && (
+          {r.merge?.url && (isSuno ? (
+            <div className="suno-final-wrap row">
+              <figure className="suno-final-fig" style={{ margin: 0 }}>
+                <video
+                  className={'suno-final-video' + (r.options?.aspectRatio === '9:16' ? ' portrait' : '')}
+                  src={r.merge.url}
+                  controls
+                  preload="metadata"
+                  poster={r.merge.thumbUrl}
+                />
+                <figcaption className="small muted">
+                  Video hoàn chỉnh (100% nhạc gốc Suno)
+                  {r.merge?.watermarkRemoved !== false && <span style={{ display: 'block', color: 'var(--green)', fontSize: 10 }}>✓ Đã xoá logo Gemini</span>}
+                </figcaption>
+              </figure>
+              <div className="suno-resync-box stack">
+                <b className="small">🎚️ Dịch khớp nhạc (0 credit)</b>
+                <small className="muted">
+                  Nếu miệng mở sớm/trễ hơn nhạc gốc, chỉnh độ dịch âm thanh (ms) rồi bấm Ghép lại — chỉ chạy FFmpeg (~1s), không tốn credit Flow.
+                </small>
+                <div className="row gap-xs" style={{ flexWrap: 'wrap' }}>
+                  {[-500, -200, 0, 200, 500].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      className={'small-btn' + (syncMs === v ? ' primary-outline' : '')}
+                      disabled={busy}
+                      onClick={() => setSyncMs(v)}
+                    >
+                      {v > 0 ? `+${v}ms` : `${v}ms`}
+                    </button>
+                  ))}
+                </div>
+                <div className="row gap-xs" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input
+                    type="number"
+                    min={-1500}
+                    max={1500}
+                    step={50}
+                    style={{ width: 90 }}
+                    disabled={busy}
+                    value={syncMs}
+                    onChange={(e) => setSyncMs(Math.max(-1500, Math.min(1500, Number(e.target.value) || 0)))}
+                  />
+                  <button
+                    type="button"
+                    className="small-btn primary"
+                    disabled={busy || r.status === 'running'}
+                    onClick={() => act(() => api.resyncRunAudio(r.id, syncMs))}
+                  >
+                    🔄 Ghép lại nhạc (0 credit)
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
             <figure className="mini">
               <video src={r.merge.url} controls preload="metadata" poster={r.merge.thumbUrl} />
               <figcaption>
@@ -1292,7 +1778,7 @@ function RunCard({ run: r, state, refresh, go }) {
                 {r.merge?.watermarkRemoved !== false && <span style={{ display: 'block', color: 'var(--green)', fontSize: 10 }}>✓ Đã xoá logo Gemini</span>}
               </figcaption>
             </figure>
-          )}
+          ))}
         </div>
       )}
 
@@ -1318,7 +1804,7 @@ function RunCard({ run: r, state, refresh, go }) {
 
       {r.clipRows.length > 0 && <ClipTable run={r} jobs={jobs} refresh={refresh} />}
       {r.scenes?.length > 0 && <SceneTable run={r} jobs={jobs} refresh={refresh} />}
-      {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} refresh={refresh} />}
+      {r.outputs?.length > 0 && <OutputGallery run={r} jobs={jobs} state={state} refresh={refresh} />}
       {showProducts && <ProductCodeSheet run={r} refresh={refresh} onClose={() => setShowProducts(false)} />}
 
       <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -1349,7 +1835,7 @@ function RunCard({ run: r, state, refresh, go }) {
         {r.merge?.status === 'done' && <button onClick={() => go('merge')}>Xem ở Ghép video</button>}
         {canProducts && (
           <button onClick={() => setShowProducts(true)} title="Đặt mã sản phẩm in lên từng ảnh kết quả và xuất Excel (tên, giá, link Shopee có sẵn) cho DiamondShop">
-            🏷️ Mã & sản phẩm{r.productCount ? ` (${r.productCount})` : ''}{(r.outputs || []).some((o) => o.code && o.codedStale) ? ' ⚠' : ''}
+            🏷️ Mã & sản phẩm{r.productCount ? ` (${r.productCount})` : ''}{(r.outputs || []).some((o) => (o.codes?.length || o.code) && o.codedStale) ? ' ⚠' : ''}
           </button>
         )}
         <button className="link" onClick={() => setShowJobs(!showJobs)}>{showJobs ? 'Ẩn' : 'Xem'} {jobs.length} video của lần chạy</button>
