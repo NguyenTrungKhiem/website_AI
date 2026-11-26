@@ -145,12 +145,18 @@ try {
     assert.match(pMaleJacketOnly, /OUTERWARE|OUTERWEAR RULE: Keep the exact jacket/i);
     assert.doesNotMatch(pMaleJacketOnly, /NO OUTERWEAR \/ NO JACKET/);
 
-    // Nữ nhập Áo + Váy (bỏ trống Túi & Khoác, bật autoBag)
+    // Nữ nhập Áo + Váy (bỏ trống Túi & Khoác, bật autoBag) + giữ body/mặt từ model nữ nhưng cao ráo & góc máy ngang eo/hông lookbook
     const pFemTopSkirt = buildDynamicRenderPrompt({ gender: 'female', items: { top: top1.id, dress: dress1.id }, autoBag: true });
     assert.match(pFemTopSkirt, /image 2 = .*image 3 = .*image 4 = the background scene/i);
     assert.match(pFemTopSkirt, /NO OUTERWEAR \/ NO JACKET/i);
     assert.match(pFemTopSkirt, /HANDBAG \(AI-STYLED\)/i);
     assert.match(pFemTopSkirt, /FOOTWEAR \(AI-STYLED\)/i);
+    assert.match(pFemTopSkirt, /exact natural body shape/i);
+    assert.match(pFemTopSkirt, /face must match image 1 exactly/i);
+    assert.match(pFemTopSkirt, /slightly taller.*1\.68/i);
+    assert.match(pFemTopSkirt, /waist-to-hip height/i);
+    assert.match(pFemTopSkirt, /3–5% bottom margin/i);
+    assert.doesNotMatch(pMaleTopOnly, /waist-to-hip height/i);
 
     // Nữ nhập 4 món đủ (Áo + Quần + Áo khoác + Túi)
     const pFem4 = buildDynamicRenderPrompt({

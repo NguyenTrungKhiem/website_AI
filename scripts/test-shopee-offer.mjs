@@ -10,7 +10,7 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wv-shopee-offer-'));
 process.env.DATA_DIR = DATA_DIR;
 
 const { parseRateBps, parseShopeeMoney, parseShopeeOffer, pickOffer, shopeeImageUrl, describeRates, applyBpsToVnd } = await import('../server/shopeeOffer.js');
-const { checkRaw, fetchShopeeOffer, LOGIN_MSG, normalizeCookie, parseCookieHeader, cookiesForChrome, testAffiliateCookie, clearOfferCache } = await import('../server/shopeeAffiliate.js');
+const { checkRaw, fetchShopeeOffer, LOGIN_MSG, normalizeCookie, parseCookieHeader, cookiesForChrome, testAffiliateCookie, clearOfferCache, affiliateStatus } = await import('../server/shopeeAffiliate.js');
 const { db, updateSettings } = await import('../server/db.js');
 const { fetchCommission, normalizeProductMeta } = await import('../server/productScraper.js');
 
@@ -261,26 +261,46 @@ function main() {
     assert.equal(noCk2.reason, 'noCookie');
     assert.equal(fake.st.gotos.length, 0, 'không cookie -> không mở trang nào');
     assert.equal((await testAffiliateCookie('')).ok, false);
-    // Shopee đẩy sang verify/traffic -> blocked, nghỉ 10 phút, không gọi API
+    // Shopee đẩy sang verify/traffic -> blocked, không tự khoá 10 phút, ghi nhận lastBlock.kind = 'traffic'
     fake = makeContext('traffic');
     const tr = await testAffiliateCookie(COOKIE, { context: fake.ctx });
     assert.equal(tr.reason, 'blocked');
     assert.match(tr.message, /verify\/traffic/);
     assert.equal(fake.st.paths.length, 0);
+    assert.equal(affiliateStatus().blockedUntil, 0, 'không khoá cooldown ở server');
+    assert.equal(affiliateStatus().lastBlock?.kind, 'traffic');
     clearOfferCache();
-    // Shopee chặn (90309999) -> blocked và nghỉ 10 phút (lần gọi sau trả blocked ngay, không đụng trang)
+    // Shopee chặn (90309999) -> blocked, ghi lastBlock, KHÔNG tự khoá lần thử tiếp theo
     fake = makeContext('blocked');
     const tb = await testAffiliateCookie(COOKIE, { context: fake.ctx });
     assert.equal(tb.ok, false);
     assert.equal(tb.reason, 'blocked');
+    assert.equal(affiliateStatus().blockedUntil, 0);
+    assert.ok(affiliateStatus().lastBlock, 'ghi nhận lastBlock khi bị Shopee từ chối');
     const again = await testAffiliateCookie(COOKIE, { context: fake.ctx });
     assert.equal(again.reason, 'blocked');
-    assert.match(again.message, /nghỉ tới/);
-    assert.equal(fake.st.paths.length, 1, 'đang nghỉ -> không gọi thêm');
+    assert.ok(!/nghỉ tới/.test(again.message), 'không còn thông báo nghỉ tới HH:MM');
+    assert.equal(fake.st.paths.length, 2, 'lần gọi thứ 2 vẫn được phép gọi thẳng tới Shopee');
+    // Sau đó gọi thành công -> xoá lastBlock
+    fake = makeContext('ok');
+    const recovered = await testAffiliateCookie(COOKIE, { context: fake.ctx });
+    assert.equal(recovered.ok, true);
+    assert.equal(affiliateStatus().lastBlock, null, 'gọi thành công thì xoá lastBlock');
+    clearOfferCache();
+    // fetchShopeeOffer: không đệm kết quả lỗi / bị chặn, nhưng đệm kết quả thành công
+    updateSettings({ shopeeAffiliateCookie: COOKIE });
+    const fakeErr = makeContext('blocked');
+    await fetchShopeeOffer('40084804490', { context: fakeErr.ctx });
+    await fetchShopeeOffer('40084804490', { context: fakeErr.ctx });
+    assert.equal(fakeErr.st.paths.length, 2, 'lỗi / bị từ chối không đệm -> gọi lại ngay lần 2');
+    const fakeOk = makeContext('ok');
+    await fetchShopeeOffer('40084804491', { context: fakeOk.ctx });
+    await fetchShopeeOffer('40084804491', { context: fakeOk.ctx });
+    assert.equal(fakeOk.st.paths.length, 1, 'thành công -> lần 2 lấy từ cache');
     clearOfferCache();
     // 404 error_not_found khi trang KHÔNG còn ở affiliate.shopee.vn (XHR chạy nhầm origin) -> blocked chứ không phải notFound
     assert.equal(checkRaw({ status: 404, text: '{"error":"error_not_found"}', url: 'https://shopee.vn/api/v3/offer/product', loginPage: 'https://shopee.vn/verify/traffic/error' }).reason, 'blocked');
-    console.log('  ✔ cookie -> addCookies(.shopee.vn) 1 lần, 1 trang dùng lại, XHR trong trang; đổi cookie -> nạp lại; notFound; hết hạn -> needLogin; traffic / 90309999 -> nghỉ 10 phút');
+    console.log('  ✔ cookie -> addCookies(.shopee.vn) 1 lần, 1 trang dùng lại, XHR trong trang; đổi cookie -> nạp lại; notFound; hết hạn -> needLogin; không cản cooldown & ghi lastBlock');
 
     const meta = normalizeProductMeta({ title: 'Má hồng', price: 199000, platform: 'shopee', itemId: '40084804461', shopId: '18299177', commission: 20895, commissionRateBps: 1050 });
     assert.equal(meta.commission, 20895);

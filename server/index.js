@@ -23,7 +23,7 @@ import { createSplitJobs, onSplitJobSettled } from './setSplit.js';
 import { createRun, resumeRun, cancelRun, deleteRun, advanceAll, viewRun, replaceClipVideos, touchJob, importFlowVideoToRun, resyncRun, resyncRunAudio } from './workflows/runner.js';
 import { buildProductRows, saveRunProducts, buildWorkbook, exportFilename, frameSizeOf, suggestProductCode, runHasProducts, productInputsOf, productMetaOf, badgePrefsOf, codedImagesOf } from './productExport.js';
 import { createZipBuffer } from './zipPack.js';
-import { fetchShopeeOffer, testAffiliateCookie, affiliateStatus, closeAffiliateBrowser } from './shopeeAffiliate.js';
+import { fetchShopeeOffer, testAffiliateCookie, affiliateStatus, showAffiliateBrowser, closeAffiliateBrowser } from './shopeeAffiliate.js';
 import { describeRates } from './shopeeOffer.js';
 import { closeGeminiBrowser, geminiWebStatus, showGeminiWindow, DEFAULT_GEMINI_WEB_URL } from './geminiWeb.js';
 import { analyzeSunoAudioWithWeb, buildSunoVideoPrompt, checkLyricsCoverage, SUNO_AUDIO_ANALYSIS_PROMPT } from './sunoAnalyzer.js';
@@ -296,6 +296,7 @@ settledHooks.push((job) => {
 // ---------- Google Flow (Playwright) ----------
 app.get('/api/flow/status', wrap(async (req, res) => res.json(await flow.status())));
 app.post('/api/flow/launch', wrap(async (req, res) => res.json(await flow.launchChrome())));
+app.post('/api/flow/show', wrap(async (req, res) => res.json(await flow.showFlowWindow())));
 app.post('/api/flow/preset', wrap(async (req, res) => res.json(await flow.preset(req.body))));
 
 // ---------- Video gốc + cắt ----------
@@ -857,6 +858,9 @@ app.post('/api/shopee/affiliate/test', wrap(async (req, res) => {
   // itemId (tuỳ chọn) = sản phẩm để thử thay cho item mẫu; link Shopee cũng được (tách itemId)
   const itemId = String(req.body?.itemId || '').match(/\d{6,20}/)?.[0] || undefined;
   res.json({ ...(await testAffiliateCookie(cookie, { itemId })), status: affiliateStatus() });
+}));
+app.post('/api/shopee/affiliate/show', wrap(async (req, res) => {
+  res.json(await showAffiliateBrowser());
 }));
 
 // Cầu nối HTTP cục bộ dùng chung 1 phiên Chrome thu nhỏ affiliate.shopee.vn cho cả web-video và các src khác trên máy (chỉ cho localhost/127.0.0.1 CORS)

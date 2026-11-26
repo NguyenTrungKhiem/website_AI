@@ -38,7 +38,7 @@ export const BASE_RENDER_TEMPLATE_FEMALE = `Photorealistic full-body fashion pho
 
 Output ONE single photo of this woman (not a collage, not a sheet, not multiple views, not multiple people): she stands in the background scene wearing the exact outfit specified below.
 
-BODY — the most important rule: keep her exact body shape and proportions as seen in image 1: height, overall build, shoulder width, bust, waist, hips, belly, arm and leg length and thickness, hand and foot size, posture. Do NOT slim, elongate, enlarge, idealize, reshape or restyle her figure in any way; do not change her head-to-body ratio. The outfit must fit THIS body, not an idealized one.
+BODY & STATURE — preserve image 1 faithfully with taller lookbook presence: keep her exact natural body shape, curves and proportions as seen in image 1 (shoulder width, bust, waist, hips, belly, natural arm/leg thickness, hand and foot proportions, posture — do NOT make her overly skinny or reshape her body type). At the same time, render her with a slightly taller, graceful, upright fashion-model stature (~1.68–1.72m tall lookbook presence relative to doorways, walls and furniture in the background scene) so she never looks short or dwarfed in the frame.
 
 IDENTITY: her face must match image 1 exactly (face shape, eyes, eyebrows, nose, lips, skin tone, hairstyle and hair color). Same person, recognizable at a glance.
 
@@ -50,9 +50,9 @@ IDENTITY: her face must match image 1 exactly (face shape, eyes, eyebrows, nose,
 
 {POSE_BLOCK}
 {VIBE_BLOCK}
-SCENE: use the background image as it is — do not change the place, objects or colors. Place her naturally on the floor with correct scale, perspective and contact shadows; match the scene's lighting direction, softness and color temperature so she looks genuinely photographed there. If the background image is not 9:16, extend it naturally to fill the vertical frame.
+SCENE: use the background image as it is — do not change the place, objects or colors. Place her naturally standing on the ground/floor with correct scale (scaled as a taller ~1.68–1.72m model against the background doorway/objects), perspective and contact shadows; match the scene's natural soft lighting direction and color temperature so she looks genuinely photographed there. If the background image is not 9:16, extend it naturally to fill the vertical frame.
 
-FRAMING: full body visible from the top of the head down to the shoes, centered, with a little breathing room above the head and below the feet; eye-level camera, sharp focus, no motion blur.
+CAMERA ANGLE & FRAMING (street lookbook style): slightly low-angle full-body street-fashion camera positioned around waist-to-hip height (~50mm natural portrait lens) with a subtle upward tilt so her legs and silhouette appear gracefully tall without distortion. Keep her centered vertically filling ~80–85% of the 9:16 frame height, with comfortable breathing room above her head (~12–15% top margin) and her shoes positioned near the bottom edge (~3–5% bottom margin). Crisp sharp focus on the model and outfit, soft natural daylight, subtle realistic background depth-of-field, no motion blur.
 
 Do not add text, logos, watermarks, captions, extra people or mannequins. Hands and fingers must look natural.
 {prompt}`;
@@ -287,8 +287,8 @@ export function buildDynamicRenderPrompt({
 
   const poseBlock = isFemale
     ? (items.dress && !items.top
-      ? 'POSE: Confident, sensual, feminine front-facing lookbook pose that flatters the dress silhouette: weight on one leg, hip gently shifted for a soft S-curve, natural graceful hands (lightly touching hair, waist or handbag), engaging look at the camera. Torso may angle 10–25° while face remains toward camera. Vary pose naturally between renders, never a stiff catalogue stance.'
-      : 'POSE: Polished, refined luxury women’s lookbook pose: poised posture, one foot slightly stepped forward, relaxed shoulders, natural hand placement near waist/bag/jacket, gentle head tilt, warm confident expression. Vary stance naturally between renders while keeping full body visible.')
+      ? 'POSE: Confident, graceful, upright front-facing street-lookbook pose that flatters her taller silhouette and dress line: weight resting on one leg with the other foot stepped slightly forward or gently turned toward camera to naturally lengthen the leg line, soft S-curve waist, relaxed shoulders, one hand lightly touching hair, collar or waist and the other naturally holding the handbag strap at her side, warm engaging smile looking directly at the camera. Vary pose naturally between renders, never a stiff catalogue stance.'
+      : 'POSE: Polished, upright tall street-lookbook pose facing the camera: poised elongated posture, one foot stepped slightly forward toward the camera to lengthen the leg line, relaxed shoulders, one hand gently touching hair/collar/waist and the other holding the handbag strap cleanly at her side without hiding the outfit, slight gentle head tilt, warm confident smile. Vary stance naturally between renders while keeping full body visible.')
     : 'POSE: Natural, confident, masculine Korean menswear lookbook pose (never stiff, never feminine): upright relaxed shoulders, weight casually on one leg, torso angled 15–25° while face looks naturally toward camera, one hand casually in pocket or lightly adjusting jacket lapel/hem, easy natural stride. Vary pose slightly between renders.';
 
   const presetText = [STYLE_MAP[stylePreset] || '', outfitStyle || ''].filter(Boolean).join('. ');

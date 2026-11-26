@@ -90,13 +90,15 @@ export default function CropModal({ asset, targetSlot = 'outfitFront', onCropDon
           maxHeight: '90vh',
           display: 'flex',
           flexDirection: 'column',
+          overflowY: 'auto',
+          overscrollBehavior: 'contain',
           background: 'var(--panel)',
           borderRadius: 12,
           padding: 16,
           gap: 12,
         }}
       >
-        <div className="row between" style={{ borderBottom: '1px solid var(--line)', paddingBottom: 10 }}>
+        <div className="row between" style={{ borderBottom: '1px solid var(--line)', paddingBottom: 10, flexShrink: 0 }}>
           <div>
             <b>✂️ Cắt ảnh từ: {asset.name}</b>
             <div className="small muted">Nhấp giữ và kéo chuột trên ảnh để vẽ khung vùng bạn muốn cắt</div>
@@ -106,7 +108,7 @@ export default function CropModal({ asset, targetSlot = 'outfitFront', onCropDon
           </button>
         </div>
 
-        <div className="row wrap between" style={{ alignItems: 'center', gap: 10 }}>
+        <div className="row wrap between" style={{ alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <div className="row" style={{ alignItems: 'center', gap: 8 }}>
             <span>Lưu vùng cắt vào mục:</span>
             <select value={slot} onChange={(e) => setSlot(e.target.value)}>
@@ -127,8 +129,9 @@ export default function CropModal({ asset, targetSlot = 'outfitFront', onCropDon
         <div
           style={{
             flex: 1,
-            minHeight: 380,
+            minHeight: 240,
             maxHeight: '60vh',
+            flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -193,7 +196,7 @@ export default function CropModal({ asset, targetSlot = 'outfitFront', onCropDon
 
         {error && <div className="err small">{error}</div>}
 
-        <div className="row between" style={{ paddingTop: 8 }}>
+        <div className="row between" style={{ paddingTop: 8, flexShrink: 0 }}>
           <span className="small muted">
             Mẹo: Cắt lần lượt các món (mặt trước, mặt sau, giày, túi) từ cùng một ảnh tổng hợp outfit mà không cần thoát.
           </span>

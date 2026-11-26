@@ -2,9 +2,10 @@
 // Chrome được mở bằng 1 hồ sơ (profile) riêng trong data/flow-chrome; bạn tự đăng nhập Google trong cửa sổ đó.
 // Playwright chỉ kết nối vào cửa sổ Chrome này để thao tác trên trang Flow.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { DATA_DIR, db } from './db.js';
 
@@ -33,30 +34,130 @@ async function isRunning() {
   }
 }
 
-// Mở cửa sổ Chrome riêng cho Flow (nếu chưa mở)
-export async function launchChrome() {
-  if (await isRunning()) return { alreadyRunning: true };
+const escapeXml = (s) =>
+  String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Tìm PID tiến trình gốc Chrome/Edge đang mở hồ sơ Flow (--remote-debugging-port=9333)
+function getFlowChromePid() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const cmd = "$p = Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='msedge.exe'\" | Where-Object { $_.CommandLine -match '--remote-debugging-port=9333' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1; if ($p) { $p.ProcessId }";
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim();
+    const pid = Number(out);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+// Chạy lệnh trên desktop tương tác (WinSta0\Default) qua Task Scheduler InteractiveToken, đợi kết quả rồi tự dọn sạch.
+async function runInteractiveTask(command, argLine, { taskName = 'WebVideoFlowTask', waitFile = null, timeoutMs = 4000 } = {}) {
+  if (process.platform !== 'win32') return false;
+  const uniqTask = `${taskName}_${process.pid}`;
+  const xmlPath = path.join(os.tmpdir(), `wv-flow-${taskName}-${process.pid}-${Date.now()}.xml`);
+  const xml = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${escapeXml(command)}</Command>
+      <Arguments>${escapeXml(argLine)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>`;
+  try {
+    fs.writeFileSync(xmlPath, Buffer.from(`\uFEFF${xml}`, 'utf16le'));
+    execFileSync('schtasks', ['/create', '/tn', uniqTask, '/xml', xmlPath, '/f'], { stdio: 'ignore', windowsHide: true });
+    execFileSync('schtasks', ['/run', '/tn', uniqTask], { stdio: 'ignore', windowsHide: true });
+    if (waitFile) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline && !fs.existsSync(waitFile)) await sleep(100);
+      if (fs.existsSync(waitFile)) await sleep(80);
+    } else {
+      await sleep(500);
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(xmlPath, { force: true });
+    try { execFileSync('schtasks', ['/delete', '/tn', uniqTask, '/f'], { stdio: 'ignore', windowsHide: true }); } catch {}
+  }
+}
+
+// Trên Windows, chạy qua Task Scheduler (InteractiveToken) để cửa sổ Chrome hiện rõ ràng trên Desktop tương tác
+async function launchVisibleViaTaskScheduler(exe, args) {
+  const argLine = args.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '')}"` : a)).join(' ');
+  return runInteractiveTask(exe, argLine, { taskName: 'WebVideoFlowChrome' });
+}
+
+// Đóng êm Chrome Flow qua CDP (lưu sạch cookie/session vào data/flow-chrome) để mở lại đúng trên màn hình chính.
+export async function closeFlowBrowser() {
+  const b = browser;
+  browser = null;
+  try {
+    const conn = b?.isConnected?.()
+      ? b
+      : (await isRunning())
+        ? await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`).catch(() => null)
+        : null;
+    const ctx = conn?.contexts?.()?.[0];
+    const p = ctx?.pages?.()?.[0];
+    if (ctx && p) {
+      const cdp = await ctx.newCDPSession(p).catch(() => null);
+      if (cdp) {
+        await cdp.send('Browser.close').catch(() => {});
+        await cdp.detach().catch(() => {});
+      }
+    }
+    await conn?.close?.().catch(() => {});
+  } catch {}
+  for (let i = 0; i < 50 && (await isRunning()); i++) await sleep(100);
+}
+
+// Mở cửa sổ Chrome riêng cho Flow (nếu đã mở thì đưa lên màn hình chính)
+export async function launchChrome({ url = '' } = {}) {
+  if (await isRunning()) {
+    await showFlowWindow({ launchIfStopped: false }).catch(() => {});
+    return { alreadyRunning: true };
+  }
   const exe = chromePath();
   if (!exe) throw new Error('Không tìm thấy Chrome/Edge trên máy');
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
+  const targetUrl = url ? withEn(url) : withEn(FLOW_URL);
+  const launchArgs = [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', targetUrl];
 
-  // Trên Windows, kích hoạt qua Task Scheduler để cửa sổ Chrome hiện rõ ràng trên Desktop tương tác
+  // Trên Windows, kích hoạt qua Task Scheduler để cửa sổ Chrome hiện rõ ràng trên Desktop tương tác (WinSta0\Default)
   if (process.platform === 'win32') {
-    try {
-      const { execSync } = await import('node:child_process');
-      execSync('schtasks /run /tn "FlowChrome"', { stdio: 'ignore' });
-      for (let i = 0; i < 15; i++) {
-        await sleep(500);
+    if (!url) {
+      try {
+        execFileSync('schtasks', ['/run', '/tn', 'FlowChrome'], { stdio: 'ignore', windowsHide: true });
+        for (let i = 0; i < 15; i++) {
+          await sleep(500);
+          if (await isRunning()) return { alreadyRunning: false };
+        }
+      } catch {}
+    }
+    if (await launchVisibleViaTaskScheduler(exe, launchArgs)) {
+      for (let i = 0; i < 20; i++) {
+        await sleep(400);
         if (await isRunning()) return { alreadyRunning: false };
       }
-    } catch {}
+    }
   }
 
-  const p = spawn(
-    exe,
-    [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US', withEn(FLOW_URL)],
-    { detached: true, stdio: 'ignore' },
-  );
+  const p = spawn(exe, launchArgs, { detached: true, stdio: 'ignore' });
   p.unref();
   for (let i = 0; i < 30 && !(await isRunning()); i++) await sleep(500);
   if (!(await isRunning())) throw new Error('Mở Chrome không thành công');
@@ -106,6 +207,214 @@ export const generateVideo = (opts) => generate({ ...opts, kind: 'video' });
 // imageQuality: '2K' | '4K' -> tải bản Flow phóng to (menu Download) thay vì ảnh gốc 1K
 export const generateImage = (opts) => generate({ ...opts, kind: 'image' });
 
+export const PRIMARY_WINDOW_BOUNDS = { left: 100, top: 60, width: 1320, height: 880 };
+export function shouldRecenterBounds(bounds) {
+  if (!bounds || typeof bounds.left !== 'number') return false;
+  return bounds.left < 0 || bounds.left >= 1800 || (typeof bounds.top === 'number' && bounds.top < -50);
+}
+export const shouldRelaunchOnDesktop = (actResult) => actResult === 'not_on_default_desktop';
+
+// Kích hoạt cửa sổ Chrome có PID cho trước ngay trên desktop tương tác (WinSta0\Default), không nháy CMD.
+async function activateWindowOnInteractiveDesktop(pid) {
+  if (process.platform !== 'win32' || !pid) return 'error';
+  const stamp = `${process.pid}-${Date.now()}`;
+  const psPath = path.join(os.tmpdir(), `wv-flow-act-${stamp}.ps1`);
+  const vbsPath = path.join(os.tmpdir(), `wv-flow-act-${stamp}.vbs`);
+  const outPath = path.join(os.tmpdir(), `wv-flow-act-${stamp}.txt`);
+  const escPs = (s) => String(s).replace(/'/g, "''");
+  const psScript = `
+$res = 'ERROR'
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class WinAct {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  public static IntPtr FindTop(uint target) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      uint p;
+      GetWindowThreadProcessId(h, out p);
+      if (p == target && GetWindow(h, 4) == IntPtr.Zero && (IsWindowVisible(h) || IsIconic(h))) {
+        found = h;
+        return false;
+      }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+}
+'@
+  $hwnd = [WinAct]::FindTop(${Number(pid)})
+  if ($hwnd -eq [IntPtr]::Zero) {
+    $res = 'NOT_ON_DEFAULT_DESKTOP'
+  } else {
+    if ([WinAct]::IsIconic($hwnd)) { [WinAct]::ShowWindow($hwnd, 9) | Out-Null }
+    [WinAct]::SwitchToThisWindow($hwnd, $true)
+    [WinAct]::BringWindowToTop($hwnd) | Out-Null
+    [WinAct]::SetForegroundWindow($hwnd) | Out-Null
+    $res = "ACTIVATED:$hwnd"
+  }
+} catch {
+  $res = 'ERROR'
+}
+Set-Content -Path '${escPs(outPath)}' -Value $res -Encoding ASCII
+`;
+  const vbsScript = `CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""${psPath.replace(/"/g, '""')}""", 0, True\r\n`;
+  try {
+    fs.writeFileSync(psPath, psScript, 'utf8');
+    fs.writeFileSync(vbsPath, vbsScript, 'utf8');
+    await runInteractiveTask('wscript.exe', `//B //Nologo "${vbsPath}"`, { taskName: 'WebVideoFlowActivate', waitFile: outPath, timeoutMs: 5000 });
+    if (!fs.existsSync(outPath)) return 'error';
+    const raw = fs.readFileSync(outPath, 'utf8').trim();
+    if (raw.startsWith('ACTIVATED:')) return 'activated';
+    if (raw === 'NOT_ON_DEFAULT_DESKTOP') return 'not_on_default_desktop';
+    return 'error';
+  } catch {
+    return 'error';
+  } finally {
+    fs.rmSync(psPath, { force: true });
+    fs.rmSync(vbsPath, { force: true });
+    fs.rmSync(outPath, { force: true });
+  }
+}
+
+// Đưa cửa sổ Chrome của Flow lên màn hình (hủy thu nhỏ / đẩy lên trước cửa sổ khác) qua CDP, giữ nguyên vị trí màn hình.
+export async function raiseWindowViaCdp(ctx, page) {
+  let cur = null;
+  if (ctx && page && typeof ctx.newCDPSession === 'function') {
+    let cdp = null;
+    try {
+      cdp = await ctx.newCDPSession(page);
+      const { windowId, bounds } = await cdp.send('Browser.getWindowForTarget');
+      cur = bounds?.windowState || 'normal';
+      if (cur === 'minimized') {
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      } else if (cur === 'normal' || cur === 'maximized') {
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+        await sleep(80);
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: cur } });
+      }
+    } catch {
+    } finally {
+      await cdp?.detach?.().catch(() => {});
+    }
+  }
+  if (typeof page?.bringToFront === 'function') await page.bringToFront().catch(() => {});
+  return { ok: true, previousState: cur };
+}
+
+let lastShowAt = 0;
+let showingPromise = null;
+/** Đưa cửa sổ Chrome Flow lên màn hình chính WinSta0\Default (khi Flow báo lỗi hoặc người dùng chủ động bấm mở). */
+export async function showFlowWindow({ reason = '', launchIfStopped = true } = {}) {
+  if (process.env.FLOW_NO_SHOW === '1') return { ok: false, skipped: true };
+  if (showingPromise) return showingPromise;
+  if (reason && Date.now() - lastShowAt < 3000) return { ok: true, debounced: true };
+  if (reason) {
+    lastShowAt = Date.now();
+    console.warn(`[Flow] Lỗi — tự mở cửa sổ Chrome của Flow để bạn xem/điều chỉnh: ${String(reason).slice(0, 180)}`);
+  }
+  showingPromise = (async () => {
+    if (!(await isRunning())) {
+      if (!launchIfStopped) return { ok: false, running: false };
+      await launchChrome({ url: db.settings?.flowProjectUrl || FLOW_URL });
+      if (process.platform === 'win32') {
+        const pid = getFlowChromePid();
+        if (pid) await activateWindowOnInteractiveDesktop(pid).catch(() => {});
+      }
+      return { ok: true, launched: true };
+    }
+    const b = await connect();
+    const ctx = b.contexts()[0];
+    if (!ctx) return { ok: false, error: 'Không kết nối được Chrome của Flow' };
+    let page = ctx.pages().find((p) => isFlowUrl(p.url())) || ctx.pages()[0];
+    const currentUrl = (page && isFlowUrl(page.url()) ? page.url() : '') || (db.settings?.flowProjectUrl ? withEn(db.settings.flowProjectUrl) : withEn(FLOW_URL));
+    if (page) await page.bringToFront().catch(() => {});
+
+    if (process.platform === 'win32') {
+      const pid = getFlowChromePid();
+      const act = pid ? await activateWindowOnInteractiveDesktop(pid) : 'error';
+      if (act === 'activated') {
+        try {
+          if (page && typeof ctx.newCDPSession === 'function') {
+            const cdp = await ctx.newCDPSession(page);
+            try {
+              const { windowId, bounds } = await cdp.send('Browser.getWindowForTarget');
+              if (bounds?.windowState === 'minimized') {
+                await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+                await activateWindowOnInteractiveDesktop(pid).catch(() => {});
+              }
+            } finally {
+              await cdp.detach().catch(() => {});
+            }
+          }
+        } catch {}
+        return { ok: true, activated: true, url: page?.url() || currentUrl };
+      }
+
+      if (shouldRelaunchOnDesktop(act)) {
+        console.warn('[Flow] Chrome của Flow đang chạy trên desktop ẩn — đóng êm và mở lại trên màn hình chính để bạn xem/điều chỉnh.');
+        await closeFlowBrowser();
+        await launchChrome({ url: currentUrl });
+        const nb = await connect();
+        const nctx = nb.contexts()[0];
+        let npage = nctx?.pages()?.find((p) => isFlowUrl(p.url())) || nctx?.pages()?.[0];
+        if (!npage) npage = await flowPage();
+        await npage.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {});
+        if (nctx && typeof nctx.newCDPSession === 'function') {
+          let cdp = null;
+          try {
+            cdp = await nctx.newCDPSession(npage);
+            const { windowId, bounds } = await cdp.send('Browser.getWindowForTarget');
+            if (shouldRecenterBounds(bounds)) {
+              if (bounds?.windowState && bounds.windowState !== 'normal') {
+                await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+              }
+              await cdp.send('Browser.setWindowBounds', { windowId, bounds: PRIMARY_WINDOW_BOUNDS });
+            }
+          } catch {
+          } finally {
+            await cdp?.detach?.().catch(() => {});
+          }
+        }
+        await npage.bringToFront().catch(() => {});
+        const newPid = getFlowChromePid();
+        if (newPid) await activateWindowOnInteractiveDesktop(newPid).catch(() => {});
+        return { ok: true, relaunchedOnDesktop: true, url: npage?.url() || currentUrl };
+      }
+    }
+
+    if (!page) page = await flowPage();
+    await raiseWindowViaCdp(ctx, page);
+    return { ok: true, url: page?.url() || currentUrl };
+  })().finally(() => {
+    showingPromise = null;
+  });
+  return showingPromise;
+}
+
+// Chạy thao tác Flow; bình thường chạy ngầm như cũ, chỉ tự bật cửa sổ Chrome Flow khi phát sinh lỗi thật (trừ dryRun / người dùng huỷ).
+export async function runFlowWithErrorShow(fn, { isCancelled, dryRun = false, show = showFlowWindow } = {}) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!dryRun && !isCancelled?.()) {
+      await Promise.resolve(show({ reason: err?.message || String(err) })).catch(() => {});
+    }
+    throw err;
+  }
+}
+
 // Chỉ có 1 trang Flow dùng chung: lần tạo (generate) và "cấu hình sẵn" (preset, do giao diện gọi khi mở module / đổi lựa
 // chọn) không được thao tác cùng lúc — preset mở rồi đóng bảng cài đặt (phím Escape) ngay dưới tay job đang chọn model,
 // job mất nút "Select model family" và lỗi sau 30s. Đang tạo -> preset bỏ qua; preset đang chạy -> lần tạo chờ nó xong.
@@ -115,7 +424,10 @@ async function generate(opts) {
   flowBusy++;
   try {
     if (presetRunning) await presetRunning.catch(() => {});
-    return await generateOnPage(opts);
+    return await runFlowWithErrorShow(() => generateOnPage(opts), {
+      isCancelled: opts?.isCancelled,
+      dryRun: !!opts?.dryRun,
+    });
   } finally {
     flowBusy--;
   }
@@ -923,11 +1235,15 @@ export function flowFailure(raw) {
   if (/prominent people/i.test(text)) {
     msg += ' — Bộ lọc "người nổi tiếng" của Flow: Flow cho rằng người trong ảnh tham chiếu (ảnh KOL / ảnh outfit) giống một người nổi tiếng (thường do khuôn mặt trong ảnh, không phải do các mốc động tác). Thử lại 1 lần; nếu vẫn lỗi thì đổi ảnh KOL khác.';
   }
+  if (/unusual activity/i.test(text)) {
+    msg += ' — Google Flow báo hoạt động bất thường (đã tự mở cửa sổ Chrome của Flow lên để bạn xem, tải lại trang hoặc điều chỉnh trực tiếp).';
+  }
   if (/will be refunded/i.test(text)) msg += ' (Flow sẽ hoàn lại credit cho lần lỗi này)';
   return msg;
 }
 
-const FAILED_RE = /couldn.t generate|failed|something went wrong|try again|violat|policy|error|unable to generate|not allowed/i;
+export const FLOW_PAGE_ERROR_RE = /couldn.t generate|failed|something went wrong|try again|violat|policy|error|limit|quota|exceeded|refund|not supported|unable to|unusual activity|not been charged|captcha|verify it'?s you/i;
+const FAILED_RE = /couldn.t generate|failed|something went wrong|try again|violat|policy|error|unable to generate|not allowed|unusual activity|not been charged|captcha|verify it'?s you/i;
 const isFailed = (t) => FAILED_RE.test(t.text) || FAILED_RE.test(t.key) || (t.icons && /error|warning/i.test(t.icons));
 const isGenerating = (t) => /\d+\s*%/.test(t.text);
 // Mã file media: phần cuối đường dẫn, bỏ chữ ký ?Expires=… (đổi theo thời gian).
@@ -940,7 +1256,8 @@ const isSettled = (t) => !!tileMedia(t) && !isFailed(t) && !isGenerating(t);
 // Phát hiện thông báo lỗi, snackbar, toast, dialog hoặc cảnh báo chính sách trên giao diện Flow
 async function detectFlowPageError(page) {
   try {
-    return await page.evaluate(() => {
+    return await page.evaluate((errSrc) => {
+      const errRe = new RegExp(errSrc, 'i');
       const selectors = [
         '.mat-mdc-snack-bar-label',
         '[role="alert"]',
@@ -961,16 +1278,13 @@ async function detectFlowPageError(page) {
           // Menu tài khoản Google (bấm vào ảnh đại diện) cũng là 1 dialog trong cdk-overlay: có chữ "Terms of Service", "License"… dễ
           // khớp nhầm từ khoá lỗi -> bỏ qua (video thử Chuyển động 5 từng bị báo lỗi giả vì menu này đang mở).
           if (/switch account|sign out|manage subscription|google flow credits/i.test(text)) continue;
-          if (
-            text &&
-            /couldn.t generate|failed|something went wrong|try again|violat|policy|error|limit|quota|exceeded|refund|not supported|unable to/i.test(text)
-          ) {
+          if (text && errRe.test(text)) {
             return text;
           }
         }
       }
       return null;
-    });
+    }, FLOW_PAGE_ERROR_RE.source);
   } catch {
     return null;
   }
@@ -1259,36 +1573,38 @@ export async function downloadViaMenu(page, tile, outputFile, qualityRe, timeout
  * imageQuality ('2K' | '4K'): tải bản phóng to qua menu Download như job ảnh thường.
  */
 export async function downloadLatestFromFlow(outputFile, kind = 'video', onResult = () => {}, { imageQuality = null, videoQuality = videoDownloadOf(), log = () => {} } = {}) {
-  const page = await flowPage();
-  await page.bringToFront();
-  // Cửa sổ Flow đang ở trang chủ (vd. vừa mở lại Chrome) thì chưa có lưới kết quả -> mở dự án dùng chung trước.
-  // Đang ở một dự án bất kỳ (kể cả dự án người dùng tự mở để tạo bằng tay) thì giữ nguyên.
-  if (!page.url().includes('/project/') && db.settings?.flowProjectUrl) {
-    await openProject(page, db.settings);
-    await sleep(1500);
-  }
-  await scrollTilesTop(page);
-  await sleep(600);
+  return runFlowWithErrorShow(async () => {
+    const page = await flowPage();
+    await page.bringToFront();
+    // Cửa sổ Flow đang ở trang chủ (vd. vừa mở lại Chrome) thì chưa có lưới kết quả -> mở dự án dùng chung trước.
+    // Đang ở một dự án bất kỳ (kể cả dự án người dùng tự mở để tạo bằng tay) thì giữ nguyên.
+    if (!page.url().includes('/project/') && db.settings?.flowProjectUrl) {
+      await openProject(page, db.settings);
+      await sleep(1500);
+    }
+    await scrollTilesTop(page);
+    await sleep(600);
 
-  const all = await tiles(page);
-  const isVideoTile = (t) => t.hasVideo || !!t.src || /play_circle|video/i.test(t.icons || '') || /play_circle|video/i.test(t.text || '');
-  const candidate = all.find((t) =>
-    !isUploadTile(t, []) &&
-    !isFailed(t) &&
-    !isGenerating(t) &&
-    (kind === 'image' ? !isVideoTile(t) && /^https?:/.test(t.isrc || '') : isVideoTile(t))
-  );
+    const all = await tiles(page);
+    const isVideoTile = (t) => t.hasVideo || !!t.src || /play_circle|video/i.test(t.icons || '') || /play_circle|video/i.test(t.text || '');
+    const candidate = all.find((t) =>
+      !isUploadTile(t, []) &&
+      !isFailed(t) &&
+      !isGenerating(t) &&
+      (kind === 'image' ? !isVideoTile(t) && /^https?:/.test(t.isrc || '') : isVideoTile(t))
+    );
 
-  if (!candidate) {
-    throw new Error(kind === 'image'
-      ? 'Không tìm thấy ảnh nào đã hoàn thành trên Flow. Hãy đảm bảo ảnh đã render xong trong cửa sổ Chrome (ô mới nhất ở đầu lưới).'
-      : 'Không tìm thấy video nào đã hoàn thành trên Flow. Hãy đảm bảo bạn đã render xong video trong cửa sổ Chrome.');
-  }
+    if (!candidate) {
+      throw new Error(kind === 'image'
+        ? 'Không tìm thấy ảnh nào đã hoàn thành trên Flow. Hãy đảm bảo ảnh đã render xong trong cửa sổ Chrome (ô mới nhất ở đầu lưới).'
+        : 'Không tìm thấy video nào đã hoàn thành trên Flow. Hãy đảm bảo bạn đã render xong video trong cửa sổ Chrome.');
+    }
 
-  const tile = page.locator(TILE).nth(candidate.i);
-  const title = (await tile.getAttribute('aria-label').catch(() => '')) || candidate.key || '';
-  await downloadTile(page, tile, outputFile, kind, onResult, { imageQuality, videoQuality: kind === 'image' ? null : videoQuality, log });
-  return { outputFile, title, tileMedia: tileMedia(candidate) };
+    const tile = page.locator(TILE).nth(candidate.i);
+    const title = (await tile.getAttribute('aria-label').catch(() => '')) || candidate.key || '';
+    await downloadTile(page, tile, outputFile, kind, onResult, { imageQuality, videoQuality: kind === 'image' ? null : videoQuality, log });
+    return { outputFile, title, tileMedia: tileMedia(candidate) };
+  });
 }
 
 // Giữ tên cũ cho các chỗ đang gọi

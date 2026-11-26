@@ -83,6 +83,8 @@ export const api = {
   fetchAssetCommission: (id, force = false) => req('POST', `/api/assets/${id}/commission`, { force }),
   // Thử cookie affiliate.shopee.vn (Cài đặt): cookie đang gõ (chưa lưu) hoặc '' = cookie đã lưu -> { ok, message, name, commissionVnd }
   testShopeeAffiliate: (cookie = '') => req('POST', '/api/shopee/affiliate/test', { cookie }),
+  shopeeAffiliateStatus: () => req('GET', '/api/shopee/affiliate/status'),
+  showShopeeAffiliateBrowser: () => req('POST', '/api/shopee/affiliate/show'),
   suggestProductCode: (title, taken = []) =>
     req('GET', `/api/products/suggest-code?title=${encodeURIComponent(title || '')}&taken=${encodeURIComponent(taken.join(','))}`),
   // Tải file Excel (blob). body.products (tuỳ chọn) = dữ liệu đang sửa để xuất thử chưa cần lưu
@@ -124,6 +126,7 @@ export const api = {
   fetchLatestFlowVideo: () => req('POST', '/api/flow/latest-video'),
   flowStatus: () => req('GET', '/api/flow/status'),
   flowLaunch: () => req('POST', '/api/flow/launch'),
+  flowShow: () => req('POST', '/api/flow/show'),
   flowPreset: (body) => req('POST', '/api/flow/preset', body),
   extractAudio: (sourceId) => req('POST', `/api/sources/${sourceId}/extract-audio`),
   uploadAudio: (file) => {

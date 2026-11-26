@@ -14,10 +14,9 @@
 //   1. Chưa có cookie trong Cài đặt → báo ngay (không mở gì). Có cookie → mở / dùng lại Chrome riêng (giữ sống giữa các lần gọi).
 //   2. Cookie đổi so với lần nạp trước (hash lưu ở settings.shopeeAffiliateCookieLoadedHash) hoặc trang bị đẩy ra đăng nhập → addCookies
 //      (domain .shopee.vn) rồi tải lại affiliate.shopee.vn. Vẫn ở trang đăng nhập → needLogin (cookie hết hạn → dán lại).
-//      Bị đẩy sang verify/traffic / captcha → blocked, nghỉ 10 phút.
+//      Bị đẩy sang verify/traffic / captcha / 90309999 → báo thẳng nguyên nhân gốc (lastBlock) để mở Chrome Shopee tự kiểm tra, KHÔNG chặn gọi lại ở server.
 //   3. XHR trong trang: header Affiliate-Program-Type: 1 + csrf-token (GET /api/v3/config/website → data.csrf_token, nhớ 10 phút
-//      trong window.__wvCsrf). Giãn cách ≥ 2,5 s; Shopee từ chối (403 / 90309999 / captcha) → nghỉ 10 phút; đệm theo itemId 30 phút,
-//      lỗi đọc → không hỏi lại 10 phút. Không ném lỗi: thiếu hoa hồng thì bóc link vẫn chạy, chỉ báo lý do.
+//      trong window.__wvCsrf); đệm theo itemId 30 phút chỉ khi đọc thành công (lỗi / bị từ chối không đệm để thử lại được ngay). Không ném lỗi.
 // Test: tiêm `context` giả ({ addCookies, pages, newPage }, page { url, goto, waitForLoadState, evaluate, isClosed }) và
 // SHOPEE_AFFILIATE_TAB=0 để không mở Chrome thật.
 import crypto from 'node:crypto';
@@ -30,24 +29,19 @@ import { parseShopeeOffer, pickOffer } from './shopeeOffer.js';
 
 export const AFFILIATE_ORIGIN = 'https://affiliate.shopee.vn';
 const PROFILE_DIR = path.join(DATA_DIR, 'shopee-chrome');
-const MIN_INTERVAL_MS = 2500;
-const BLOCK_PAUSE_MS = 10 * 60 * 1000;
 const CACHE_TTL_MS = 30 * 60 * 1000;
-const FAIL_TTL_MS = 10 * 60 * 1000;
 const BLOCK_CODE = '90309999';
 export const LOGIN_MSG = 'Cookie affiliate.shopee.vn hết hạn hoặc chưa có — mở affiliate.shopee.vn trong Chrome đã đăng nhập, chép lại giá trị Cookie (F12 → Network) dán vào Cài đặt → Hoa hồng Shopee rồi bóc tách lại.';
 export const NO_COOKIE_MSG = 'Chưa có cookie affiliate.shopee.vn trong Cài đặt → Hoa hồng Shopee — dán cookie vào đó (web tự gọi Shopee bằng Chrome riêng thu nhỏ, không mở tab) hoặc nhập hoa hồng tay.';
 export const NO_CHROME_MSG = NO_COOKIE_MSG; // tương thích import cũ
 export const NO_LAUNCH_MSG = 'Không mở được Chrome / Edge trên máy để gọi Shopee (cần cài Google Chrome hoặc Microsoft Edge).';
-const TRAFFIC_MSG = 'Shopee đang chặn lưu lượng của trình duyệt này (verify/traffic) — web nghỉ 10 phút rồi tự thử lại; đừng bóc link dồn dập.';
+const TRAFFIC_MSG = 'Shopee đang yêu cầu kiểm tra lưu lượng (verify/traffic) — mở cửa sổ Chrome Shopee trong Cài đặt → Hoa hồng Shopee để xem/xác minh rồi thử lại.';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const clock = (t) => new Date(t).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
 
-const cache = new Map(); // itemId -> { at, result }
-let blockedUntil = 0;
-let lastCallAt = 0;
-let queue = Promise.resolve(); // gọi tuần tự (1 trang, giãn cách)
+const cache = new Map(); // itemId -> { at, result } (chỉ đệm khi đọc thành công)
+let lastBlock = null; // { at, kind, status, errCode, pageUrl, summary }
+let queue = Promise.resolve(); // gọi tuần tự (1 trang, tránh đụng nhau)
 let loadedCookieHash = ''; // hash chuỗi cookie đã nạp vào Chrome riêng (RAM; bản bền ở settings)
 let ownCtx = null; // context Chrome riêng đang mở
 let ownPage = null;
@@ -56,13 +50,20 @@ export const isAffiliateUrl = (u) => /^https:\/\/affiliate\.shopee\.vn(\/|$)/i.t
 const isLoginUrl = (u) => /\/(login|signin|sign-in|register)(\/|\?|$)|accounts\.shopee|\/seller\/login/i.test(String(u || ''));
 const isTrafficUrl = (u) => /\/verify\/(traffic|captcha)|captcha|anti_bot/i.test(String(u || ''));
 
+function recordBlock({ kind, status = 0, errCode = null, pageUrl = '', summary = '' }) {
+  const cleanUrl = String(pageUrl || '').slice(0, 200);
+  lastBlock = { at: Date.now(), kind, status: Number(status) || 0, errCode: errCode != null ? String(errCode) : null, pageUrl: cleanUrl, summary: String(summary || '') };
+  // Không bao giờ log cookie; chỉ ghi lý do gốc để chẩn đoán
+  console.warn(`[Shopee Affiliate] Bị từ chối (${kind}): ${summary}${cleanUrl ? ' | url=' + cleanUrl.slice(0, 120) : ''}`);
+}
+
 /** Trạng thái để hiện trên giao diện / chẩn đoán */
 export function affiliateStatus() {
-  return { blockedUntil: blockedUntil > Date.now() ? blockedUntil : 0, cached: cache.size, hasCookie: !!normalizeCookie(db.settings?.shopeeAffiliateCookie), cookieLoaded: !!loadedHash(), browserOpen: !!ownCtx };
+  return { blockedUntil: 0, lastBlock, cached: cache.size, hasCookie: !!normalizeCookie(db.settings?.shopeeAffiliateCookie), cookieLoaded: !!loadedHash(), browserOpen: !!ownCtx };
 }
 export function clearOfferCache() {
   cache.clear();
-  blockedUntil = 0;
+  lastBlock = null;
   loadedCookieHash = '';
   if (db.settings?.shopeeAffiliateCookieLoadedHash) updateSettings({ shopeeAffiliateCookieLoadedHash: '' });
 }
@@ -132,17 +133,19 @@ export async function ensureAffiliateSession(ctx, cookie, { force = false, atLog
  * người dùng đóng cửa sổ thì lần sau mở lại. Headless bị Shopee chặn (verify/traffic) nên phải có giao diện. Trả null nếu không có
  * Chrome / Edge trên máy.
  */
-async function affiliateContext() {
+async function affiliateContext({ minimized = true } = {}) {
   if (ownCtx) return ownCtx;
   const exe = chromePath();
   if (!exe) return null;
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
+  const args = ['--window-size=900,600', '--no-first-run', '--no-default-browser-check'];
+  if (minimized) args.unshift('--start-minimized');
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
     executablePath: exe,
     headless: false,
     locale: 'vi-VN',
     viewport: null,
-    args: ['--start-minimized', '--window-size=900,600', '--no-first-run', '--no-default-browser-check'],
+    args,
   });
   ctx.on('close', () => {
     if (ownCtx === ctx) {
@@ -158,7 +161,10 @@ async function loadAffiliate(page) {
   await page.goto(`${AFFILIATE_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
   // Chờ chuyển hướng (sang trang đăng nhập nếu chưa đăng nhập) và SDK chống bot của trang khởi tạo xong rồi mới gọi API
   await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-  await sleep(800);
+  if (typeof page.waitForFunction === 'function') {
+    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 }).catch(() => {});
+  }
+  await sleep(1200);
 }
 
 // Trang affiliate.shopee.vn trong Chrome riêng: dùng lại 1 trang; reload = vừa nạp cookie → tải lại
@@ -269,10 +275,68 @@ function traceParam() {
   return encodeURIComponent(JSON.stringify({ trace_id: traceId, list_type: 107, root_trace_id: traceId, root_list_type: 107 }));
 }
 
-async function throttle() {
-  const wait = MIN_INTERVAL_MS - (Date.now() - lastCallAt);
-  if (wait > 0) await sleep(wait);
-  lastCallAt = Date.now();
+function classifyBlock(raw, fallbackMsg) {
+  const status = Number(raw?.status) || 0;
+  const url = String(raw?.loginPage || raw?.url || '');
+  const text = String(raw?.text || '');
+  let errCode = null;
+  try {
+    const j = JSON.parse(text);
+    errCode = j?.code != null && j.code !== '' && Number(j.code) !== 0 ? j.code : j?.error || null;
+  } catch {}
+  if (isTrafficUrl(raw?.url) || isTrafficUrl(raw?.loginPage) || text.includes('verify/traffic')) {
+    return { kind: 'traffic', status, errCode, pageUrl: url, summary: 'Shopee chuyển sang trang verify/traffic' };
+  }
+  if (status === 404) {
+    return { kind: 'traffic', status: 404, errCode, pageUrl: url, summary: 'Trang bị đẩy ra khỏi affiliate.shopee.vn (HTTP 404)' };
+  }
+  return {
+    kind: errCode != null ? String(errCode) : `http${status || 403}`,
+    status,
+    errCode,
+    pageUrl: url,
+    summary: fallbackMsg || `Shopee từ chối request (HTTP ${status || 403})`,
+  };
+}
+
+/**
+ * Mở cửa sổ Chrome Shopee (profile data/shopee-chrome) hiện lên màn hình để người dùng tự kiểm tra đăng nhập hoặc tự xác minh thủ công.
+ */
+export async function showAffiliateBrowser() {
+  let ctx;
+  try {
+    ctx = ownCtx || (await affiliateContext({ minimized: false }));
+  } catch (e) {
+    return { ok: false, message: `${NO_LAUNCH_MSG} (${e.message})` };
+  }
+  if (!ctx) return { ok: false, message: NO_LAUNCH_MSG };
+  const ck = normalizeCookie(db.settings?.shopeeAffiliateCookie);
+  let page;
+  try {
+    if (ck && cookieHash(ck) !== loadedHash()) {
+      await ensureAffiliateSession(ctx, ck);
+      page = await affiliatePage(ctx, { reload: true });
+    } else {
+      page = await affiliatePage(ctx);
+    }
+    if (typeof ctx.newCDPSession === 'function') {
+      try {
+        const cdp = await ctx.newCDPSession(page);
+        const { windowId } = await cdp.send('Browser.getWindowForTarget');
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+        await cdp.detach().catch(() => {});
+      } catch {}
+    }
+    if (typeof page.bringToFront === 'function') await page.bringToFront().catch(() => {});
+  } catch (e) {
+    return { ok: false, message: `Không mở được cửa sổ Chrome Shopee (${e.message}).` };
+  }
+  return {
+    ok: true,
+    url: page.url(),
+    status: affiliateStatus(),
+    message: 'Đã mở cửa sổ Chrome Shopee — bạn có thể xem trạng thái đăng nhập hoặc tự xác minh trực tiếp trong cửa sổ đó.',
+  };
 }
 
 /**
@@ -280,7 +344,6 @@ async function throttle() {
  * dù không đổi; context = context giả (test). Trả { ok:true, offer, raw } | { ok:false, reason, message }.
  */
 async function callOffer(itemId, { cookie = '', forceCookie = false, context = null } = {}) {
-  if (blockedUntil > Date.now()) return { ok: false, reason: 'blocked', message: `Shopee đang tạm từ chối request — nghỉ tới ${clock(blockedUntil)} rồi mới gọi lại.` };
   const ck = normalizeCookie(cookie);
   if (!ck) return { ok: false, reason: 'noCookie', message: NO_COOKIE_MSG };
   let ctx;
@@ -305,11 +368,10 @@ async function callOffer(itemId, { cookie = '', forceCookie = false, context = n
     return { ok: false, reason: 'error', message: `Không mở được affiliate.shopee.vn trong Chrome riêng (${e.message}).` };
   }
   if (isTrafficUrl(page.url())) {
-    blockedUntil = Date.now() + BLOCK_PAUSE_MS;
+    recordBlock({ kind: 'traffic', pageUrl: page.url(), summary: 'Shopee chuyển sang trang verify/traffic' });
     return { ok: false, reason: 'blocked', message: TRAFFIC_MSG };
   }
   if (isLoginUrl(page.url())) return { ok: false, reason: 'needLogin', message: LOGIN_MSG };
-  await throttle();
   let raw = null;
   try {
     raw = await page.evaluate(pageRequest, `/api/v3/offer/product?item_id=${itemId}&trace=${traceParam()}`);
@@ -318,9 +380,10 @@ async function callOffer(itemId, { cookie = '', forceCookie = false, context = n
   }
   const c = checkRaw(raw);
   if (!c.ok) {
-    if (c.reason === 'blocked') blockedUntil = Date.now() + BLOCK_PAUSE_MS;
+    if (c.reason === 'blocked') recordBlock(classifyBlock(raw, c.message));
     return c;
   }
+  lastBlock = null;
   const picked = pickOffer(c.json);
   return { ok: true, offer: parseShopeeOffer(picked, itemId), raw: picked };
 }
@@ -334,13 +397,13 @@ export async function fetchShopeeOffer(itemId, { force = false, tab = process.en
   const id = String(itemId || '').trim();
   if (!/^\d{1,20}$/.test(id)) return { ok: false, reason: 'error', message: 'item_id không hợp lệ.' };
   const hit = cache.get(id);
-  if (!force && hit && Date.now() - hit.at < (hit.result.ok ? CACHE_TTL_MS : FAIL_TTL_MS)) return { ...hit.result, cached: true };
+  if (!force && hit && hit.result?.ok && Date.now() - hit.at < CACHE_TTL_MS) return { ...hit.result, cached: true };
   if (!tab && !context) return { ok: false, reason: 'noChrome', message: NO_COOKIE_MSG };
   const job = queue.then(() => callOffer(id, { cookie: db.settings?.shopeeAffiliateCookie, context })).catch((e) => ({ ok: false, reason: 'error', message: e.message }));
   queue = job.then(() => {}, () => {});
   const result = await job;
-  // Lỗi do Chrome / cookie thì không nhớ (người dùng sửa xong bóc lại là có ngay); notFound nhớ như kết quả
-  if (result.ok || result.reason === 'error' || result.reason === 'notFound') cache.set(id, { at: Date.now(), result });
+  // Chỉ đệm kết quả thành công; mọi lỗi / bị từ chối / chưa tìm thấy đều không đệm để người dùng thử lại ngay bất kỳ lúc nào
+  if (result.ok) cache.set(id, { at: Date.now(), result });
   return result;
 }
 

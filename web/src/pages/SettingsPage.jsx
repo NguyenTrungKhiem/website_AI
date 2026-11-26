@@ -33,17 +33,38 @@ function Field({ s, set, path, label, type = 'text', hint, options }) {
 // đang gõ (chưa cần Lưu) và báo tên + hoa hồng đọc được, hoặc lý do lỗi (hết hạn / Shopee chặn).
 function ShopeeAffiliatePanel({ s, set }) {
   const [result, setResult] = useState(null);
+  const [status, setStatus] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [opening, setOpening] = useState(false);
   const value = s.shopeeAffiliateCookie || '';
+  const refreshStatus = () => api.shopeeAffiliateStatus().then(setStatus).catch(() => {});
+  useEffect(() => { refreshStatus(); }, []);
   const test = async () => {
     setTesting(true);
     setResult(null);
     try {
-      setResult(await api.testShopeeAffiliate(value));
+      const r = await api.testShopeeAffiliate(value);
+      setResult(r);
+      if (r?.status) setStatus(r.status);
+      else await refreshStatus();
     } catch (e) {
       setResult({ ok: false, message: e.message });
     } finally {
       setTesting(false);
+    }
+  };
+  const showBrowser = async () => {
+    setOpening(true);
+    setResult(null);
+    try {
+      const r = await api.showShopeeAffiliateBrowser();
+      setResult(r);
+      if (r?.status) setStatus(r.status);
+      else await refreshStatus();
+    } catch (e) {
+      setResult({ ok: false, message: e.message });
+    } finally {
+      setOpening(false);
     }
   };
   return (
@@ -68,14 +89,23 @@ function ShopeeAffiliatePanel({ s, set }) {
           phiên đăng nhập của bạn (toàn quyền tài khoản affiliate): chỉ lưu trong <code>data/db.json</code> máy này, chỉ gửi tới shopee.vn. Hết hạn thì dán lại.
         </small>
       </label>
-      <div className="row">
-        <button type="button" disabled={testing || !value.trim()} onClick={test} title="Nạp cookie đang gõ vào Chrome riêng (thu nhỏ) và gọi thử hoa hồng 1 sản phẩm mẫu (chưa cần Lưu; lần đầu mở Chrome mất vài giây)">
+      <div className="row" style={{ flexWrap: 'wrap' }}>
+        <button type="button" disabled={testing || opening || !value.trim()} onClick={test} title="Nạp cookie đang gõ vào Chrome riêng (thu nhỏ) và gọi thử hoa hồng 1 sản phẩm mẫu (chưa cần Lưu; lần đầu mở Chrome mất vài giây)">
           {testing ? '⏳ Đang gọi Shopee qua Chrome riêng…' : '🔄 Thử cookie'}
+        </button>
+        <button type="button" disabled={testing || opening} onClick={showBrowser} title="Mở cửa sổ Chrome riêng của Shopee hiện lên màn hình để tự kiểm tra đăng nhập hoặc xác minh nếu Shopee hỏi">
+          {opening ? '⏳ Đang mở Chrome Shopee…' : '🪟 Mở Chrome Shopee'}
         </button>
         {result && <span className={result.ok ? 'ok small' : 'err small'}>{result.ok ? '✓ ' : '✗ '}{result.message}</span>}
       </div>
+      {status && (
+        <small className="muted">
+          Trạng thái: {status.hasCookie ? 'đã lưu cookie' : 'chưa có cookie'} · Chrome Shopee: {status.browserOpen ? '🟢 đang mở' : '⚪ chưa mở'}
+          {status.lastBlock?.summary ? ` · Lần bị Shopee từ chối gần nhất: ${status.lastBlock.summary}` : ''}
+        </small>
+      )}
       {result && !result.ok && result.reason === 'blocked' && (
-        <small className="warn-text">Shopee đang tạm từ chối request (chống bot) — web tự nghỉ 10 phút rồi gọi lại; đừng bấm Thử liên tục.</small>
+        <small className="warn-text">Shopee đang từ chối request — bấm <b>🪟 Mở Chrome Shopee</b> để tự xem trạng thái đăng nhập / xác minh trực tiếp, hoặc dán cookie mới rồi thử lại.</small>
       )}
       {result && !result.ok && result.reason === 'notFound' && (
         <small className="muted">Cookie đã chạy được (Shopee trả lời), chỉ là sản phẩm mẫu không có ưu đãi Affiliate — cứ Lưu cài đặt và bóc link sản phẩm của bạn.</small>
@@ -101,14 +131,16 @@ function FlowPanel() {
       </div>
       <div className="row">
         <button className="primary" disabled={busy} onClick={() => run(async () => { await api.flowLaunch(); await check(); })}>
-          🌐 Mở Chrome & đăng nhập
+          {st?.running ? '🪟 Mở cửa sổ Chrome Flow' : '🌐 Mở Chrome & đăng nhập'}
         </button>
         <span>
           {!st ? '…' : !st.running ? '⚪ Chrome chưa mở' : !st.connected ? '🟠 Không kết nối được Chrome' : st.needsLogin ? '🟠 Đang chờ bạn đăng nhập' : st.flowOpen ? '🟢 Đã kết nối Flow' : '🟠 Chưa mở trang Flow'}
         </span>
       </div>
       <small className="muted">
-        Chrome mở bằng hồ sơ riêng (data/flow-chrome), tách biệt với Chrome bạn đang dùng. Đăng nhập 1 lần, lần sau tự nhớ. Giữ cửa sổ đó mở khi đang tạo video.
+        Chrome mở bằng hồ sơ riêng (data/flow-chrome), tách biệt với Chrome bạn đang dùng. Đăng nhập 1 lần, lần sau tự nhớ. Khi chạy bình thường cửa sổ
+        chạy ngầm như hiện tại; mỗi khi Google Flow báo lỗi (ví dụ unusual activity, yêu cầu xác minh...), web tự bật cửa sổ Chrome của Flow lên màn hình để
+        bạn xem và điều chỉnh trực tiếp.
       </small>
       {error && <div className="err">{error}</div>}
     </div>
